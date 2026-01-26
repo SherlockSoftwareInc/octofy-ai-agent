@@ -1,0 +1,38 @@
+dbo.ActiveProductsFedarated
+dbo.AddressSplit
+dbo.BaseContactSplit
+dbo.BaseProductsFedarated
+dbo.Categories
+dbo.ContactNameSplit
+dbo.Contacts
+dbo.CustomerCustomerDemo
+dbo.CustomerDemographics
+dbo.Customers
+dbo.Department
+dbo.DiscontinuedProductsFedarated
+dbo.Employees
+dbo.EmployeeSplit
+dbo.EmployeeTerritories
+dbo.Order Details
+dbo.Orders
+dbo.Products
+dbo.Region
+dbo.Shippers
+dbo.Suppliers
+dbo.Territories
+dbo.[Alphabetical list of products]
+dbo.[Category Sales for 1997]
+dbo.[Current Product List]
+dbo.[Customer and Suppliers by City]
+dbo.Invoices
+dbo.[Order Details Extended]
+dbo.[Order Subtotals]
+dbo.[Orders Qry]
+dbo.[Product Sales for 1997]
+dbo.[Products Above Average Price]
+dbo.[Products by Category]
+dbo.[Quarterly Orders]
+dbo.[Sales by Category]
+dbo.[Sales Totals by Amount]
+dbo.[Summary of Sales by Quarter]
+dbo.[Summary of Sales by Year]

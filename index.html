@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SQL Generator</title>
+</head>
+<body>
+    <h1>Knowledge Base Entry</h1>
+    <form id="knowledgeForm">
+        <input type="text" id="userQuery" placeholder="User Query" required>
+        <input type="text" id="sqlQuery" placeholder="SQL Query" required>
+        <button type="submit">Add to Knowledge Base</button>
+    </form>
+
+    <h1>Schema Entry</h1>
+    <form id="schemaForm">
+        <input type="text" id="schema" placeholder="Database Schema" required>
+        <button type="submit">Add Schema</button>
+    </form>
+
+    <h1>Generate SQL</h1>
+    <form id="queryForm">
+        <input type="text" id="naturalQuery" placeholder="Natural Language Query" required>
+        <button type="submit">Generate SQL</button>
+    </form>
+
+    <div id="result"></div>
+
+    <script>
+        document.getElementById('knowledgeForm').onsubmit = async function(event) {
+            event.preventDefault();
+            const userQuery = document.getElementById('userQuery').value;
+            const sqlQuery = document.getElementById('sqlQuery').value;
+            const response = await fetch('/add_knowledge', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ user_query: userQuery, sql_query: sqlQuery })
+            });
+            const result = await response.json();
+            document.getElementById('result').innerText = result.status;
+        };
+
+        document.getElementById('schemaForm').onsubmit = async function(event) {
+            event.preventDefault();
+            const schema = document.getElementById('schema').value;
+            const response = await fetch('/add_schema', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ schema: schema })
+            });
+            const result = await response.json();
+            document.getElementById('result').innerText = result.status;
+        };
+
+        document.getElementById('queryForm').onsubmit = async function(event) {
+            event.preventDefault();
+            const naturalQuery = document.getElementById('naturalQuery').value;
+            const response = await fetch('/generate_sql', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ user_query: naturalQuery })
+            });
+            const result = await response.json();
+            document.getElementById('result').innerText = `SQL: ${result.sql_query}, Status: ${result.status}`;
+        };
+    </script>
+</body>
+</html> 
