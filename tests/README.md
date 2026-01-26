@@ -1,6 +1,6 @@
 # Tests
 
-This directory contains unit tests for the SQL Agent application.
+This directory contains unit tests for the Octofy AI Agent application.
 
 ## Setup
 

@@ -647,7 +647,7 @@ export const Settings = () => {
       <div className="flex items-center justify-between">
         <div>
           <h2 className="text-2xl font-bold bg-gradient-to-r from-indigo-400 to-cyan-400 bg-clip-text text-transparent">Agent Settings</h2>
-          <p className="text-slate-400 text-sm mt-1">Configure your SQL Agent application</p>
+          <p className="text-slate-400 text-sm mt-1">Configure your Octofy AI Agent application</p>
         </div>
         <button
           onClick={handleSave}

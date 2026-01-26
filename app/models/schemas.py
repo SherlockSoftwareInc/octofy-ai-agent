@@ -157,11 +157,11 @@ class EmbeddingConfig(BaseModel):
 class VectorConfig(BaseModel):
     provider: str = "milvus"  # milvus, pinecone, weaviate, etc.
     host: str = "localhost"
-    port: str = "19530"
+    port: str = "19630"
     # embedding_model field removed from here, moved to EmbeddingConfig
 
 class AppMeta(BaseModel):
-    app_name: str = "SQL Agent"
+    app_name: str = "Octofy AI Agent"
     version: str = "1.0.0"
     project_name: str = "Database AI Agent"
 

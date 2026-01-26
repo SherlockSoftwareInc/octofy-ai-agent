@@ -127,10 +127,10 @@ def get_default_settings() -> AgentSettings:
         vector_config=VectorConfig(
             provider="milvus",
             host="localhost",
-            port="19530"
+            port="19630"
         ),
         app_meta=AppMeta(
-            app_name="SQL Agent",
+            app_name="Octofy AI Agent",
             version="1.0.0",
             project_name=app_settings.PROJECT_NAME
         )
@@ -205,7 +205,7 @@ def load_settings() -> AgentSettings:
             if not settings.vector_config.host:
                 settings.vector_config.host = "localhost"
             if not settings.vector_config.port:
-                settings.vector_config.port = "19530"
+                settings.vector_config.port = "19630"
                 
             return settings
     except Exception as e:

@@ -1,7 +1,7 @@
 import requests
 import json
 
-url = "http://localhost:5000/api/v1/generate-r"
+url = "http://localhost:8100/api/v1/generate-r"
 headers = {
     "Content-Type": "application/json",
     "X-API-Key": "dev-api-key-12345"

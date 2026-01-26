@@ -333,22 +333,22 @@ with open('values.xlsx', 'rb') as f:
     files = {'file': f}
     data = {'mode': 'append'}
     response = requests.post(
-        'http://localhost:5000/api/v1/admin/ingest-values',
+        'http://localhost:8100/api/v1/admin/ingest-values',
         files=files,
         data=data
     )
     print(response.json())
 
 # Get all values
-response = requests.get('http://localhost:5000/api/v1/admin/values')
+response = requests.get('http://localhost:8100/api/v1/admin/values')
 values = response.json()
 print(f"Total values: {len(values)}")
 
 # Delete specific value
-requests.delete('http://localhost:5000/api/v1/admin/values/1')
+requests.delete('http://localhost:8100/api/v1/admin/values/1')
 
 # Clear all values
-requests.post('http://localhost:5000/api/v1/admin/values/clear')
+requests.post('http://localhost:8100/api/v1/admin/values/clear')
 ```
 
 ### JavaScript/TypeScript Example

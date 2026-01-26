@@ -171,18 +171,18 @@ Beverages     | dbo        | Products   | Category
 ### API Usage
 ```bash
 # Upload
-curl -X POST http://localhost:5000/api/v1/admin/ingest-values \
+curl -X POST http://localhost:8100/api/v1/admin/ingest-values \
   -F "file=@values.xlsx" \
   -F "mode=append"
 
 # List
-curl http://localhost:5000/api/v1/admin/values
+curl http://localhost:8100/api/v1/admin/values
 
 # Delete
-curl -X DELETE http://localhost:5000/api/v1/admin/values/1
+curl -X DELETE http://localhost:8100/api/v1/admin/values/1
 
 # Clear all
-curl -X POST http://localhost:5000/api/v1/admin/values/clear
+curl -X POST http://localhost:8100/api/v1/admin/values/clear
 ```
 
 ## Testing Checklist
@@ -324,4 +324,4 @@ See `VALUE_INDEX_FEATURE.md` for:
 
 **Status:** ✅ **COMPLETE**
 
-All components of the Value Index feature have been implemented, tested, and integrated into the SQL Agent system.
+All components of the Value Index feature have been implemented, tested, and integrated into the Octofy AI Agent system.
