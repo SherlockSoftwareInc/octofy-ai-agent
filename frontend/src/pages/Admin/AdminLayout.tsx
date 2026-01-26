@@ -107,7 +107,7 @@ export const AdminLayout: FC<AdminLayoutProps> = ({ children, currentPage, onNav
 
                 <div className="p-4 border-t border-slate-800">
                     <div className="text-xs text-slate-500 text-center">
-                        SQL Agent v1.0
+                        Octofy AI Agent v1.0
                     </div>
                 </div>
             </aside>

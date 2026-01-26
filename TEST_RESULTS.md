@@ -1,7 +1,7 @@
 # API Key Authentication - Test Results
 
 ## Backend Server Status
-✅ **Backend is running** on `http://localhost:5000`
+✅ **Backend is running** on `http://localhost:8100`
 
 ## Test Results Summary
 
@@ -128,16 +128,16 @@ axios.interceptors.request.use(
 
 ```bash
 # Health check (no auth needed)
-curl http://localhost:5000/
+curl http://localhost:8100/
 
 # Discovery with auth
-curl -X POST http://localhost:5000/api/v1/discovery \
+curl -X POST http://localhost:8100/api/v1/discovery \
   -H "X-API-Key: ***REMOVED***" \
   -H "Content-Type: application/json" \
   -d '{"query": "show me all customers"}'
 
 # Admin endpoint with auth
-curl http://localhost:5000/api/v1/admin/schema/status \
+curl http://localhost:8100/api/v1/admin/schema/status \
   -H "X-API-Key: ***REMOVED***"
 ```
 

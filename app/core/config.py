@@ -9,7 +9,7 @@ class Settings(BaseSettings):
     # Vector DB (Milvus)
     VECTOR_DB_ENABLED: bool = True
     MILVUS_HOST: str = "localhost"
-    MILVUS_PORT: str = "19530"
+    MILVUS_PORT: str = "19630"
     MILVUS_COLLECTION_SCHEMA: str = "schema_index"
     MILVUS_COLLECTION_FEWSHOT: str = "fewshot_index"  # Legacy alias for knowledge_base
     MILVUS_COLLECTION_KNOWLEDGE_BASE: str = "knowledge_base"  # Renamed from fewshot_index

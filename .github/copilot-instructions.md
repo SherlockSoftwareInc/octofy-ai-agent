@@ -1,4 +1,4 @@
-# SQL Agent - AI Coding Instructions
+# Octofy AI Agent - AI Coding Instructions
 
 ## Project Architecture
 

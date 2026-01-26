@@ -11,7 +11,7 @@ if [ ! -f .env ]; then
     echo "警告: 未发现 .env 文件，请确保环境变量配置正确。"
 fi
 
-# 2. 仅针对 backend 和 frontend 进行构建和启动
+# 2. 仅针对 octofyagent-backend 和 octofyagent-frontend 进行构建和启动
 # --build 会检测代码变更并重新生成镜像
 # 数据库容器 (milvus, etcd, minio) 会保持运行，不会被重置
 docker compose up -d --build backend frontend
@@ -20,4 +20,4 @@ docker compose up -d --build backend frontend
 echo -e "${GREEN}>>> 正在清理临时镜像...${NC}"
 docker image prune -f
 
-echo -e "${GREEN}>>> 更新完成！SQL Agent 业务已重启，数据库连接保持中。${NC}"
+echo -e "${GREEN}>>> 更新完成！Octofy AI Agent 业务已重启，数据库连接保持中。${NC}"
