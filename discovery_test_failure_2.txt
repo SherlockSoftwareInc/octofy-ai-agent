@@ -1,0 +1,79 @@
+============================= test session starts =============================
+platform win32 -- Python 3.12.8, pytest-7.4.3, pluggy-1.6.0 -- C:\Users\sherl\AppData\Local\Programs\Python\Python312\python.exe
+cachedir: .pytest_cache
+rootdir: C:\Users\sherl\source\repos\sql-agent2
+plugins: anyio-3.7.1, devtools-0.12.2, asyncio-0.21.1, mock-3.12.0
+asyncio: mode=Mode.STRICT
+collecting ... collected 1 item
+
+tests/test_generation_service_discovery.py::test_retry_with_discovery FAILED [100%]
+
+================================== FAILURES ===================================
+__________________________ test_retry_with_discovery __________________________
+
+mock_llm_service = <MagicMock name='llm_service' id='2060161906496'>
+mock_discovery_service = <MagicMock name='perform_discovery' id='2060161902368'>
+initial_context = DiscoveryContext(relevant_tables=[TableSchema(schema_name='dbo', table_name='Customers', description='Customers table'...n', columns=[ColumnInfo(name='NewColumn', data_type='int', description=None)])], similar_queries=[], glossary_terms={})
+
+    def test_retry_with_discovery(mock_llm_service, mock_discovery_service, initial_context):
+        request = GenerateSQLRequest(query="Find missing products", context=initial_context)
+    
+        # Mock LLM to fail first with missing column, then succeed
+        mock_llm_service.generate_sql_with_context.side_effect = [
+            "SELECT dbo.Customers.MissingColumn FROM dbo.Customers",  # Invalid (qualified)
+            "SELECT NewColumn FROM dbo.NewTable"        # Valid after discovery
+        ]
+    
+        # Mock system prompt
+        mock_llm_service._build_system_prompt.return_value = "System Prompt"
+    
+        # Mock discovery to return a new table for the missing column
+        new_table = TableSchema(
+            schema_name="dbo",
+            table_name="NewTable",
+            columns=[ColumnInfo(name="NewColumn", data_type="int")],
+            description="New Table Description"
+        )
+    
+        mock_discovery_service.return_value = DiscoveryResponse(
+            query="dbo.Customers.MissingColumn",
+            reasoning="Found it",
+            context=DiscoveryContext(relevant_tables=[new_table], similar_queries=[])
+        )
+    
+        # Execute
+        # The validation will now catch dbo.Customers.MissingColumn because it has dots.
+    
+        response = generate_sql_for_request(request)
+    
+        # Verify
+        assert response.sql == "SELECT NewColumn FROM dbo.NewTable"
+    
+        # Verify discovery was called for "MissingColumn"
+        mock_discovery_service.assert_called()
+        call_args = mock_discovery_service.call_args[0][0]
+        assert call_args.query == "dbo.Customers.MissingColumn"
+    
+        # Verify context provided to LLM in second attempt contained the new table info
+        second_call_context = mock_llm_service.generate_sql_with_context.call_args_list[1][0][1]
+>       assert "Found some additional tables" in second_call_context
+E       AssertionError: assert 'Found some additional tables' in 'System Prompt\n\nAttempt 1 failed validation:\nGenerated SQL: SELECT dbo.Customers.MissingColumn FROM dbo.Customers\nError: Query building failed: The following column(s) were not found in the database schema: dbo.Customers.MissingColumn. Please check the column names and try again.\n\nI found some additional tables that might contain the columns you are looking for:\n- Table: dbo.NewTable - New Table Description\n\nPlease try again. Fix the error by using valid columns from the schema provided.'
+
+tests\test_generation_service_discovery.py:73: AssertionError
+============================== warnings summary ===============================
+..\..\..\AppData\Local\Programs\Python\Python312\Lib\site-packages\pydantic\_internal\_config.py:272
+  C:\Users\sherl\AppData\Local\Programs\Python\Python312\Lib\site-packages\pydantic\_internal\_config.py:272: PydanticDeprecatedSince20: Support for class-based `config` is deprecated, use ConfigDict instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.6/migration/
+    warnings.warn(DEPRECATION_MESSAGE, DeprecationWarning)
+
+..\..\..\AppData\Local\Programs\Python\Python312\Lib\site-packages\pymilvus\client\__init__.py:6
+  C:\Users\sherl\AppData\Local\Programs\Python\Python312\Lib\site-packages\pymilvus\client\__init__.py:6: DeprecationWarning: pkg_resources is deprecated as an API. See https://setuptools.pypa.io/en/latest/pkg_resources.html
+    from pkg_resources import DistributionNotFound, get_distribution
+
+..\..\..\AppData\Local\Programs\Python\Python312\Lib\site-packages\environs\__init__.py:58
+  C:\Users\sherl\AppData\Local\Programs\Python\Python312\Lib\site-packages\environs\__init__.py:58: DeprecationWarning: The '__version_info__' attribute is deprecated and will be removed in in a future version. Use feature detection or 'packaging.Version(importlib.metadata.version("marshmallow")).release' instead.
+    _SUPPORTS_LOAD_DEFAULT = ma.__version_info__ >= (3, 13)
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ===========================
+FAILED tests/test_generation_service_discovery.py::test_retry_with_discovery
+======================== 1 failed, 3 warnings in 4.33s ========================

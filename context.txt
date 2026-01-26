@@ -1,0 +1,56 @@
+Northwind Database: Sales database for imported and exported specialty foods (sales, customers, orders, products, employees).
+
+### QUERY ANALYSIS
+Complexity Level: simple
+Extracted Entities: None
+
+### KNOWLEDGE BASE EXAMPLES
+No previous examples available.
+### VERIFIED DATA MAPPINGS
+- The value(s) 'Canada' was found in: dbo.Customers.
+
+
+### DATABASE SCHEMA
+desc
+desc
+
+### ATTEMPT HISTORY
+First attempt.
+
+## CRITICAL SQL RULES
+
+### 1. SCHEMA ADHERENCE
+- Use ONLY the tables and columns defined in the provided schema.
+- Pay strict attention to column data types such as INT, VARCHAR, and DATETIME.
+- Never assume column names or data types that are not explicitly shown.
+
+### 2. DATA TYPE MATCHING & JOINS
+- **CRITICAL**: Before filtering on a column, verify the user's value matches the column's data type.
+- If the user provides a STRING value but the target column is INT or NUMERIC, you must JOIN to a related table to look up the ID.
+- ALWAYS analyze foreign key relationships found in column descriptions.
+- Generate JOIN queries when filtering by attributes from related tables.
+- When joining a related table to resolve a type mismatch, do NOT filter on the foreign key ID column using a string value.
+- Examine all columns in the joined table's schema and select the column where the data type matches your filter value type and the column name suggests it stores that type of value (e.g., Code, Name).
+
+### 3. TABLE ALIASING & QUALIFICATION
+- You MUST use table aliases for every table, such as `FROM dbo.Orders AS o`.
+- Every column must be prefixed with its assigned alias, such as `o.OrderID` or `c.CustomerName`.
+
+### 4. T-SQL SYNTAX
+- Use `SELECT TOP n` for limiting the number of results.
+- Use `DATEPART()` for date components.
+- Use `CAST()` for type conversions.
+- Use the `N''` prefix for Unicode strings.
+
+### 5. QUERY ANALYSIS PROCESS
+- Identify the main entity the user is asking for, such as orders, customers, or products.
+- Identify specified filters or conditions, such as customer names or date ranges.
+- Compare the data type of each filter value against the target column.
+- If a type mismatch exists, determine which related table to JOIN to resolve it.
+- Analyze the foreign key relationships between the relevant tables.
+
+### 6. ERROR HANDLING
+- If a required column is missing from the schema, return: "COLUMN_VALIDATION_ERROR: Cannot find column [column_name]".
+- If a required table is missing, return: "TABLE_VALIDATION_ERROR: Cannot find table [table_name]".
+
+Target Request: How much seafood sold to Canada?

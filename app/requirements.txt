@@ -1,0 +1,7 @@
+# This file is required for Docker build context in app/
+# It simply includes the main requirements.txt from the project root.
+# You may symlink or copy as needed for Docker builds.
+
+# If you update requirements.txt in the root, update this file too.
+
+-r ../requirements.txt

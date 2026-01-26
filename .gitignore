@@ -1,0 +1,94 @@
+# Ignore the virtual environment
+### --- Python Core --- ###
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Distribution / packaging
+bin/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+### --- Virtual Environments --- ###
+# Standard env folders
+venv/
+.venv/
+env/
+myenv/
+ENV/
+env.bak/
+venv.bak/
+
+### --- AI & Data (Volumes) --- ###
+# Local databases and vector stores
+*.db
+*.sqlite3
+data/
+# If you use Milvus or other vector DBs with local persistence
+volumes/
+volumes/milvus/
+milvus_data/
+# Large datasets
+*.csv
+*.jsonl
+*.parquet
+
+### --- Secrets & Config --- ###
+# Environment variables (NEVER commit these)
+.env
+.flaskenv
+secrets.json
+myenv/
+config/
+
+### --- Docker --- ###
+# Ignore local data persistence for Docker containers
+.docker_data/
+db_data/
+
+### --- Logs & Debugging --- ###
+*.log
+pip-log.txt
+pip-delete-this-directory.txt
+
+### --- Unit Testing --- ###
+.pytest_cache/
+.tox/
+.nox/
+.coverage
+.cache
+htmlcov/
+
+### --- IDEs & Editors --- ###
+# Visual Studio Code
+.vscode/
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+
+# PyCharm / IntelliJ
+.idea/
+
+# System files
+.DS_Store
+Thumbs.db
+
+### --- Custom Entries --- ###
+context_logs/
+deploy.tar.gz
+temp_files/
