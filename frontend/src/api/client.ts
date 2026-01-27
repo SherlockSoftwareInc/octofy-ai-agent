@@ -765,6 +765,16 @@ export const api = {
             });
             return response.data;
         },
+        getEnvApiKey: async (): Promise<EnvApiKeyResponse> => {
+            const response = await axios.get(`${API_BASE_URL}/admin/api-key`);
+            return response.data;
+        },
+        setEnvApiKey: async (apiKey: string): Promise<EnvApiKeyResponse> => {
+            const response = await axios.post(`${API_BASE_URL}/admin/api-key`, {
+                api_key: apiKey
+            });
+            return response.data;
+        },
         backupVectorStore: async () => {
             const response = await axios.get(`${API_BASE_URL}/admin/vector-store/backup`, {
                 responseType: 'blob'
@@ -903,6 +913,11 @@ export interface ConnectionTestResponse {
     success: boolean;
     message: string;
     connection_string_masked?: string;
+}
+
+export interface EnvApiKeyResponse {
+    api_key?: string | null;
+    exists: boolean;
 }
 
 export interface VerifySettingsResponse {

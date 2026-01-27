@@ -178,6 +178,13 @@ class FetchModelsRequest(BaseModel):
 class FetchModelsResponse(BaseModel):
     models: List[Dict[str, str]]
 
+class EnvApiKeyResponse(BaseModel):
+    api_key: Optional[str] = None
+    exists: bool
+
+class EnvApiKeyUpdateRequest(BaseModel):
+    api_key: str
+
 class EmbeddingConfig(BaseModel):
     provider: str = "openai"  # openai, azure, huggingface, openai_compatible
     base_url: Optional[str] = None

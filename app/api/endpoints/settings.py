@@ -5,7 +5,7 @@ from fastapi import APIRouter, HTTPException, Depends
 from sqlalchemy import create_engine, text
 from app.models.schemas import (
     AgentSettings, ConnectionTestRequest, ConnectionTestResponse,
-    FetchModelsRequest, FetchModelsResponse
+    FetchModelsRequest, FetchModelsResponse, EnvApiKeyResponse, EnvApiKeyUpdateRequest
 )
 from app.services.settings_service import (
     load_settings, save_settings, get_settings_for_display,
@@ -16,8 +16,45 @@ from app.services.vector_store import refresh_vector_store
 from app.services.llm_service import fetch_available_models
 from app.core.auth import verify_api_key
 import urllib.parse
+import os
+from dotenv import dotenv_values
+from typing import Optional
+import re
 
 router = APIRouter()
+
+def _get_env_path() -> str:
+    return os.path.abspath(os.path.join(os.path.dirname(__file__), "../../.env"))
+
+def _read_env_api_key() -> Optional[str]:
+    env_path = _get_env_path()
+    if not os.path.exists(env_path):
+        return None
+    api_key = dotenv_values(env_path).get("API_KEY")
+    if api_key:
+        return str(api_key)
+    return None
+
+def _write_env_api_key(api_key: str) -> None:
+    env_path = _get_env_path()
+    os.makedirs(os.path.dirname(env_path), exist_ok=True)
+    lines = []
+    if os.path.exists(env_path):
+        with open(env_path, "r", encoding="utf-8") as handle:
+            lines = handle.readlines()
+    updated_line = f"API_KEY={api_key}\n"
+    found = False
+    for index, line in enumerate(lines):
+        if re.match(r"^\s*API_KEY\s*=", line):
+            lines[index] = updated_line
+            found = True
+            break
+    if not found:
+        if lines and not lines[-1].endswith("\n"):
+            lines[-1] = lines[-1] + "\n"
+        lines.append(updated_line)
+    with open(env_path, "w", encoding="utf-8") as handle:
+        handle.writelines(lines)
 
 @router.get("/settings", response_model=AgentSettings)
 def get_settings(api_key: str = Depends(verify_api_key)):
@@ -27,6 +64,24 @@ def get_settings(api_key: str = Depends(verify_api_key)):
     except Exception as e:
         print(f"Error loading settings: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to load settings: {str(e)}")
+
+@router.get("/api-key", response_model=EnvApiKeyResponse)
+def get_env_api_key():
+    api_key = _read_env_api_key()
+    return EnvApiKeyResponse(api_key=api_key, exists=bool(api_key))
+
+@router.post("/api-key", response_model=EnvApiKeyResponse)
+def set_env_api_key(request: EnvApiKeyUpdateRequest):
+    api_key = request.api_key.strip()
+    if not api_key:
+        raise HTTPException(status_code=400, detail="API key cannot be empty.")
+
+    current = _read_env_api_key()
+    if current:
+        raise HTTPException(status_code=409, detail="API key is already set in .env.")
+
+    _write_env_api_key(api_key)
+    return EnvApiKeyResponse(api_key=api_key, exists=True)
 
 @router.put("/settings", response_model=AgentSettings)
 def update_settings(settings: AgentSettings, api_key: str = Depends(verify_api_key)):
