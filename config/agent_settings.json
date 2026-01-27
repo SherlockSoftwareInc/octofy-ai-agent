@@ -11,7 +11,7 @@
       "shipping"
     ],
     "db_type": "mssql",
-    "server": "host.docker.internal",
+    "server": "localhost",
     "database_name": "northwind",
     "connection_string_encrypted": "gAAAAABpeQlBrzvl-fcP4_09y9b_l2PP7P52HWMoqMgJi3safP2A38DFhUdummB1Xtc6fxmMEgYzUEIIjhOV_6bDkWuWCmniRC6GI7Y_fcuMIjICfK0xi3uO-tmn_XkwHu6uvRiQeubEQzq2XssQOWqDScKHMynGaC83cqyWJrU6BoCcxCAB2OvqAc7BWxfbbVelMX2XUGXoPr27snFldAT7h_PYVNelBthUP0447IlVKcfdqJJh9FXa3J_9_gH6H8mo5cOY-dNQgjTqNqzqjPXwxsA8hzQylg==",
     "driver": "ODBC Driver 17 for SQL Server",
