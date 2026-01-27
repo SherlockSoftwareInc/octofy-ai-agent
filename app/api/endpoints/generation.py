@@ -123,9 +123,6 @@ async def execute_python_endpoint(request: ExecutePythonRequest, api_key: str = 
     Executes Python code and returns the output and any results.
     automatically appends a chart recommendation if a DataFrame is produced.
     """
-    # Variable to store debug script for response (declare outside try-catch)
-    debug_script_content = None
-    
     try:
         from app.services.settings_service import load_settings, decrypt_string
         
@@ -152,22 +149,6 @@ async def execute_python_endpoint(request: ExecutePythonRequest, api_key: str = 
                     # Inject as a variable in the local scope instead of string replacement 
                     # This is safer and cleaner than string concatenation
                     exec_context['DB_CONNECTION_STRING'] = decrypted_conn_str
-                    
-                    # DEBUG: Save the complete script with connection string to a file for manual testing
-                    try:
-                        debug_script_content = f"""# DEBUG: Auto-generated test script with connection string
-# This file was auto-generated for debugging purposes
-
-DB_CONNECTION_STRING = '''{decrypted_conn_str}'''
-
-{request.code}
-"""
-                        debug_file_path = "debug_python_execution.py"
-                        with open(debug_file_path, 'w', encoding='utf-8') as f:
-                            f.write(debug_script_content)
-                        logger.info(f"DEBUG: Saved execution script to {debug_file_path}")
-                    except Exception as debug_err:
-                        logger.warning(f"Failed to save debug script: {debug_err}")
                         
             except Exception as e:
                 logger.error(f"Failed to decrypt python connection string: {e}")
@@ -219,19 +200,17 @@ DB_CONNECTION_STRING = '''{decrypted_conn_str}'''
             error=result["error"],
             results=result.get("results"),
             recommendation=recommendation,
-            execution_time=0.0, # TODO: Measure time
-            debug_script=debug_script_content
+            execution_time=0.0  # TODO: Measure time
         )
     except Exception as e:
         logger.error(f"Error in execute_python_endpoint: {str(e)}")
         logger.error(traceback.format_exc())
-        # Return error response with debug_script if available
+        # Return error response
         return ExecutePythonResponse(
             success=False,
             output=None,
             error=str(e),
             results=None,
             recommendation=None,
-            execution_time=0.0,
-            debug_script=debug_script_content
+            execution_time=0.0
         )
