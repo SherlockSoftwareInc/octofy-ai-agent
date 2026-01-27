@@ -115,18 +115,59 @@ async def generate_python_endpoint(request: GenerateSQLRequest, api_key: str = D
 from app.models.schemas import ExecutePythonRequest, ExecutePythonResponse
 from app.services.execution_service import execute_python_code
 
+from app.services.visualization_service import VisualizationService
+
 @router.post("/execute-python", response_model=ExecutePythonResponse)
 async def execute_python_endpoint(request: ExecutePythonRequest, api_key: str = Depends(verify_api_key)):
     """
     Executes Python code and returns the output and any results.
+    automatically appends a chart recommendation if a DataFrame is produced.
     """
     try:
         result = execute_python_code(request.code, request.context)
+        
+        if result["success"] and result.get("results"):
+            # New Step: Visualization Consultant
+            recommendation = None
+
+            # 1. Identify valid dataframes
+            dataframes = [r for r in result["results"] if r["type"] == "dataframe"]
+            
+            if dataframes:
+                target_df_data = None
+                
+                # Check if 'final_result_df' exists
+                final_df = next((d for d in dataframes if d["name"] == "final_result_df"), None)
+                if final_df:
+                    target_df_data = final_df["data"]
+                else:
+                    # Fallback to first dataframe
+                    target_df_data = dataframes[0]["data"]
+
+                try:
+                    import pandas as pd
+
+                    if isinstance(target_df_data, dict) and "data" in target_df_data:
+                        rows = target_df_data.get("data", [])
+                        columns = target_df_data.get("columns")
+                        df = pd.DataFrame(rows)
+                        if columns:
+                            df = df[[col for col in columns if col in df.columns]]
+                    else:
+                        df = pd.DataFrame(target_df_data)
+
+                    viz_service = VisualizationService()
+                    recommendation = viz_service.get_chart_recommendation(df, request.code)
+                except Exception as viz_err:
+                    logger.error(f"Visualization recommendation failed: {viz_err}")
+
+
         return ExecutePythonResponse(
             success=result["success"],
             output=result["output"],
             error=result["error"],
             results=result.get("results"),
+            recommendation=recommendation,
             execution_time=0.0 # TODO: Measure time
         )
     except Exception as e:

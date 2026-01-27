@@ -89,12 +89,36 @@ export interface SearchObject {
     type?: string | null;
 }
 
+
+export interface ChartRecommendation {
+    chart_type: 'bar' | 'line' | 'pie' | 'scatter' | 'kpi' | 'none';
+    x_axis?: string;
+    y_axis?: string[];
+    title?: string;
+    explanation?: string;
+    colors?: string[];
+}
+
 export interface ExecutePythonResponse {
     success: boolean;
-    output?: string;
+    output?: unknown;
     error?: string;
-    results?: any[]; // We can refine this later if needed
+    results?: ExecutePythonResult[];
+    recommendation?: ChartRecommendation;
     execution_time: number;
+}
+
+export interface StructuredTableData {
+    columns: string[];
+    data: Array<Record<string, unknown>>;
+}
+
+export interface ExecutePythonResult {
+    name: string;
+    type: 'dataframe' | string;
+    data: StructuredTableData | Array<Record<string, unknown>>;
+    rows: number;
+    columns: string[];
 }
 
 export interface SchemaMarkdownResponse {

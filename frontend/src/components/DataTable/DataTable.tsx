@@ -25,6 +25,25 @@ export const DataTable: React.FC<DataTableProps> = ({
     const [currentPage, setCurrentPage] = useState(0);
     const [sortConfig, setSortConfig] = useState<SortConfig>({ key: null, direction: null });
 
+    const columnAlignment = useMemo(() => {
+        return columns.reduce<Record<string, 'left' | 'right'>>((acc, col) => {
+            const values = data.map((row) => row?.[col]).filter((value) => value !== null && value !== undefined);
+            const isNumeric = values.length > 0 && values.every((value) => typeof value === 'number' && !Number.isNaN(value));
+            acc[col] = isNumeric ? 'right' : 'left';
+            return acc;
+        }, {});
+    }, [columns, data]);
+
+    const formatValue = (value: unknown, align: 'left' | 'right') => {
+        if (typeof value === 'number' && align === 'right' && Number.isFinite(value)) {
+            return value.toFixed(4);
+        }
+        if (value !== null && value !== undefined) {
+            return typeof value === 'object' ? JSON.stringify(value) : String(value);
+        }
+        return null;
+    };
+
     const handleSort = (key: string) => {
         let direction: SortDirection = 'asc';
         if (sortConfig.key === key && sortConfig.direction === 'asc') {
@@ -82,17 +101,17 @@ export const DataTable: React.FC<DataTableProps> = ({
                 </div>
             )}
 
-            <div className="overflow-x-auto">
-                <table className="w-full text-xs text-left text-slate-300">
+            <div className="overflow-x-auto border border-[#444] rounded-lg">
+                <table className="w-full text-xs text-slate-300 border-collapse">
                     <thead className="text-xs uppercase bg-slate-800 text-slate-400">
                         <tr>
                             {columns.map((col) => (
                                 <th
                                     key={col}
-                                    className="px-4 py-3 whitespace-nowrap cursor-pointer hover:bg-slate-700/50 transition-colors group select-none"
+                                    className={`px-4 py-3 whitespace-nowrap cursor-pointer hover:bg-slate-700/50 transition-colors group select-none border border-[#444] ${columnAlignment[col] === 'right' ? 'text-right' : 'text-left'}`}
                                     onClick={() => handleSort(col)}
                                 >
-                                    <div className="flex items-center gap-2">
+                                    <div className={`flex items-center gap-2 ${columnAlignment[col] === 'right' ? 'justify-end' : 'justify-start'}`}>
                                         <span>{col}</span>
                                         <span className="text-slate-600 group-hover:text-slate-400">
                                             {sortConfig.key === col ? (
@@ -110,16 +129,22 @@ export const DataTable: React.FC<DataTableProps> = ({
                     </thead>
                     <tbody>
                         {paginatedData.map((row, rIdx) => (
-                            <tr key={rIdx} className="bg-slate-900/50 border-b border-slate-800 last:border-0 hover:bg-slate-800/50 transition-colors">
-                                {columns.map((col) => (
-                                    <td key={col} className="px-4 py-2 whitespace-nowrap border-r border-slate-800/30 last:border-r-0">
-                                        {row[col] !== null && row[col] !== undefined ? (
-                                            typeof row[col] === 'object' ? JSON.stringify(row[col]) : String(row[col])
+                            <tr key={rIdx} className="bg-slate-900/50 hover:bg-slate-800/60 transition-colors">
+                                {columns.map((col) => {
+                                    const formattedValue = formatValue(row[col], columnAlignment[col]);
+                                    return (
+                                    <td
+                                        key={col}
+                                        className={`px-4 py-2 whitespace-nowrap border border-[#444] ${columnAlignment[col] === 'right' ? 'text-right' : 'text-left'}`}
+                                    >
+                                        {formattedValue !== null ? (
+                                            formattedValue
                                         ) : (
                                             <span className="text-slate-600 italic">null</span>
                                         )}
                                     </td>
-                                ))}
+                                    );
+                                })}
                             </tr>
                         ))}
                     </tbody>

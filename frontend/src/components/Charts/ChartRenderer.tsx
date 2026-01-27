@@ -10,9 +10,10 @@ interface ChartRendererProps {
     suggestion: ChartSuggestion;
 }
 
-const COLORS = ['#10b981', '#3b82f6', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899'];
+const DEFAULT_COLORS = ['#10b981', '#3b82f6', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899'];
 
 export const ChartRenderer: React.FC<ChartRendererProps> = ({ data, suggestion }) => {
+    const colors = suggestion.colors && suggestion.colors.length > 0 ? suggestion.colors : DEFAULT_COLORS;
     if (suggestion.type === 'none' || !suggestion.xAxisKey || !suggestion.seriesKeys) {
         return <div className="text-slate-500 text-xs italic p-4">Visualization not available</div>;
     }
@@ -44,9 +45,9 @@ export const ChartRenderer: React.FC<ChartRendererProps> = ({ data, suggestion }
                                 key={key}
                                 type="monotone"
                                 dataKey={key}
-                                stroke={COLORS[index % COLORS.length]}
+                                stroke={colors[index % colors.length]}
                                 strokeWidth={2}
-                                dot={{ r: 3, fill: COLORS[index % COLORS.length] }}
+                                dot={{ r: 3, fill: colors[index % colors.length] }}
                                 activeDot={{ r: 5 }}
                             />
                         ))}
@@ -74,7 +75,7 @@ export const ChartRenderer: React.FC<ChartRendererProps> = ({ data, suggestion }
                             <Bar
                                 key={key}
                                 dataKey={key}
-                                fill={COLORS[index % COLORS.length]}
+                                fill={colors[index % colors.length]}
                                 radius={[4, 4, 0, 0]}
                             />
                         ))}

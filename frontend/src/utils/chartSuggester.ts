@@ -4,6 +4,7 @@ export interface ChartSuggestion {
     xAxisKey?: string;
     seriesKeys?: string[];
     reason?: string;
+    colors?: string[];
 }
 
 export const suggestChart = (data: any[]): ChartSuggestion => {
