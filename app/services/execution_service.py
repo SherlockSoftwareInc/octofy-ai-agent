@@ -8,6 +8,68 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+# Thresholds for data visualization
+MAX_ROWS = 200
+MAX_COLS = 15
+
+def get_chart_category(df: pd.DataFrame) -> tuple:
+    """
+    Classifies a DataFrame to determine appropriate chart types.
+    
+    Args:
+        df: The pandas DataFrame to classify
+        
+    Returns:
+        tuple: (category, allowed_charts, message)
+            - category: "2d_data", "3d_data", "no_chart", or "too_much_data"
+            - allowed_charts: List of chart type strings
+            - message: User-friendly explanation (empty if charts are available)
+    """
+    rows, cols = df.shape
+    
+    # Threshold checks
+    if rows > MAX_ROWS or cols > MAX_COLS:
+        return (
+            "too_much_data",
+            [],
+            "This dataset is too large to visualize effectively. Please filter or aggregate the data."
+        )
+    
+    # Analyze column types
+    text_columns = df.select_dtypes(include=['object', 'string']).columns.tolist()
+    numeric_columns = df.select_dtypes(include=['number']).columns.tolist()
+    
+    # Rule: Multiple text columns = No Chart
+    if len(text_columns) > 1:
+        return (
+            "no_chart",
+            [],
+            "This dataset is best viewed as a table."
+        )
+    
+    # Rule: 2D Data (1 Category, 1 Number)
+    if len(text_columns) == 1 and len(numeric_columns) == 1:
+        return (
+            "2d_data",
+            ["bar", "line", "column", "pie", "treemap", "funnel"],
+            ""
+        )
+    
+    # Rule: 3D Data (1 Category, Multiple Numbers)
+    if len(text_columns) == 1 and len(numeric_columns) > 1:
+        return (
+            "3d_data",
+            ["clustered column", "stacked column", "100% stacked bar", "line"],
+            ""
+        )
+    
+    # Default: No chart for other combinations
+    return (
+        "no_chart",
+        [],
+        "This dataset is best viewed as a table."
+    )
+
 def execute_python_code(code: str, context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """
     Executes Python code and captures stdout and any resulting DataFrame.
@@ -96,7 +158,15 @@ def execute_python_code(code: str, context: Optional[Dict[str, Any]] = None) -> 
                     "data": rows
                 }
 
-                # Generate Chart Metadata
+                # Generate Visualization Configuration using classification engine
+                category, allowed_charts, message = get_chart_category(df_head)
+                viz_config = {
+                    "category": category,
+                    "allowed_charts": allowed_charts,
+                    "message": message
+                }
+
+                # Generate chart_metadata for backward compatibility with ResultChart component
                 chart_metadata = {
                     "type": "none",
                     "x_axis": None,
@@ -104,34 +174,18 @@ def execute_python_code(code: str, context: Optional[Dict[str, Any]] = None) -> 
                     "is_stacked": False
                 }
                 
-                # Simple heuristic for chart suggestion
-                try:
-                    num_cols = df_head.select_dtypes(include=['number']).columns.tolist()
-                    cat_cols = df_head.select_dtypes(include=['object', 'category', 'string']).columns.tolist()
-                    
-                    # Scenario A: 1 Categorical + 1 or more Numerical -> Bar Chart
-                    if len(cat_cols) >= 1 and len(num_cols) >= 1:
-                        chart_metadata["type"] = "bar"
-                        chart_metadata["x_axis"] = cat_cols[0] # Pick first categorical as X
-                        chart_metadata["y_axes"] = num_cols    # All numericals as Y
+                # Only generate chart_metadata if data is chartable
+                if category in ["2d_data", "3d_data"]:
+                    try:
+                        num_cols = df_head.select_dtypes(include=['number']).columns.tolist()
+                        cat_cols = df_head.select_dtypes(include=['object', 'category', 'string']).columns.tolist()
                         
-                        # If multiple numericals, we could stack or group. Default to not stacked for now unless specific logic requested.
-                        # User requested: "Bar Chart: 1 categorical + 1 or more numerical"
-                        
-                    # Scenario B: 2 Categorical + 1 Numerical -> Stacked Bar
-                    # Note: To support this properly with Recharts without pivoting data on frontend, 
-                    # we often need the data to be 'wide'. 
-                    # If we keep it 'long' (Cat1, Cat2, Val), we need custom pivoting.
-                    # For this implementation, we will stick to identifying the potential.
-                    elif len(cat_cols) == 2 and len(num_cols) == 1:
-                        chart_metadata["type"] = "stacked-bar"
-                        chart_metadata["x_axis"] = cat_cols[0]
-                        # We mark it as stacked-bar but the frontend might need to handle the grouping
-                        chart_metadata["y_axes"] = num_cols
-                        chart_metadata["is_stacked"] = True
-                        
-                except Exception as chart_err:
-                    logger.warning(f"Failed to generate chart metadata: {chart_err}")
+                        if len(cat_cols) >= 1 and len(num_cols) >= 1:
+                            chart_metadata["type"] = "bar"
+                            chart_metadata["x_axis"] = cat_cols[0]
+                            chart_metadata["y_axes"] = num_cols
+                    except Exception as chart_err:
+                        logger.warning(f"Failed to generate chart metadata: {chart_err}")
 
                 results.append({
                     "name": var_name,
@@ -139,6 +193,7 @@ def execute_python_code(code: str, context: Optional[Dict[str, Any]] = None) -> 
                     "data": structured_payload,
                     "rows": len(var_value),
                     "columns": columns,
+                    "viz_config": viz_config,
                     "chart_metadata": chart_metadata
                 })
 
@@ -172,27 +227,32 @@ def execute_python_code(code: str, context: Optional[Dict[str, Any]] = None) -> 
                         "data": rows
                     }
 
-                    # Generate Chart Metadata for fallback
+                    # Generate Visualization Configuration for fallback
+                    category, allowed_charts, message = get_chart_category(df_head)
+                    viz_config = {
+                        "category": category,
+                        "allowed_charts": allowed_charts,
+                        "message": message
+                    }
+
+                    # Generate chart_metadata for backward compatibility
                     chart_metadata = {
                         "type": "none",
                         "x_axis": None,
                         "y_axes": [],
                         "is_stacked": False
                     }
-                    try:
-                        num_cols = df_head.select_dtypes(include=['number']).columns.tolist()
-                        cat_cols = df_head.select_dtypes(include=['object', 'category', 'string']).columns.tolist()
-                        if len(cat_cols) >= 1 and len(num_cols) >= 1:
-                            chart_metadata["type"] = "bar"
-                            chart_metadata["x_axis"] = cat_cols[0]
-                            chart_metadata["y_axes"] = num_cols
-                        elif len(cat_cols) == 2 and len(num_cols) == 1:
-                            chart_metadata["type"] = "stacked-bar"
-                            chart_metadata["x_axis"] = cat_cols[0]
-                            chart_metadata["y_axes"] = num_cols
-                            chart_metadata["is_stacked"] = True
-                    except Exception:
-                        pass
+                    
+                    if category in ["2d_data", "3d_data"]:
+                        try:
+                            num_cols = df_head.select_dtypes(include=['number']).columns.tolist()
+                            cat_cols = df_head.select_dtypes(include=['object', 'category', 'string']).columns.tolist()
+                            if len(cat_cols) >= 1 and len(num_cols) >= 1:
+                                chart_metadata["type"] = "bar"
+                                chart_metadata["x_axis"] = cat_cols[0]
+                                chart_metadata["y_axes"] = num_cols
+                        except Exception:
+                            pass
 
                     results.append({
                         "name": "parsed_output_df", 
@@ -200,6 +260,7 @@ def execute_python_code(code: str, context: Optional[Dict[str, Any]] = None) -> 
                         "data": structured_payload,
                         "rows": len(df_parsed),
                         "columns": columns,
+                        "viz_config": viz_config,
                         "chart_metadata": chart_metadata
                     })
                     structured_output = structured_payload

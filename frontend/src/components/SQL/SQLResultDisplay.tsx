@@ -72,7 +72,34 @@ const ExecutionResultViewer: React.FC<{ results: ExecutePythonResult[]; recommen
                             </div>
                         </ResultsWrapper>
 
-                        {res.chart_metadata && (
+
+                        {/* Chart Section - Conditional based on viz_config */}
+                        {res.viz_config && (
+                            <>
+                                {res.viz_config.category === 'no_chart' || res.viz_config.category === 'too_much_data' ? (
+                                    <div className="mt-4 p-3 bg-slate-800/50 border border-slate-700 rounded-lg">
+                                        <div className="flex items-center gap-2 text-sm text-slate-300">
+                                            <svg className="w-4 h-4 text-amber-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                                            </svg>
+                                            <span>{res.viz_config.message}</span>
+                                        </div>
+                                    </div>
+                                ) : (
+                                    res.chart_metadata && (
+                                        <ResultsWrapper>
+                                            <ResultChart
+                                                data={res.normalized.rows}
+                                                metadata={res.chart_metadata}
+                                            />
+                                        </ResultsWrapper>
+                                    )
+                                )}
+                            </>
+                        )}
+
+                        {/* Fallback to old chart_metadata if viz_config not present */}
+                        {!res.viz_config && res.chart_metadata && (
                             <ResultsWrapper>
                                 <ResultChart
                                     data={res.normalized.rows}
