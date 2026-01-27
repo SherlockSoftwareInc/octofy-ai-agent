@@ -336,7 +336,7 @@ def search_data_objects(query: str) -> GenerateSQLResponse:
             )
             for result in schema_results:
                 entity = result.get('entity', result)
-                schema_name = entity.get('schema_name', 'dbo')
+                schema_name = entity.get('schema_name') or 'dbo'
                 table_name = entity.get('table_name', '')
                 table_type = normalize_table_type(entity.get('table_type'))
                 score = result.get('score', 999)
@@ -356,7 +356,7 @@ def search_data_objects(query: str) -> GenerateSQLResponse:
         value_results = vector_store.search_values(query, top_k=10)
         for result in value_results:
             entity = result.get('entity', result)
-            schema_name = entity.get('schema_name', 'dbo')
+            schema_name = entity.get('schema_name') or 'dbo'
             table_name = entity.get('table_name', '')
             score = result.get('score', 999)
             if table_name:

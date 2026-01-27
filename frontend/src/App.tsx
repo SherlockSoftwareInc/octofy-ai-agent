@@ -714,16 +714,35 @@ function App() {
                                 <div className="mt-2">
                                   {(() => {
                                     const apiObjects = message.sqlResult.objects;
+                                    const objectMatches = message.sqlResult?.explanation?.match(/\[([^\]]+)\]\.\[([^\]]+)\]/g);
+                                    const schemaByName = new Map<string, string>();
+                                    if (objectMatches) {
+                                      objectMatches.forEach((obj) => {
+                                        const match = obj.match(/\[([^\]]+)\]\.\[([^\]]+)\]/);
+                                        if (match?.[1] && match?.[2]) {
+                                          schemaByName.set(match[2], match[1]);
+                                        }
+                                      });
+                                    }
+
                                     const parsedObjects = apiObjects && apiObjects.length > 0
-                                      ? apiObjects.map((obj) => ({
-                                        key: `${obj.schema}.${obj.name}`,
-                                        schema: obj.schema,
-                                        name: obj.name,
-                                        type: obj.type ?? null
-                                      }))
+                                      ? apiObjects.map((obj) => {
+                                        const rawSchema = (obj as { schema?: string; schema_name?: string }).schema
+                                          ?? (obj as { schema?: string; schema_name?: string }).schema_name
+                                          ?? '';
+                                        const normalizedSchema = typeof rawSchema === 'string' ? rawSchema.trim() : '';
+                                        const normalizedName = typeof obj.name === 'string' ? obj.name.trim() : obj.name;
+                                        const fallbackSchema = schemaByName.get(obj.name) ?? 'dbo';
+                                        const schema = normalizedSchema || fallbackSchema;
+                                        return {
+                                          key: `${schema}.${normalizedName}`,
+                                          schema,
+                                          name: normalizedName,
+                                          type: obj.type ?? null
+                                        };
+                                      })
                                       : (() => {
                                         // Parse objects from explanation (format: "• [schema].[table]")
-                                        const objectMatches = message.sqlResult?.explanation?.match(/\[([^\]]+)\]\.\[([^\]]+)\]/g);
                                         if (!objectMatches) return [];
                                         return objectMatches.map((obj) => {
                                           const parsed = parseObjectName(obj);
