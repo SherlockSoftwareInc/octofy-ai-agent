@@ -92,9 +92,18 @@ interface SQLResultDisplayProps {
     sourceQuestion?: string;
     allUserMessages?: string[];
     queryType?: 'database' | 'r_code' | 'sas_code' | 'python_code' | 'general' | 'uncertain' | 'search';
+    executionResult?: ExecutePythonResponse;
+    onExecutionComplete?: (result: ExecutePythonResponse) => void;
 }
 
-export const SQLResultDisplay: React.FC<SQLResultDisplayProps> = ({ sql, sourceQuestion, allUserMessages = [], queryType }) => {
+export const SQLResultDisplay: React.FC<SQLResultDisplayProps> = ({
+    sql,
+    sourceQuestion,
+    allUserMessages = [],
+    queryType,
+    executionResult,
+    onExecutionComplete
+}) => {
     const [copied, setCopied] = useState(false);
     const [toast, setToast] = useState<{ message: string; type: ToastType } | null>(null);
     const [showDialog, setShowDialog] = useState(false);
@@ -104,7 +113,6 @@ export const SQLResultDisplay: React.FC<SQLResultDisplayProps> = ({ sql, sourceQ
     const [isLoadingFewShots, setIsLoadingFewShots] = useState(false);
     const [isSaving, setIsSaving] = useState(false);
     const [isRunning, setIsRunning] = useState(false);
-    const [executionResult, setExecutionResult] = useState<ExecutePythonResponse | null>(null);
 
 
 
@@ -218,10 +226,13 @@ export const SQLResultDisplay: React.FC<SQLResultDisplayProps> = ({ sql, sourceQ
     const handleRun = async () => {
         if (!sql) return;
         setIsRunning(true);
-        setExecutionResult(null);
         try {
             const result = await api.executePython(sql);
-            setExecutionResult(result);
+
+            // Call parent callback to persist the result
+            if (onExecutionComplete) {
+                onExecutionComplete(result);
+            }
 
             // Scroll the result container into view
             setTimeout(() => {

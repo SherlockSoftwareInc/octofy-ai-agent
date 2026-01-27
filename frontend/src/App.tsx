@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { Send, Loader2, Sparkles, LayoutDashboard, User, Bot, Square, Eye, X } from 'lucide-react';
 import { api } from './api/client';
-import type { GenerateSQLResponse, AgentStatus } from './api/client';
+import type { GenerateSQLResponse, AgentStatus, ExecutePythonResponse } from './api/client';
 import { SQLResultDisplay } from './components/SQL/SQLResultDisplay';
 import { AdminLayout } from './pages/Admin/AdminLayout';
 import { SchemaManager } from './pages/Admin/SchemaManager';
@@ -270,6 +270,17 @@ function App() {
         setIsLoading(false);
       }
     }
+  };
+
+  // Handle execution result updates
+  const handleExecutionComplete = (messageId: string, result: ExecutePythonResponse) => {
+    if (!activeConversationId) return;
+
+    const updatedMessages = chatHistory.map(msg =>
+      msg.id === messageId ? { ...msg, executionResult: result } : msg
+    );
+
+    updateConversation(activeConversationId, { messages: updatedMessages });
   };
 
   const parseObjectName = (rawObject: string) => {
@@ -848,6 +859,8 @@ function App() {
                                         .map(msg => msg.content)
                                       }
                                       queryType={message.queryType}
+                                      executionResult={message.executionResult}
+                                      onExecutionComplete={(result) => handleExecutionComplete(message.id, result)}
                                     />
                                   ) : (
                                     // Show explanation when no SQL was generated

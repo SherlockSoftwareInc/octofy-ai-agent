@@ -1,4 +1,4 @@
-import type { DiscoveryResponse, GenerateSQLResponse } from '../api/client';
+import type { DiscoveryResponse, GenerateSQLResponse, ExecutePythonResponse } from '../api/client';
 
 export interface ChatMessage {
   id: string;
@@ -10,6 +10,7 @@ export interface ChatMessage {
   queryType?: 'database' | 'general' | 'uncertain' | 'search' | 'r_code' | 'sas_code' | 'python_code';
   needsClarification?: boolean;
   sourceQuery?: string;
+  executionResult?: ExecutePythonResponse;
 }
 
 export interface Conversation {
