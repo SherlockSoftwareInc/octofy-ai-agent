@@ -120,13 +120,20 @@ export interface ChartMetadata {
     is_stacked: boolean;
 }
 
+export interface VizConfig {
+    category: '2d_data' | '3d_data' | 'no_chart' | 'too_much_data';
+    allowed_charts: string[];
+    message: string;
+}
+
 export interface ExecutePythonResult {
     name: string;
     type: 'dataframe' | string;
     data: StructuredTableData | Array<Record<string, unknown>>;
     rows: number;
     columns: string[];
-    chart_metadata?: ChartMetadata;
+    chart_metadata?: ChartMetadata; // Deprecated, keeping for backward compatibility
+    viz_config?: VizConfig;
 }
 
 export interface SchemaMarkdownResponse {
