@@ -872,7 +872,7 @@ Date Ranges: {', '.join(date_ranges) if date_ranges else 'None'}
       ```
 - **Data Retrieval:**
     - **REQUIRED**: Use `pd.read_sql()` or `pd.read_sql_query()` with the **raw DBAPI connection**.
-    - **CORRECT PATTERN**: Use `engine.raw_connection()` to get the underlying database connection:
+    - **MANDATORY PATTERN - USE THIS EXACT PATTERN**: 
       ```python
       conn = engine.raw_connection()
       try:
@@ -880,13 +880,21 @@ Date Ranges: {', '.join(date_ranges) if date_ranges else 'None'}
       finally:
           conn.close()
       ```
-    - **ALTERNATIVE PATTERN**: Use context managers (preferred):
+    - **CRITICAL - DO NOT USE CONTEXT MANAGERS**: 
+      * DO NOT use `with engine.raw_connection() as conn:` - this causes TypeError in some SQLAlchemy versions
+      * DO NOT use `with engine.connect() as conn:` - this will cause a TypeError
+      * DO NOT use `engine.connect()` at all
+      * DO NOT use `pd.read_sql_table()` or pass the engine directly to pd.read_sql()
+      * ALWAYS use the try/finally pattern shown above
+    - **For multiple queries**: Get connection once, use it for all queries, then close:
       ```python
-      with engine.raw_connection() as conn:
-          df = pd.read_sql("SELECT * FROM dbo.TableName", conn)
+      conn = engine.raw_connection()
+      try:
+          df1 = pd.read_sql("SELECT * FROM dbo.Table1", conn)
+          df2 = pd.read_sql("SELECT * FROM dbo.Table2", conn)
+      finally:
+          conn.close()
       ```
-    - **DO NOT** use `engine.connect()` - SQLAlchemy Connection objects don't have the cursor() method that pandas needs.
-    - **DO NOT** use `pd.read_sql_table()` or pass the engine directly to pd.read_sql().
     - **CRITICAL**: Use ONLY the tables and columns defined in the DATABASE SCHEMA.
     - Pay attention to the "VERIFIED DATA MAPPINGS" for correct string values.
 - **Data Manipulation:**
@@ -895,10 +903,11 @@ Date Ranges: {', '.join(date_ranges) if date_ranges else 'None'}
     - **FINAL OUTPUT**: The final result DataFrame MUST be assigned to a variable named `final_result_df`.
 - **Execution Flow:**
     1. Import libraries (`pandas`, `sqlalchemy`, etc.)
-    2. Create Engine/Connection using `DB_CONNECTION_STRING`.
-    3. Execute Query.
-    4. Process Data.
-    5. Assign result to `final_result_df`.
+    2. Create Engine using `DB_CONNECTION_STRING`.
+    3. Get raw connection using `engine.raw_connection()`.
+    4. Execute Query with `pd.read_sql()`.
+    5. Process Data.
+    6. Assign result to `final_result_df`.
     - **CRITICAL**: Do NOT wrap your code in a `def main():` function. Write top-level code so that variables (especially `final_result_df`) are preserved in the execution scope.
 - **Output:**
     - Do NOT use `print()` for data. The system reads `final_result_df` directly.
