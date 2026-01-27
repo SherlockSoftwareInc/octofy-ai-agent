@@ -13,6 +13,7 @@ import { Toast } from './components/Toast';
 import type { ToastType } from './components/Toast';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { Sidebar } from './components/Sidebar/Sidebar';
+import { ObjectTypeLabel } from './components/ObjectTypeLabel';
 import type { Conversation, ChatMessage } from './types/conversation';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -712,36 +713,57 @@ function App() {
                               {message.queryType === 'search' && message.sqlResult?.explanation && (
                                 <div className="mt-2">
                                   {(() => {
-                                    // Parse objects from explanation (format: "• [schema].[table]")
-                                    const objectMatches = message.sqlResult.explanation.match(/\[([^\]]+)\]\.\[([^\]]+)\]/g);
-                                    if (objectMatches && objectMatches.length > 0) {
-                                      const parsedObjects = objectMatches.map((obj) => parseObjectName(obj));
+                                    const apiObjects = message.sqlResult.objects;
+                                    const parsedObjects = apiObjects && apiObjects.length > 0
+                                      ? apiObjects.map((obj) => ({
+                                        key: `${obj.schema}.${obj.name}`,
+                                        schema: obj.schema,
+                                        name: obj.name,
+                                        type: obj.type ?? null
+                                      }))
+                                      : (() => {
+                                        // Parse objects from explanation (format: "• [schema].[table]")
+                                        const objectMatches = message.sqlResult?.explanation?.match(/\[([^\]]+)\]\.\[([^\]]+)\]/g);
+                                        if (!objectMatches) return [];
+                                        return objectMatches.map((obj) => {
+                                          const parsed = parseObjectName(obj);
+                                          const match = obj.match(/\[([^\]]+)\]\.\[([^\]]+)\]/);
+                                          return {
+                                            key: parsed.key,
+                                            schema: match?.[1] ?? parsed.key.split('.')[0],
+                                            name: match?.[2] ?? parsed.key.split('.').slice(1).join('.'),
+                                            type: null
+                                          };
+                                        });
+                                      })();
+
+                                    if (parsedObjects.length > 0) {
                                       return (
                                         <>
                                           <div className="flex items-center gap-2 mb-3 text-sm font-medium text-emerald-400">
                                             <div className="w-2 h-2 bg-emerald-500 rounded-full"></div>
-                                            The following {objectMatches.length} database object{objectMatches.length !== 1 ? 's' : ''} may store the data you are looking for.
+                                            The following {parsedObjects.length} database object{parsedObjects.length !== 1 ? 's' : ''} may store the data you are looking for.
                                           </div>
                                           <div className="space-y-2">
                                             {parsedObjects.map((obj, idx) => (
                                               <div
                                                 key={`${obj.key}-${idx}`}
-                                                className="flex items-center justify-between gap-3 rounded-lg border border-slate-800 bg-slate-900/40 px-3 py-2"
+                                                className="grid grid-cols-[auto,auto,1fr] items-center gap-3 rounded-lg border border-slate-800 bg-slate-900/40 px-3 py-2"
                                               >
-                                                <div className="flex items-center gap-3 text-sm text-emerald-200">
-                                                  <input
-                                                    type="checkbox"
-                                                    checked={selectedObjects.includes(obj.key)}
-                                                    onChange={() => toggleSelectedObject(obj.key)}
-                                                    className="h-4 w-4 rounded border-slate-600 bg-slate-800 text-emerald-500 focus:ring-emerald-500"
-                                                    aria-label={`Select ${obj.key}`}
-                                                  />
-                                                  <span className="font-mono">{obj.label}</span>
+                                                <input
+                                                  type="checkbox"
+                                                  checked={selectedObjects.includes(obj.key)}
+                                                  onChange={() => toggleSelectedObject(obj.key)}
+                                                  className="h-4 w-4 rounded border-slate-600 bg-slate-800 text-emerald-500 focus:ring-emerald-500"
+                                                  aria-label={`Select ${obj.key}`}
+                                                />
+                                                <ObjectTypeLabel type={obj.type} />
+                                                <div className="flex items-center gap-2 text-sm text-emerald-200">
+                                                  <span className="font-mono">[{obj.schema}].[{obj.name}]</span>
                                                   <button
                                                     type="button"
                                                     onClick={() => handleViewSchema(obj.key)}
                                                     className="inline-flex items-center text-slate-400 hover:text-emerald-200 transition-colors"
-                                                    title={`View schema for ${obj.key}`}
                                                     aria-label={`View schema for ${obj.key}`}
                                                   >
                                                     <Eye size={14} />
