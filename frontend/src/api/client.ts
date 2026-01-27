@@ -89,6 +89,14 @@ export interface SearchObject {
     type?: string | null;
 }
 
+export interface ExecutePythonResponse {
+    success: boolean;
+    output?: string;
+    error?: string;
+    results?: any[]; // We can refine this later if needed
+    execution_time: number;
+}
+
 export interface SchemaMarkdownResponse {
     schema_name: string;
     table_name: string;
@@ -383,6 +391,11 @@ export const api = {
             throw new Error("Stream ended without result");
         }
         return finalResult;
+    },
+
+    executePython: async (code: string, context?: any): Promise<ExecutePythonResponse> => {
+        const response = await axios.post(`${API_BASE_URL}/execute-python`, { code, context });
+        return response.data;
     },
 
     // Contribution API (User-facing)

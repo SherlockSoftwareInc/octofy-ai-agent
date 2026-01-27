@@ -1,8 +1,111 @@
 import React, { useMemo, useState } from 'react';
-import { Copy, Check, Loader2, Gift } from 'lucide-react';
+import { Copy, Check, Loader2, Gift, Play } from 'lucide-react';
 import { Toast } from '../Toast';
 import type { ToastType } from '../Toast';
-import { api, type FewShotItem } from '../../api/client';
+import { api, type FewShotItem, type ExecutePythonResponse } from '../../api/client';
+import { DataTable } from '../DataTable/DataTable';
+import { suggestChart } from '../../utils/chartSuggester';
+import { ChartRenderer } from '../Charts/ChartRenderer';
+
+const ExecutionResultViewer: React.FC<{ results: any[] }> = ({ results }) => {
+    const [showRawData, setShowRawData] = useState(false);
+
+    // 1. Identify valid charts
+    const resultsWithCharts = useMemo(() => {
+        return results.map((res: any) => ({
+            ...res,
+            chartSuggestion: suggestChart(res.data)
+        }));
+    }, [results]);
+
+    // 2. Find the primary chart (prioritize the last one with a valid suggestion)
+    const primaryChartIndex = resultsWithCharts.map(r => r.chartSuggestion.type).lastIndexOf('bar');
+    // Heuristic: Prefer Bar charts as they are most common for "Category vs Value". 
+    // If no bar, take last of any type.
+    const lastAnyChartIndex = resultsWithCharts.map(r => r.chartSuggestion.type).reduce((lastIndex, type, idx) => type !== 'none' ? idx : lastIndex, -1);
+
+    const targetIndex = primaryChartIndex !== -1 ? primaryChartIndex : lastAnyChartIndex;
+    const primaryResult = targetIndex !== -1 ? resultsWithCharts[targetIndex] : null;
+
+    // If we have a primary chart, we show it and hide the rest behind a toggle
+    const hasPrimaryChart = !!primaryResult;
+
+    return (
+        <div className="space-y-6">
+            {/* Primary Visualization Area */}
+            {hasPrimaryChart && (
+                <div className="bg-slate-900/50 rounded-xl border border-slate-800 p-4 shadow-sm">
+                    <div className="flex items-center justify-between mb-4 border-b border-slate-700/50 pb-2">
+                        <div className="flex items-center gap-2">
+                            <div className="w-1.5 h-1.5 rounded-full bg-cyan-400"></div>
+                            <h3 className="text-sm font-semibold text-slate-200 uppercase tracking-wider">
+                                Visual Analysis: {primaryResult.name}
+                            </h3>
+                        </div>
+                        <div className="text-[10px] text-slate-500 bg-slate-800 px-2 py-1 rounded">
+                            {primaryResult.chartSuggestion.type.toUpperCase()} CHART
+                        </div>
+                    </div>
+
+                    <div className="h-80 w-full">
+                        <ChartRenderer data={primaryResult.data} suggestion={primaryResult.chartSuggestion} />
+                    </div>
+                </div>
+            )}
+
+            {/* Toggle for Raw Data */}
+            {hasPrimaryChart && (
+                <div className="flex justify-center">
+                    <button
+                        onClick={() => setShowRawData(!showRawData)}
+                        className="text-xs text-slate-500 hover:text-slate-300 flex items-center gap-2 transition-colors"
+                    >
+                        <span>{showRawData ? 'Hide' : 'Show'} Raw DataFrames & Tables</span>
+                        <div className={`transition-transform duration-200 ${showRawData ? 'rotate-180' : ''}`}>
+                            ▼
+                        </div>
+                    </button>
+                </div>
+            )}
+
+            {/* List of all DataFrames (shown if no chart or if toggled) */}
+            {(!hasPrimaryChart || showRawData) && (
+                <div className="space-y-8 animate-in fade-in slide-in-from-top-4 duration-300">
+                    {resultsWithCharts.map((res: any, idx: number) => (
+                        <div key={idx} className={`p-4 rounded-lg border ${hasPrimaryChart && idx === targetIndex ? 'border-cyan-900/30 bg-cyan-950/10' : 'border-slate-800 bg-slate-900/20'}`}>
+                            <div className="flex items-center justify-between mb-3">
+                                <div className="text-xs text-slate-400 font-mono flex items-center gap-2">
+                                    <span className="font-semibold text-emerald-300">{res.name}</span>
+                                    <span>({res.rows} rows, {res.columns.length} cols)</span>
+                                </div>
+                                {res.chartSuggestion.type !== 'none' && idx !== targetIndex && (
+                                    <div className="text-[10px] text-slate-500">
+                                        Chart Available
+                                    </div>
+                                )}
+                            </div>
+
+                            {/* Show chart here too if it's not the primary one we just showed above, OR if we just want to see everything */}
+                            {res.chartSuggestion.type !== 'none' && idx !== targetIndex && (
+                                <div className="mb-4 h-48 border border-slate-800/50 rounded bg-slate-900/50">
+                                    <ChartRenderer data={res.data} suggestion={res.chartSuggestion} />
+                                </div>
+                            )}
+
+                            <div className="rounded-lg border border-slate-700 overflow-hidden">
+                                <DataTable
+                                    data={res.data}
+                                    columns={res.columns}
+                                    pageSize={5}
+                                />
+                            </div>
+                        </div>
+                    ))}
+                </div>
+            )}
+        </div>
+    );
+};
 
 interface SQLResultDisplayProps {
     sql: string;
@@ -20,6 +123,8 @@ export const SQLResultDisplay: React.FC<SQLResultDisplayProps> = ({ sql, sourceQ
     const [existingFewShots, setExistingFewShots] = useState<FewShotItem[]>([]);
     const [isLoadingFewShots, setIsLoadingFewShots] = useState(false);
     const [isSaving, setIsSaving] = useState(false);
+    const [isRunning, setIsRunning] = useState(false);
+    const [executionResult, setExecutionResult] = useState<ExecutePythonResponse | null>(null);
 
     const normalizedExisting = useMemo(() => {
         return existingFewShots.map(item => ({
@@ -126,6 +231,31 @@ export const SQLResultDisplay: React.FC<SQLResultDisplayProps> = ({ sql, sourceQ
         }
     };
 
+    const resultContainerRef = React.useRef<HTMLDivElement>(null);
+
+    const handleRun = async () => {
+        if (!sql) return;
+        setIsRunning(true);
+        setExecutionResult(null);
+        try {
+            const result = await api.executePython(sql);
+            setExecutionResult(result);
+
+            // Scroll the result container into view
+            setTimeout(() => {
+                if (resultContainerRef.current) {
+                    resultContainerRef.current.scrollIntoView({ behavior: 'smooth', block: 'end' });
+                }
+            }, 100);
+
+        } catch (error) {
+            console.error('Execution failed:', error);
+            setToast({ message: 'Execution failed', type: 'error' });
+        } finally {
+            setIsRunning(false);
+        }
+    };
+
     return (
         <div className="relative group mt-4">
             {/* Decorative background blur */}
@@ -139,6 +269,7 @@ export const SQLResultDisplay: React.FC<SQLResultDisplayProps> = ({ sql, sourceQ
                         {queryType === 'r_code' ? 'Generated R Code' : queryType === 'sas_code' ? 'Generated SAS Code' : queryType === 'python_code' ? 'Generated Python Code' : 'Generated SQL Query'}
                     </div>
                     <div className="flex items-center gap-2">
+
                         <button
                             onClick={openContributeDialog}
                             disabled={!sourceQuestion}
@@ -180,7 +311,59 @@ export const SQLResultDisplay: React.FC<SQLResultDisplayProps> = ({ sql, sourceQ
                         {sql}
                     </pre>
                 </div>
+
+                {/* Run Action Toolbar */}
+                {queryType === 'python_code' && (
+                    <div className="px-4 py-2 bg-slate-900 border-t border-slate-800 flex justify-end">
+                        <button
+                            onClick={handleRun}
+                            disabled={isRunning}
+                            className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg transition-all duration-200 border ${isRunning
+                                ? 'bg-emerald-600/20 text-emerald-200 border-emerald-500/40 cursor-wait'
+                                : 'bg-emerald-600/20 text-emerald-200 border-emerald-500/40 hover:bg-emerald-500/30'
+                                }`}
+                            title="Run Python Code"
+                        >
+                            {isRunning ? <Loader2 size={12} className="animate-spin" /> : <Play size={12} className="fill-current" />}
+                            <span>{isRunning ? 'Running...' : 'Run'}</span>
+                        </button>
+                    </div>
+                )}
+
+                {/* Execution Results */}
+                {executionResult && (
+                    <div className="border-t border-slate-700/50 bg-slate-900/50">
+                        <div className="px-4 py-2 border-b border-slate-700/50 flex items-center gap-2">
+                            <div className="w-2 h-2 bg-emerald-500 rounded-full"></div>
+                            <span className="text-xs font-semibold text-slate-300 uppercase tracking-wider">Execution Result</span>
+                        </div>
+                        <div className="p-4 overflow-x-auto">
+                            {executionResult.output && (
+                                <div className="mb-4">
+                                    <h4 className="text-xs text-slate-500 font-semibold mb-2 uppercase">Output</h4>
+                                    <pre className="text-xs text-slate-300 font-mono bg-slate-950/50 p-3 rounded-lg border border-slate-800 whitespace-pre-wrap">
+                                        {executionResult.output}
+                                    </pre>
+                                </div>
+                            )}
+
+                            {executionResult.error && (
+                                <div className="mb-4">
+                                    <h4 className="text-xs text-red-400 font-semibold mb-2 uppercase">Error</h4>
+                                    <pre className="text-xs text-red-300 font-mono bg-red-950/20 p-3 rounded-lg border border-red-900/50 whitespace-pre-wrap">
+                                        {executionResult.error}
+                                    </pre>
+                                </div>
+                            )}
+
+                            {executionResult.results && executionResult.results.length > 0 && (
+                                <ExecutionResultViewer results={executionResult.results} />
+                            )}
+                        </div>
+                    </div>
+                )}
             </div>
+
 
             {/* Contribute Example Dialog */}
             {showDialog && (
@@ -260,6 +443,7 @@ export const SQLResultDisplay: React.FC<SQLResultDisplayProps> = ({ sql, sourceQ
                     onClose={() => setToast(null)}
                 />
             )}
+            <div ref={resultContainerRef} />
         </div>
     );
 };
