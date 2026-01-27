@@ -23,7 +23,7 @@ async def generate_sql_endpoint(request: GenerateSQLRequest, api_key: str = Depe
                     payload = item["payload"]
                     data = {
                         "type": "result",
-                        "payload": payload.model_dump()
+                        "payload": payload.model_dump(by_alias=True)
                     }
                     yield f"data: {json.dumps(data)}\n\n"
         except Exception as e:
@@ -48,7 +48,7 @@ async def generate_r_endpoint(request: GenerateSQLRequest, api_key: str = Depend
                     payload = item["payload"]
                     data = {
                         "type": "result",
-                        "payload": payload.model_dump()
+                        "payload": payload.model_dump(by_alias=True)
                     }
                     yield f"data: {json.dumps(data)}\n\n"
         except Exception as e:
@@ -73,7 +73,7 @@ async def generate_sas_endpoint(request: GenerateSQLRequest, api_key: str = Depe
                     payload = item["payload"]
                     data = {
                         "type": "result",
-                        "payload": payload.model_dump()
+                        "payload": payload.model_dump(by_alias=True)
                     }
                     yield f"data: {json.dumps(data)}\n\n"
         except Exception as e:
@@ -98,7 +98,7 @@ async def generate_python_endpoint(request: GenerateSQLRequest, api_key: str = D
                     payload = item["payload"]
                     data = {
                         "type": "result",
-                        "payload": payload.model_dump()
+                        "payload": payload.model_dump(by_alias=True)
                     }
                     yield f"data: {json.dumps(data)}\n\n"
         except Exception as e:
