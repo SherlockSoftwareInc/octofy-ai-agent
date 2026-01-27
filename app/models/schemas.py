@@ -84,7 +84,6 @@ class ExecutePythonResponse(BaseModel):
     results: Optional[List[Dict[str, Any]]] = None
     recommendation: Optional[ChartRecommendation] = None
     execution_time: float
-    debug_script: Optional[str] = None  # Debug: full script with connection string
 
 
 

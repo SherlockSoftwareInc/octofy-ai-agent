@@ -106,7 +106,6 @@ export interface ExecutePythonResponse {
     results?: ExecutePythonResult[];
     recommendation?: ChartRecommendation;
     execution_time: number;
-    debug_script?: string;
 }
 
 export interface StructuredTableData {
