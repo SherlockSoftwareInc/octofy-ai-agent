@@ -1,0 +1,46 @@
+{
+  "target_db": {
+    "friendly_name": "Northwind Database",
+    "description": "Sales database for imported and exported specialty foods",
+    "keywords": [
+      "sales",
+      "customers",
+      "orders",
+      "products",
+      "employees",
+      "shipping"
+    ],
+    "db_type": "mssql",
+    "server": "host.docker.internal",
+    "database_name": "northwind",
+    "connection_string_encrypted": "gAAAAABpeQlBrzvl-fcP4_09y9b_l2PP7P52HWMoqMgJi3safP2A38DFhUdummB1Xtc6fxmMEgYzUEIIjhOV_6bDkWuWCmniRC6GI7Y_fcuMIjICfK0xi3uO-tmn_XkwHu6uvRiQeubEQzq2XssQOWqDScKHMynGaC83cqyWJrU6BoCcxCAB2OvqAc7BWxfbbVelMX2XUGXoPr27snFldAT7h_PYVNelBthUP0447IlVKcfdqJJh9FXa3J_9_gH6H8mo5cOY-dNQgjTqNqzqjPXwxsA8hzQylg==",
+    "driver": "ODBC Driver 17 for SQL Server",
+    "auth_type": "sql",
+    "username": "sql_agent",
+    "trust_server_certificate": true,
+    "python_connection_string_encrypted": "gAAAAABpeQlBPkhA2EDEO4do0z88e4sqYfaoEPZchtLB22Djd0WO9VhCChV4cBMgeYAMiOiq3zcDLrNHiJ7V39dcJWAwUKwXE3esP975l6ykKhnDG_SUht5zP4jp2r5Zxeevb5skvEX1sNxav5EoUspxleTTrNvAyk5gI-3kXbF2V75mq6ZKViXr7FeMXcC_-0z4os4dgkoBPJdHov0BbL9x2TrmzFpfgQBI_JWdM5qWHHxTXpexxvqPhat5ntsTcJNz92dXn0tO9a-vCA6rI-sU6K-fFXfoeg=="
+  },
+  "llm_config": {
+    "llm_model": "deepseek-chat",
+    "temperature": 0.0,
+    "llm_endpoint": "https://api.deepseek.com/",
+    "llm_api_key": "sk-d05a083b760d4874a07b29c5f1e073df"
+  },
+  "embedding_config": {
+    "provider": "openai",
+    "base_url": "https://api.openai.com/v1/",
+    "api_key": "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",
+    "model": "text-embedding-3-small",
+    "dimensions": 1536
+  },
+  "vector_config": {
+    "provider": "milvus",
+    "host": "localhost",
+    "port": "19630"
+  },
+  "app_meta": {
+    "app_name": "Octofy AI Agent",
+    "version": "1.0.0",
+    "project_name": "Octofy AI Agent"
+  }
+}
