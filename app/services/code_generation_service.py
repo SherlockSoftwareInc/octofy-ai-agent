@@ -880,9 +880,11 @@ Date Ranges: {', '.join(date_ranges) if date_ranges else 'None'}
     3. Data Loading 
     4. Data Processing 
     5. Clean up (dispose engine).
-- **Output:** 
+    - **CRITICAL**: Do NOT wrap your code in a `def main():` function. Write top-level code so that variables (especially `final_result_df`) are preserved in the execution scope.
+- **Output:**
     - The code should print the final result or show the plot.
     - Use `snake_case` for variables.
+    - **IMPORTANT**: Assign the *final aggregated/result dataframe* (the one that answers the user's question) to a variable named `final_result_df`.
 
 ### OUTPUT FORMAT
 1.  Start with a multi-line comment block (using triple quotes) briefly explaining the approach.

@@ -68,11 +68,21 @@ class ExecutePythonRequest(BaseModel):
     code: str
     context: Optional[Dict[str, Any]] = None
 
+
+class ChartRecommendation(BaseModel):
+    chart_type: Literal['bar', 'line', 'pie', 'scatter', 'kpi', 'none']
+    x_axis: Optional[str] = None
+    y_axis: Optional[List[str]] = None
+    title: Optional[str] = None
+    explanation: Optional[str] = None
+    colors: Optional[List[str]] = None
+
 class ExecutePythonResponse(BaseModel):
     success: bool
-    output: Optional[str] = None
+    output: Optional[Any] = None
     error: Optional[str] = None
     results: Optional[List[Dict[str, Any]]] = None
+    recommendation: Optional[ChartRecommendation] = None
     execution_time: float
 
 
