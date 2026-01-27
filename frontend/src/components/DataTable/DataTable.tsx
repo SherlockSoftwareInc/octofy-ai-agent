@@ -16,6 +16,31 @@ interface SortConfig {
     direction: SortDirection;
 }
 
+const DataTableCell: React.FC<{ value: React.ReactNode; rawValue: string; align: 'left' | 'right' }> = ({ value, rawValue, align }) => {
+    const [isExpanded, setIsExpanded] = useState(false);
+
+    return (
+        <td
+            className={`px-4 py-2 border border-[#444] ${align === 'right' ? 'text-right' : 'text-left'} transition-all duration-200`}
+            style={{
+                maxWidth: isExpanded ? 'none' : '300px',
+                whiteSpace: isExpanded ? 'normal' : 'nowrap',
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                cursor: 'pointer'
+            }}
+            onClick={() => setIsExpanded(!isExpanded)}
+            title={rawValue} // Native tooltip
+        >
+            {value !== null ? (
+                value
+            ) : (
+                <span className="text-slate-600 italic">null</span>
+            )}
+        </td>
+    );
+};
+
 export const DataTable: React.FC<DataTableProps> = ({
     data,
     columns,
@@ -108,12 +133,14 @@ export const DataTable: React.FC<DataTableProps> = ({
                             {columns.map((col) => (
                                 <th
                                     key={col}
-                                    className={`px-4 py-3 whitespace-nowrap cursor-pointer hover:bg-slate-700/50 transition-colors group select-none border border-[#444] ${columnAlignment[col] === 'right' ? 'text-right' : 'text-left'}`}
+                                    className={`px-4 py-3 cursor-pointer hover:bg-slate-700/50 transition-colors group select-none border border-[#444] ${columnAlignment[col] === 'right' ? 'text-right' : 'text-left'}`}
+                                    style={{ minWidth: '150px' }}
                                     onClick={() => handleSort(col)}
                                 >
                                     <div className={`flex items-center gap-2 ${columnAlignment[col] === 'right' ? 'justify-end' : 'justify-start'}`}>
-                                        <span>{col}</span>
-                                        <span className="text-slate-600 group-hover:text-slate-400">
+                                        <span className="truncate" title={col}>{col}</span>
+                                        {/* Sort Icon */}
+                                        <span className="text-slate-600 group-hover:text-slate-400 flex-shrink-0">
                                             {sortConfig.key === col ? (
                                                 sortConfig.direction === 'asc' ? <ChevronUp size={14} /> :
                                                     sortConfig.direction === 'desc' ? <ChevronDown size={14} /> :
@@ -132,17 +159,21 @@ export const DataTable: React.FC<DataTableProps> = ({
                             <tr key={rIdx} className="bg-slate-900/50 hover:bg-slate-800/60 transition-colors">
                                 {columns.map((col) => {
                                     const formattedValue = formatValue(row[col], columnAlignment[col]);
+                                    const rawValue = row[col] !== null && row[col] !== undefined
+                                        ? (typeof row[col] === 'object' ? JSON.stringify(row[col]) : String(row[col]))
+                                        : 'null';
+
+                                    // Local state for expansion could be tricky in a loop without extraction, 
+                                    // but we can use a class-based approach or a simple CSS toggle if we had it.
+                                    // For React, best to extract Cell or use a simple toggle.
+                                    // Let's create a small internal component for the Cell to handle state.
                                     return (
-                                    <td
-                                        key={col}
-                                        className={`px-4 py-2 whitespace-nowrap border border-[#444] ${columnAlignment[col] === 'right' ? 'text-right' : 'text-left'}`}
-                                    >
-                                        {formattedValue !== null ? (
-                                            formattedValue
-                                        ) : (
-                                            <span className="text-slate-600 italic">null</span>
-                                        )}
-                                    </td>
+                                        <DataTableCell
+                                            key={`${rIdx}-${col}`}
+                                            value={formattedValue}
+                                            rawValue={rawValue}
+                                            align={columnAlignment[col]}
+                                        />
                                     );
                                 })}
                             </tr>

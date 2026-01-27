@@ -10,6 +10,19 @@ import { DataTable } from '../DataTable/DataTable';
 
 import { ResultChart } from './ResultChart';
 
+const ResultsWrapper = ({ children }: { children: React.ReactNode }) => (
+    <div style={{
+        maxWidth: '100%',
+        overflowX: 'auto',
+        margin: '10px 0',
+        border: '1px solid #334155', // slate-700
+        borderRadius: '8px',
+        backgroundColor: 'rgba(15, 23, 42, 0.3)' // slate-900/30
+    }}>
+        {children}
+    </div>
+);
+
 const ExecutionResultViewer: React.FC<{ results: ExecutePythonResult[]; recommendation?: any }> = ({ results }) => {
     const normalizeTableData = (data: StructuredTableData | Array<Record<string, unknown>>, fallbackColumns?: string[]) => {
         if (Array.isArray(data)) {
@@ -34,12 +47,12 @@ const ExecutionResultViewer: React.FC<{ results: ExecutePythonResult[]; recommen
     }, [results]);
 
     return (
-        <div className="space-y-6">
+        <div className="space-y-6 w-full max-w-full">
             {resultsWithRows.map((res, idx) => {
                 const title = res.name;
 
                 return (
-                    <div key={idx} className="w-full max-w-full bg-slate-900/50 rounded-xl border border-slate-800 p-4 shadow-sm">
+                    <div key={idx} className="w-full max-w-full bg-slate-900/50 rounded-xl border border-slate-800 p-4 shadow-sm overflow-hidden">
                         <div className="flex items-center justify-between mb-4 border-b border-slate-700/50 pb-2">
                             <div className="flex items-center gap-2">
                                 <div className="w-1.5 h-1.5 rounded-full bg-cyan-400"></div>
@@ -49,19 +62,23 @@ const ExecutionResultViewer: React.FC<{ results: ExecutePythonResult[]; recommen
                             </div>
                         </div>
 
-                        <div className="w-full max-w-full">
-                            <DataTable
-                                data={res.normalized.rows}
-                                columns={res.normalized.columns}
-                                pageSize={5}
-                            />
-                        </div>
+                        <ResultsWrapper>
+                            <div className="w-full min-w-max">
+                                <DataTable
+                                    data={res.normalized.rows}
+                                    columns={res.normalized.columns}
+                                    pageSize={5}
+                                />
+                            </div>
+                        </ResultsWrapper>
 
                         {res.chart_metadata && (
-                            <ResultChart
-                                data={res.normalized.rows}
-                                metadata={res.chart_metadata}
-                            />
+                            <ResultsWrapper>
+                                <ResultChart
+                                    data={res.normalized.rows}
+                                    metadata={res.chart_metadata}
+                                />
+                            </ResultsWrapper>
                         )}
                     </div>
                 );
