@@ -86,12 +86,50 @@ def execute_python_code(code: str, context: Optional[Dict[str, Any]] = None) -> 
                     "data": rows
                 }
 
+                # Generate Chart Metadata
+                chart_metadata = {
+                    "type": "none",
+                    "x_axis": None,
+                    "y_axes": [],
+                    "is_stacked": False
+                }
+                
+                # Simple heuristic for chart suggestion
+                try:
+                    num_cols = df_head.select_dtypes(include=['number']).columns.tolist()
+                    cat_cols = df_head.select_dtypes(include=['object', 'category', 'string']).columns.tolist()
+                    
+                    # Scenario A: 1 Categorical + 1 or more Numerical -> Bar Chart
+                    if len(cat_cols) >= 1 and len(num_cols) >= 1:
+                        chart_metadata["type"] = "bar"
+                        chart_metadata["x_axis"] = cat_cols[0] # Pick first categorical as X
+                        chart_metadata["y_axes"] = num_cols    # All numericals as Y
+                        
+                        # If multiple numericals, we could stack or group. Default to not stacked for now unless specific logic requested.
+                        # User requested: "Bar Chart: 1 categorical + 1 or more numerical"
+                        
+                    # Scenario B: 2 Categorical + 1 Numerical -> Stacked Bar
+                    # Note: To support this properly with Recharts without pivoting data on frontend, 
+                    # we often need the data to be 'wide'. 
+                    # If we keep it 'long' (Cat1, Cat2, Val), we need custom pivoting.
+                    # For this implementation, we will stick to identifying the potential.
+                    elif len(cat_cols) == 2 and len(num_cols) == 1:
+                        chart_metadata["type"] = "stacked-bar"
+                        chart_metadata["x_axis"] = cat_cols[0]
+                        # We mark it as stacked-bar but the frontend might need to handle the grouping
+                        chart_metadata["y_axes"] = num_cols
+                        chart_metadata["is_stacked"] = True
+                        
+                except Exception as chart_err:
+                    logger.warning(f"Failed to generate chart metadata: {chart_err}")
+
                 results.append({
                     "name": var_name,
                     "type": "dataframe",
                     "data": structured_payload,
                     "rows": len(var_value),
-                    "columns": columns
+                    "columns": columns,
+                    "chart_metadata": chart_metadata
                 })
 
                 # Set structured output from the first dataframe encountered
@@ -124,12 +162,35 @@ def execute_python_code(code: str, context: Optional[Dict[str, Any]] = None) -> 
                         "data": rows
                     }
 
+                    # Generate Chart Metadata for fallback
+                    chart_metadata = {
+                        "type": "none",
+                        "x_axis": None,
+                        "y_axes": [],
+                        "is_stacked": False
+                    }
+                    try:
+                        num_cols = df_head.select_dtypes(include=['number']).columns.tolist()
+                        cat_cols = df_head.select_dtypes(include=['object', 'category', 'string']).columns.tolist()
+                        if len(cat_cols) >= 1 and len(num_cols) >= 1:
+                            chart_metadata["type"] = "bar"
+                            chart_metadata["x_axis"] = cat_cols[0]
+                            chart_metadata["y_axes"] = num_cols
+                        elif len(cat_cols) == 2 and len(num_cols) == 1:
+                            chart_metadata["type"] = "stacked-bar"
+                            chart_metadata["x_axis"] = cat_cols[0]
+                            chart_metadata["y_axes"] = num_cols
+                            chart_metadata["is_stacked"] = True
+                    except Exception:
+                        pass
+
                     results.append({
                         "name": "parsed_output_df", 
                         "type": "dataframe",
                         "data": structured_payload,
                         "rows": len(df_parsed),
-                        "columns": columns
+                        "columns": columns,
+                        "chart_metadata": chart_metadata
                     })
                     structured_output = structured_payload
                     logger.info("Successfully parsed stdout into a DataFrame fallback.")

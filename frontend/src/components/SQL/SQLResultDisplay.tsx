@@ -8,6 +8,8 @@ import { DataTable } from '../DataTable/DataTable';
 
 
 
+import { ResultChart } from './ResultChart';
+
 const ExecutionResultViewer: React.FC<{ results: ExecutePythonResult[]; recommendation?: any }> = ({ results }) => {
     const normalizeTableData = (data: StructuredTableData | Array<Record<string, unknown>>, fallbackColumns?: string[]) => {
         if (Array.isArray(data)) {
@@ -54,6 +56,13 @@ const ExecutionResultViewer: React.FC<{ results: ExecutePythonResult[]; recommen
                                 pageSize={5}
                             />
                         </div>
+
+                        {res.chart_metadata && (
+                            <ResultChart
+                                data={res.normalized.rows}
+                                metadata={res.chart_metadata}
+                            />
+                        )}
                     </div>
                 );
             })}
