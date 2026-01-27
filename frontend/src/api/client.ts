@@ -113,12 +113,20 @@ export interface StructuredTableData {
     data: Array<Record<string, unknown>>;
 }
 
+export interface ChartMetadata {
+    type: 'bar' | 'stacked-bar' | 'none';
+    x_axis: string | null;
+    y_axes: string[];
+    is_stacked: boolean;
+}
+
 export interface ExecutePythonResult {
     name: string;
     type: 'dataframe' | string;
     data: StructuredTableData | Array<Record<string, unknown>>;
     rows: number;
     columns: string[];
+    chart_metadata?: ChartMetadata;
 }
 
 export interface SchemaMarkdownResponse {
