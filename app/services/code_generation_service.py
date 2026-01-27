@@ -864,7 +864,7 @@ Date Ranges: {', '.join(date_ranges) if date_ranges else 'None'}
 - **Database Connectivity:**
     - Use `sa.create_engine()` with `server = "{server_name}"` and `database = "{database_name}"`.
     - Use Windows authentication with `Trusted_Connection=yes` and do NOT include `user` or `password`.
-    - Connection string format: `"mssql+pyodbc://@{server_name}/{database_name}?driver=SQL+Server&trusted_connection=yes"`.
+    - Connection string format: `"mssql+pyodbc://@{server_name}/{database_name}?driver=ODBC+Driver+17+for+SQL+Server&trusted_connection=yes"`.
 - **Data Retrieval Strategy:**
     - Prefer fetching raw data using `pd.read_sql_table()` or `pd.read_sql_query()`.
     - You may write a simple SQL query within `pd.read_sql_query()` to filter data at the source if the dataset is large, but prefer doing complex transformations (grouping, pivoting) in Pandas.
