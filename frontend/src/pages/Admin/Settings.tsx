@@ -8,6 +8,7 @@ interface ConnectionDialogProps {
   onClose: () => void;
   onSave: (
     connStr: string,
+    pythonConnStr: string,
     decryptedStr: string,
     payload: {
       driver: string;
@@ -218,14 +219,19 @@ const ConnectionDialog: React.FC<ConnectionDialogProps> = ({ isOpen, onClose, on
         trust_server_certificate: trustServerCertificate
       });
 
-      onSave(response.encrypted, response.connection_string_masked, {
-        driver,
-        server,
-        database,
-        authType,
-        username: resolvedUsername,
-        trustServerCertificate
-      });
+      onSave(
+        response.encrypted,
+        response.python_encrypted,
+        response.connection_string_masked,
+        {
+          driver,
+          server,
+          database,
+          authType,
+          username: resolvedUsername,
+          trustServerCertificate
+        }
+      );
       onClose();
     } catch (error) {
       console.error('Failed to build connection string', error);
@@ -523,6 +529,7 @@ export const Settings = () => {
 
   const handleConnectionSave = async (
     encrypted: string,
+    pythonEncrypted: string,
     decrypted: string,
     payload: {
       driver: string;
@@ -549,6 +556,7 @@ export const Settings = () => {
       target_db: {
         ...settings.target_db,
         connection_string_encrypted: encrypted,
+        python_connection_string_encrypted: pythonEncrypted,
         connection_string_decrypted: decrypted,
         driver: driver,
         auth_type: authType,

@@ -277,7 +277,7 @@ Entities: {', '.join(entities) if entities else 'None'}
 ### R CODE GUIDELINES
 - **Libraries:** Always include `library(DBI)`, `library(odbc)`, `library(dplyr)`, and `library(ggplot2)` (if plotting).
 - **Database Connectivity:** 
-    - Use `dbConnect(odbc::odbc(), ...)` with `Server = "{server_name}"` and `Database = "{database_name}"`.
+    - Use `dbConnect(odbc::odbc(), ...)` with `Server = "your_server_name"` and `Database = "your_database_name"`.
     - Use Windows authentication with `Trusted_Connection = "Yes"` and do NOT include `UID` or `PWD`.
     - Use `Driver = "SQL Server"` as the default placeholder.
 - **Data Retrieval Strategy:**
@@ -860,31 +860,49 @@ Date Ranges: {', '.join(date_ranges) if date_ranges else 'None'}
 {schema_text}
 
 ### PYTHON CODE GUIDELINES
-- **Libraries:** Always include `import pandas as pd`, `import sqlalchemy as sa`, and `import matplotlib.pyplot as plt` (if plotting is implied).
-- **Database Connectivity:**
-    - Use `sa.create_engine()` with `server = "{server_name}"` and `database = "{database_name}"`.
-    - Use Windows authentication with `Trusted_Connection=yes` and do NOT include `user` or `password`.
-    - Connection string format: `"mssql+pyodbc://@{server_name}/{database_name}?driver=ODBC+Driver+17+for+SQL+Server&trusted_connection=yes"`.
-- **Data Retrieval Strategy:**
-    - Prefer fetching raw data using `pd.read_sql_table()` or `pd.read_sql_query()`.
-    - You may write a simple SQL query within `pd.read_sql_query()` to filter data at the source if the dataset is large, but prefer doing complex transformations (grouping, pivoting) in Pandas.
+- **Connectivity:**
+    - **CRITICAL**: The application will inject a connection string variable named `DB_CONNECTION_STRING` at runtime.
+    - **DO NOT** hardcode any server names, database names, or credentials.
+    - Start your script by assuming `DB_CONNECTION_STRING` exists.
+    - **MANDATORY**: Before creating the engine/connection, you MUST include a commented-out example of the connection string variable for debugging purposes.
+    - Example format:
+      ```python
+      # DB_CONNECTION_STRING = ("mssql+pyodbc://@your_server_name/your_database_name?driver=ODBC+Driver+17+for+SQL+Server&trusted_connection=yes")
+      engine = sqlalchemy.create_engine(DB_CONNECTION_STRING)
+      ```
+- **Data Retrieval:**
+    - **REQUIRED**: Use `pd.read_sql()` or `pd.read_sql_query()` with the **raw DBAPI connection**.
+    - **CORRECT PATTERN**: Use `engine.raw_connection()` to get the underlying database connection:
+      ```python
+      conn = engine.raw_connection()
+      try:
+          df = pd.read_sql("SELECT * FROM dbo.TableName", conn)
+      finally:
+          conn.close()
+      ```
+    - **ALTERNATIVE PATTERN**: Use context managers (preferred):
+      ```python
+      with engine.raw_connection() as conn:
+          df = pd.read_sql("SELECT * FROM dbo.TableName", conn)
+      ```
+    - **DO NOT** use `engine.connect()` - SQLAlchemy Connection objects don't have the cursor() method that pandas needs.
+    - **DO NOT** use `pd.read_sql_table()` or pass the engine directly to pd.read_sql().
     - **CRITICAL**: Use ONLY the tables and columns defined in the DATABASE SCHEMA.
     - Pay attention to the "VERIFIED DATA MAPPINGS" for correct string values.
 - **Data Manipulation:**
-    - Use Pandas methods (`merge`, `groupby`, `pivot_table`, `loc`) to answer the question.
-    - Ensure you handle potential `NaN` values.
-    - If the user asks for a chart or visualization, use `matplotlib` to generate it.
-- **Execution Flow:** 
-    1. Library Imports 
-    2. Engine Creation 
-    3. Data Loading 
-    4. Data Processing 
-    5. Clean up (dispose engine).
+    - Use `pandas` for filtering, aggregation, and transformation.
+    - Use `snake_case` for variables.
+    - **FINAL OUTPUT**: The final result DataFrame MUST be assigned to a variable named `final_result_df`.
+- **Execution Flow:**
+    1. Import libraries (`pandas`, `sqlalchemy`, etc.)
+    2. Create Engine/Connection using `DB_CONNECTION_STRING`.
+    3. Execute Query.
+    4. Process Data.
+    5. Assign result to `final_result_df`.
     - **CRITICAL**: Do NOT wrap your code in a `def main():` function. Write top-level code so that variables (especially `final_result_df`) are preserved in the execution scope.
 - **Output:**
-    - The code should print the final result or show the plot.
-    - Use `snake_case` for variables.
-    - **IMPORTANT**: Assign the *final aggregated/result dataframe* (the one that answers the user's question) to a variable named `final_result_df`.
+    - Do NOT use `print()` for data. The system reads `final_result_df` directly.
+    - `print()` can be used for debugging or brief comments.
 
 ### OUTPUT FORMAT
 1.  Start with a multi-line comment block (using triple quotes) briefly explaining the approach.

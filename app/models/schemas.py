@@ -84,6 +84,7 @@ class ExecutePythonResponse(BaseModel):
     results: Optional[List[Dict[str, Any]]] = None
     recommendation: Optional[ChartRecommendation] = None
     execution_time: float
+    debug_script: Optional[str] = None  # Debug: full script with connection string
 
 
 
@@ -162,6 +163,8 @@ class TargetDBConfig(BaseModel):
     auth_type: AuthType = "sql"
     username: Optional[str] = None
     trust_server_certificate: Optional[bool] = False
+    python_connection_string_encrypted: Optional[str] = None
+    python_connection_string_decrypted: Optional[str] = None
 
 class LLMConfig(BaseModel):
     llm_model: str = "gpt-4o"

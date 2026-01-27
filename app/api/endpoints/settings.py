@@ -39,6 +39,10 @@ def update_settings(settings: AgentSettings, api_key: str = Depends(verify_api_k
             # Looks like plaintext, encrypt it
             settings.target_db.connection_string_encrypted = encrypt_string(settings.target_db.connection_string_encrypted)
 
+        # Encrypt python connection string before saving (if provided in plaintext)
+        if settings.target_db.python_connection_string_encrypted and not settings.target_db.python_connection_string_encrypted.startswith("gAAAAA"):
+            settings.target_db.python_connection_string_encrypted = encrypt_string(settings.target_db.python_connection_string_encrypted)
+
         # Validate Milvus settings only when host/port/provider changes
         vector_changed = (
             settings.vector_config.host != current_settings.vector_config.host or
@@ -149,10 +153,44 @@ def build_connection_string_endpoint(request: ConnectionTestRequest, api_key: st
             trust_server_certificate=request.trust_server_certificate
         )
         
+        # Build Python connection string (SQLAlchemy URL format)
+        # Format: mssql+pyodbc://user:pass@server,port/database?driver=...&param=value
+        
+        # Start building the URL
+        if request.auth_type == 'sql' and request.username and request.password:
+            # SQL Authentication: include username and password in URL
+            username_encoded = urllib.parse.quote_plus(request.username)
+            password_encoded = urllib.parse.quote_plus(request.password)
+            auth_part = f"{username_encoded}:{password_encoded}@"
+        else:
+            # Windows/AD Authentication: use @ with no credentials
+            auth_part = "@"
+        
+        # Build the base URL with server and database
+        python_conn_str = f"mssql+pyodbc://{auth_part}{request.server}/{request.database}?"
+        
+        # Add query parameters
+        params = []
+        params.append(f"driver={urllib.parse.quote_plus(request.driver)}")
+        
+        if request.trust_server_certificate:
+            params.append("TrustServerCertificate=yes")
+            params.append("Encrypt=yes")
+        
+        # Add authentication-specific parameters
+        if request.auth_type == 'windows':
+            params.append("trusted_connection=yes")
+        elif request.auth_type in ['ad_integrated', 'ad_password', 'ad_interactive', 'ad_service_principal']:
+            params.append(f"Authentication={request.auth_type.replace('ad_', 'ActiveDirectory')}")
+        
+        python_conn_str += "&".join(params)
+        
         return {
             "connection_string": conn_str,
             "connection_string_masked": mask_password(conn_str),
-            "encrypted": encrypt_string(conn_str)
+            "encrypted": encrypt_string(conn_str),
+            "python_connection_string": python_conn_str,
+            "python_encrypted": encrypt_string(python_conn_str)
         }
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Failed to build connection string: {str(e)}")
