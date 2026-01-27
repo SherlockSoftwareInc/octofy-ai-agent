@@ -80,6 +80,13 @@ export interface GenerateSQLResponse {
     query_type?: string;
     context_text?: string;
     context_history?: string[];
+    objects?: SearchObject[];
+}
+
+export interface SearchObject {
+    schema: string;
+    name: string;
+    type?: string | null;
 }
 
 export interface SchemaMarkdownResponse {

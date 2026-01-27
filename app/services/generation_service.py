@@ -309,6 +309,17 @@ def search_data_objects(query: str) -> GenerateSQLResponse:
             )
         # Track objects with their best (lowest) score - L2 distance where lower = more similar
         object_scores: Dict[str, float] = {}
+        object_metadata: Dict[str, Dict[str, Optional[str]]] = {}
+
+        def normalize_table_type(raw_type: Optional[str]) -> Optional[str]:
+            if not raw_type:
+                return None
+            normalized = raw_type.strip().lower()
+            if normalized == "table":
+                return "Table"
+            if normalized == "view":
+                return "View"
+            return raw_type.strip()
         
         # Search schema index for relevant tables
         # Use the internal _search_collection to get scores
@@ -319,7 +330,7 @@ def search_data_objects(query: str) -> GenerateSQLResponse:
             schema_results = vector_store._search_collection(
                 app_settings.MILVUS_COLLECTION_SCHEMA,
                 embedding,
-                ['schema_name', 'table_name'],
+                ['schema_name', 'table_name', 'table_type'],
                 top_k=10,
                 score_threshold=1.5  # Relaxed threshold for object search (L2 distance)
             )
@@ -327,12 +338,19 @@ def search_data_objects(query: str) -> GenerateSQLResponse:
                 entity = result.get('entity', result)
                 schema_name = entity.get('schema_name', 'dbo')
                 table_name = entity.get('table_name', '')
+                table_type = normalize_table_type(entity.get('table_type'))
                 score = result.get('score', 999)
                 if table_name:
                     obj_key = f"[{schema_name}].[{table_name}]"
                     # Keep the best (lowest) score for each object
                     if obj_key not in object_scores or score < object_scores[obj_key]:
                         object_scores[obj_key] = score
+                    if obj_key not in object_metadata or (table_type and not object_metadata[obj_key].get("type")):
+                        object_metadata[obj_key] = {
+                            "schema": schema_name,
+                            "name": table_name,
+                            "type": table_type
+                        }
         
         # Search value index for relevant tables
         value_results = vector_store.search_values(query, top_k=10)
@@ -346,10 +364,25 @@ def search_data_objects(query: str) -> GenerateSQLResponse:
                 # Keep the best (lowest) score for each object
                 if obj_key not in object_scores or score < object_scores[obj_key]:
                     object_scores[obj_key] = score
+                if obj_key not in object_metadata:
+                    object_metadata[obj_key] = {
+                        "schema": schema_name,
+                        "name": table_name,
+                        "type": None
+                    }
         
         # Sort objects by score (lower = more relevant)
         sorted_objects = sorted(object_scores.keys(), key=lambda x: object_scores[x])
         
+        objects_payload = [
+            {
+                "schema": object_metadata.get(obj, {}).get("schema", "dbo"),
+                "name": object_metadata.get(obj, {}).get("name", obj.strip("[]").split("].[")[-1]),
+                "type": object_metadata.get(obj, {}).get("type")
+            }
+            for obj in sorted_objects
+        ]
+
         if sorted_objects:
             # Format as markdown list
             objects_list = "\n".join([f"• {obj}" for obj in sorted_objects])
@@ -360,6 +393,7 @@ def search_data_objects(query: str) -> GenerateSQLResponse:
         return GenerateSQLResponse(
             sql="",
             explanation=explanation,
+            objects=objects_payload,
             query_type="search",
             context_text=f"Searched for: {query}"
         )

@@ -43,12 +43,19 @@ class GenerateSQLRequest(BaseModel):
     queryMode: Literal["generate", "search"] = "generate"  # "generate" for SQL generation, "search" for object search
     table_override: Optional[List[str]] = None # Explicit schema.table list from user selection
 
+class SearchObject(BaseModel):
+    schema_name: str = Field(..., alias="schema")
+    name: str
+    type: Optional[str] = None
+    model_config = {"populate_by_name": True}
+
 class GenerateSQLResponse(BaseModel):
     sql: str
     explanation: Optional[str] = None
     query_type: str = "database"  # "database" or "general"
     context_text: Optional[str] = None  # The raw context sent to LLM (last one)
     context_history: Optional[List[str]] = None # History of contexts for each attempt
+    objects: Optional[List[SearchObject]] = None
 
 class AgentStatus(BaseModel):
     step_id: int
