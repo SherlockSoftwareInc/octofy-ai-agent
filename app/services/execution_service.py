@@ -24,12 +24,22 @@ def execute_python_code(code: str, context: Optional[Dict[str, Any]] = None) -> 
     stdout_buffer = io.StringIO()
     original_stdout = sys.stdout
     
-    # Prepare execution scope
-    local_scope = context or {}
+    # Prepare execution scope with proper globals
+    # We need __builtins__ in globals for imports to work
+    global_scope = {'__builtins__': __builtins__}
+    local_scope = context.copy() if context else {}
     
     # Ensure pandas is available as pd
     if 'pd' not in local_scope:
         local_scope['pd'] = pd
+    
+    # Log the DB_CONNECTION_STRING if present for debugging
+    if 'DB_CONNECTION_STRING' in local_scope:
+        # Mask the actual connection string for security in logs
+        conn_str = local_scope['DB_CONNECTION_STRING']
+        if isinstance(conn_str, str):
+            masked = conn_str[:20] + '...' if len(conn_str) > 20 else conn_str
+            logger.info(f"DB_CONNECTION_STRING injected into execution context: {masked}")
         
     execution_success = False
     error_message = None
@@ -39,8 +49,8 @@ def execute_python_code(code: str, context: Optional[Dict[str, Any]] = None) -> 
     try:
         sys.stdout = stdout_buffer
         
-        #Execute the code
-        exec(code, {}, local_scope)
+        # Execute the code with proper globals and locals
+        exec(code, global_scope, local_scope)
         
         execution_success = True
         

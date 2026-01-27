@@ -123,12 +123,63 @@ async def execute_python_endpoint(request: ExecutePythonRequest, api_key: str = 
     Executes Python code and returns the output and any results.
     automatically appends a chart recommendation if a DataFrame is produced.
     """
+    # Variable to store debug script for response (declare outside try-catch)
+    debug_script_content = None
+    
     try:
-        result = execute_python_code(request.code, request.context)
+        from app.services.settings_service import load_settings, decrypt_string
+        
+        # Validation: check for disallowed keywords
+        if "sqlalchemy.create_engine(" in request.code and "DB_CONNECTION_STRING" not in request.code:
+             logger.warning("User code contains create_engine but does not appear to use DB_CONNECTION_STRING")
+
+        # 1. Retrieve & Decrypt Connection String
+        settings = load_settings()
+        encrypted_conn_str = settings.target_db.python_connection_string_encrypted
+        
+        # Create execution context if not exists
+        exec_context = request.context or {}
+        
+        # Inject DB_CONNECTION_STRING if available
+        if encrypted_conn_str:
+            try:
+                decrypted_conn_str = decrypt_string(encrypted_conn_str)
+                if decrypted_conn_str:
+                    # Python connection string is already in SQLAlchemy URL format
+                    # (e.g., mssql+pyodbc://user:pass@server,port/database?driver=...&param=value)
+                    # No conversion needed!
+                    
+                    # Inject as a variable in the local scope instead of string replacement 
+                    # This is safer and cleaner than string concatenation
+                    exec_context['DB_CONNECTION_STRING'] = decrypted_conn_str
+                    
+                    # DEBUG: Save the complete script with connection string to a file for manual testing
+                    try:
+                        debug_script_content = f"""# DEBUG: Auto-generated test script with connection string
+# This file was auto-generated for debugging purposes
+
+DB_CONNECTION_STRING = '''{decrypted_conn_str}'''
+
+{request.code}
+"""
+                        debug_file_path = "debug_python_execution.py"
+                        with open(debug_file_path, 'w', encoding='utf-8') as f:
+                            f.write(debug_script_content)
+                        logger.info(f"DEBUG: Saved execution script to {debug_file_path}")
+                    except Exception as debug_err:
+                        logger.warning(f"Failed to save debug script: {debug_err}")
+                        
+            except Exception as e:
+                logger.error(f"Failed to decrypt python connection string: {e}")
+                
+        # 2. Execute Code
+        result = execute_python_code(request.code, exec_context)
+        
+        # Initialize recommendation (will be set if visualization is possible)
+        recommendation = None
         
         if result["success"] and result.get("results"):
             # New Step: Visualization Consultant
-            recommendation = None
 
             # 1. Identify valid dataframes
             dataframes = [r for r in result["results"] if r["type"] == "dataframe"]
@@ -168,9 +219,19 @@ async def execute_python_endpoint(request: ExecutePythonRequest, api_key: str = 
             error=result["error"],
             results=result.get("results"),
             recommendation=recommendation,
-            execution_time=0.0 # TODO: Measure time
+            execution_time=0.0, # TODO: Measure time
+            debug_script=debug_script_content
         )
     except Exception as e:
         logger.error(f"Error in execute_python_endpoint: {str(e)}")
         logger.error(traceback.format_exc())
-        raise HTTPException(status_code=500, detail=str(e))
+        # Return error response with debug_script if available
+        return ExecutePythonResponse(
+            success=False,
+            output=None,
+            error=str(e),
+            results=None,
+            recommendation=None,
+            execution_time=0.0,
+            debug_script=debug_script_content
+        )

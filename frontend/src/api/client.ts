@@ -106,6 +106,7 @@ export interface ExecutePythonResponse {
     results?: ExecutePythonResult[];
     recommendation?: ChartRecommendation;
     execution_time: number;
+    debug_script?: string;
 }
 
 export interface StructuredTableData {
@@ -743,7 +744,7 @@ export const api = {
             const response = await axios.post(`${API_BASE_URL}/admin/test-connection`, request);
             return response.data;
         },
-        buildConnectionString: async (request: ConnectionTestRequest): Promise<{ connection_string: string; connection_string_masked: string; encrypted: string }> => {
+        buildConnectionString: async (request: ConnectionTestRequest): Promise<{ connection_string: string; connection_string_masked: string; encrypted: string; python_connection_string: string; python_encrypted: string }> => {
             const response = await axios.post(`${API_BASE_URL}/admin/build-connection-string`, request);
             return response.data;
         },

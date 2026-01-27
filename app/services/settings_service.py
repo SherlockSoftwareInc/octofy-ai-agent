@@ -108,6 +108,7 @@ def get_default_settings() -> AgentSettings:
             server="",
             database_name="",
             connection_string_encrypted="",
+            python_connection_string_encrypted="",
             driver="ODBC Driver 17 for SQL Server",
             auth_type="sql",
             username=None,
@@ -220,8 +221,11 @@ def save_settings(agent_settings: AgentSettings) -> bool:
         
         # Prepare for save - remove debug fields
         data = agent_settings.model_dump()
-        if 'target_db' in data and 'connection_string_decrypted' in data['target_db']:
-            del data['target_db']['connection_string_decrypted']
+        if 'target_db' in data:
+             if 'connection_string_decrypted' in data['target_db']:
+                del data['target_db']['connection_string_decrypted']
+             if 'python_connection_string_decrypted' in data['target_db']:
+                del data['target_db']['python_connection_string_decrypted']
 
         # Ensure env defaults are persisted if missing in the object to be saved
         # This handles cases where frontend might send empty values but we want to persist active env config
@@ -362,6 +366,8 @@ def get_settings_for_display() -> AgentSettings:
                     database_name=database,
                     connection_string_encrypted=settings.target_db.connection_string_encrypted,
                     connection_string_decrypted=None,
+                    python_connection_string_encrypted=settings.target_db.python_connection_string_encrypted,
+                    python_connection_string_decrypted=None,
                     driver=settings.target_db.driver,
                     auth_type=settings.target_db.auth_type,
                     username=settings.target_db.username,

@@ -223,6 +223,19 @@ export const SQLResultDisplay: React.FC<SQLResultDisplayProps> = ({ sql, sourceQ
             const result = await api.executePython(sql);
             setExecutionResult(result);
 
+            // Open debug script in new tab if available
+            if (result.debug_script) {
+                try {
+                    const blob = new Blob([result.debug_script], { type: 'text/plain' });
+                    const url = URL.createObjectURL(blob);
+                    window.open(url, '_blank');
+                    // Clean up the URL after a delay
+                    setTimeout(() => URL.revokeObjectURL(url), 1000);
+                } catch (err) {
+                    console.error('Failed to open debug script:', err);
+                }
+            }
+
             // Scroll the result container into view
             setTimeout(() => {
                 if (resultContainerRef.current) {
@@ -296,7 +309,7 @@ export const SQLResultDisplay: React.FC<SQLResultDisplayProps> = ({ sql, sourceQ
 
                 {/* Run Action Toolbar */}
                 {queryType === 'python_code' && (
-                    <div className="px-4 py-2 bg-slate-900 border-t border-slate-800 flex justify-end">
+                    <div className="px-4 py-2 bg-slate-900 border-t border-slate-800 flex justify-end gap-2">
                         <button
                             onClick={handleRun}
                             disabled={isRunning}
@@ -309,6 +322,46 @@ export const SQLResultDisplay: React.FC<SQLResultDisplayProps> = ({ sql, sourceQ
                             {isRunning ? <Loader2 size={12} className="animate-spin" /> : <Play size={12} className="fill-current" />}
                             <span>{isRunning ? 'Running...' : 'Run'}</span>
                         </button>
+
+                        {/* Debug Script Button */}
+                        {executionResult?.debug_script && (
+                            <button
+                                onClick={() => {
+                                    try {
+                                        const blob = new Blob([executionResult.debug_script!], { type: 'text/plain' });
+                                        const url = URL.createObjectURL(blob);
+
+                                        // Try to open in new tab first
+                                        const newWindow = window.open(url, '_blank');
+
+                                        // If popup was blocked, fallback to download
+                                        if (!newWindow || newWindow.closed || typeof newWindow.closed === 'undefined') {
+                                            // Create download link
+                                            const a = document.createElement('a');
+                                            a.href = url;
+                                            a.download = 'debug_python_execution.py';
+                                            document.body.appendChild(a);
+                                            a.click();
+                                            document.body.removeChild(a);
+                                            setToast({ message: 'Debug script downloaded', type: 'info' });
+                                        } else {
+                                            setToast({ message: 'Debug script opened in new tab', type: 'success' });
+                                        }
+
+                                        // Clean up the URL after a delay
+                                        setTimeout(() => URL.revokeObjectURL(url), 1000);
+                                    } catch (err) {
+                                        console.error('Failed to open/download debug script:', err);
+                                        setToast({ message: 'Failed to open debug script', type: 'error' });
+                                    }
+                                }}
+                                className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg transition-all duration-200 border bg-blue-600/20 text-blue-200 border-blue-500/40 hover:bg-blue-500/30"
+                                title="View/Download the complete Python script with connection string"
+                            >
+                                <span>📄</span>
+                                <span>Debug Script</span>
+                            </button>
+                        )}
                     </div>
                 )}
 
