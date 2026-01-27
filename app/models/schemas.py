@@ -64,6 +64,18 @@ class AgentStatus(BaseModel):
     details: Optional[Dict[str, Any]] = None
     timestamp: float = Field(default_factory=time.time)
 
+class ExecutePythonRequest(BaseModel):
+    code: str
+    context: Optional[Dict[str, Any]] = None
+
+class ExecutePythonResponse(BaseModel):
+    success: bool
+    output: Optional[str] = None
+    error: Optional[str] = None
+    results: Optional[List[Dict[str, Any]]] = None
+    execution_time: float
+
+
 
 # --- Admin / Knowledge Management Models ---
 

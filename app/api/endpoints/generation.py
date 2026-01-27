@@ -111,3 +111,25 @@ async def generate_python_endpoint(request: GenerateSQLRequest, api_key: str = D
             yield f"data: {json.dumps(error_data)}\n\n"
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+from app.models.schemas import ExecutePythonRequest, ExecutePythonResponse
+from app.services.execution_service import execute_python_code
+
+@router.post("/execute-python", response_model=ExecutePythonResponse)
+async def execute_python_endpoint(request: ExecutePythonRequest, api_key: str = Depends(verify_api_key)):
+    """
+    Executes Python code and returns the output and any results.
+    """
+    try:
+        result = execute_python_code(request.code, request.context)
+        return ExecutePythonResponse(
+            success=result["success"],
+            output=result["output"],
+            error=result["error"],
+            results=result.get("results"),
+            execution_time=0.0 # TODO: Measure time
+        )
+    except Exception as e:
+        logger.error(f"Error in execute_python_endpoint: {str(e)}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=str(e))
