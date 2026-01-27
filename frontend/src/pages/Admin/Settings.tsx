@@ -411,11 +411,35 @@ export const Settings = () => {
   // API Client Configuration state
   const [apiBaseUrl, setApiBaseUrl] = useState(localStorage.getItem('api_base_url') || '/api/v1');
   const [apiKey, setApiKey] = useState(localStorage.getItem('api_key') || '***REMOVED***');
+  const [showApiKeyDialog, setShowApiKeyDialog] = useState(false);
+  const [apiKeyInput, setApiKeyInput] = useState('');
+  const [apiKeyDialogError, setApiKeyDialogError] = useState<string | null>(null);
+  const [apiKeySaving, setApiKeySaving] = useState(false);
 
   useEffect(() => {
-    loadSettings();
-    loadModels();
+    initializeSettings();
   }, []);
+
+  const initializeSettings = async () => {
+    setLoading(true);
+    setApiKeyDialogError(null);
+    try {
+      const envKeyResponse = await api.admin.getEnvApiKey();
+      if (envKeyResponse.api_key) {
+        localStorage.setItem('api_key', envKeyResponse.api_key);
+        setApiKey(envKeyResponse.api_key);
+        await Promise.all([loadSettings(), loadModels()]);
+        return;
+      }
+      setShowApiKeyDialog(true);
+    } catch (error) {
+      console.error('Failed to load API key from .env', error);
+      setApiKeyDialogError(getErrorDetail(error, 'Failed to load API key from .env'));
+      setShowApiKeyDialog(true);
+    } finally {
+      setLoading(false);
+    }
+  };
 
   const loadSettings = async () => {
     try {
@@ -603,7 +627,71 @@ export const Settings = () => {
     window.location.reload();
   };
 
+  const handleApiKeySave = async () => {
+    const trimmedKey = apiKeyInput.trim();
+    if (!trimmedKey) {
+      setApiKeyDialogError('API key is required.');
+      return;
+    }
 
+    setApiKeySaving(true);
+    setApiKeyDialogError(null);
+    try {
+      await api.admin.setEnvApiKey(trimmedKey);
+      localStorage.setItem('api_key', trimmedKey);
+      setApiKey(trimmedKey);
+      setApiKeyInput('');
+      setShowApiKeyDialog(false);
+      setLoading(true);
+      await Promise.all([loadSettings(), loadModels()]);
+    } catch (error) {
+      console.error('Failed to save API key', error);
+      setApiKeyDialogError(getErrorDetail(error, 'Failed to save API key'));
+    } finally {
+      setApiKeySaving(false);
+      setLoading(false);
+    }
+  };
+
+
+
+  const apiKeyDialog = showApiKeyDialog && (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 px-4">
+      <div className="w-full max-w-lg bg-slate-950 border border-slate-800 rounded-2xl shadow-2xl p-6 space-y-4">
+        <div className="flex items-center justify-between">
+          <h3 className="text-xl font-semibold text-white">API Key Required</h3>
+        </div>
+        <p className="text-sm text-slate-400">
+          We could not find an API key in the backend <code>.env</code>. Enter one to continue.
+        </p>
+        <div>
+          <label className="block text-sm text-slate-300 mb-2">API Key</label>
+          <input
+            type="password"
+            value={apiKeyInput}
+            onChange={(e) => setApiKeyInput(e.target.value)}
+            className="w-full px-4 py-2 bg-slate-900 border border-slate-700 rounded-lg text-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+            placeholder="Enter your API key"
+          />
+        </div>
+        {apiKeyDialogError && (
+          <div className="p-3 bg-red-900/20 border border-red-500/30 rounded-lg text-sm text-red-300">
+            {apiKeyDialogError}
+          </div>
+        )}
+        <div className="flex justify-end">
+          <button
+            onClick={handleApiKeySave}
+            disabled={apiKeySaving}
+            className="flex items-center gap-2 px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {apiKeySaving ? <Loader2 size={16} className="animate-spin" /> : <Save size={16} />}
+            {apiKeySaving ? 'Saving...' : 'Save API Key'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
 
   if (loading) {
     return (
@@ -611,6 +699,10 @@ export const Settings = () => {
         <Loader2 className="animate-spin text-indigo-400" size={32} />
       </div>
     );
+  }
+
+  if (!settings && showApiKeyDialog) {
+    return <div className="relative h-full">{apiKeyDialog}</div>;
   }
 
   if (!settings) {
@@ -1071,6 +1163,7 @@ export const Settings = () => {
           trustServerCertificate: settings?.target_db?.trust_server_certificate ?? false
         }}
       />
+      {apiKeyDialog}
     </div >
   );
 };
