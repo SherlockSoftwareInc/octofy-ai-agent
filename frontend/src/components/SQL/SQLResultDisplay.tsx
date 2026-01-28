@@ -147,6 +147,8 @@ interface SQLResultDisplayProps {
     onExecutionComplete?: (result: ExecutePythonResponse) => void;
     /** Optional chart type override from user's natural language request */
     chartTypeOverride?: ChartTypeOption;
+    /** If true, only show the chart (for re-visualization) */
+    chartOnly?: boolean;
 }
 
 export const SQLResultDisplay: React.FC<SQLResultDisplayProps> = ({
@@ -156,7 +158,8 @@ export const SQLResultDisplay: React.FC<SQLResultDisplayProps> = ({
     queryType,
     executionResult,
     onExecutionComplete,
-    chartTypeOverride
+    chartTypeOverride,
+    chartOnly = false
 }) => {
     const [copied, setCopied] = useState(false);
     const [toast, setToast] = useState<{ message: string; type: ToastType } | null>(null);
@@ -304,6 +307,58 @@ export const SQLResultDisplay: React.FC<SQLResultDisplayProps> = ({
         }
     };
 
+    // CHART ONLY MODE: Only show the chart for python_code results (for re-visualization)
+    if (chartOnly && queryType === 'python_code' && executionResult && executionResult.results && executionResult.results.length > 0) {
+        // Use the same normalization logic as ExecutionResultViewer
+        const rec = executionResult.recommendation;
+        const supportedChartTypes = ['bar', 'line', 'pie', 'scatter', 'kpi'];
+        const requestedType = rec?.chart_type;
+        const isSupported = requestedType && supportedChartTypes.includes(requestedType);
+        // Only use chartMetadata if the requested type is supported and matches the recommendation exactly
+        let chartMetadata = null;
+        if (rec && isSupported && requestedType !== 'none' && requestedType !== 'kpi') {
+            const meta = recommendationToMetadata(rec);
+            // Only use if the type matches exactly what was requested
+            if (meta.type === requestedType) {
+                chartMetadata = meta;
+            }
+        }
+
+        // Normalize data for chart (handle both StructuredTableData and array)
+        let rows: any[] = [];
+        const result = executionResult.results.find(r => r.name === 'final_result_df') || executionResult.results[0];
+        if (result) {
+            if (Array.isArray(result.data)) {
+                rows = result.data;
+            } else if (result.data && Array.isArray(result.data.data)) {
+                rows = result.data.data;
+            } else if (result.data && result.data.rows) {
+                rows = result.data.rows;
+            }
+        }
+
+        // If not supported or not an exact match, show only the warning message, no chart
+        const shouldShowWarning = !isSupported || !chartMetadata || requestedType !== chartMetadata?.type;
+        return (
+            <div className="relative group mt-4">
+                <div className="absolute -inset-1 bg-gradient-to-r from-cyan-500 to-blue-500 rounded-2xl opacity-20 group-hover:opacity-30 blur transition duration-500"></div>
+                <div className="relative bg-slate-900 rounded-xl border border-slate-700/50 shadow-xl overflow-hidden p-6 flex flex-col items-center">
+                    {shouldShowWarning && (
+                        <div className="mb-4 p-4 bg-amber-900/40 border border-amber-600/40 rounded-lg text-amber-200 text-center">
+                            <div className="font-semibold mb-1">Sorry, I am not able to provide a <span className="uppercase">{requestedType}</span> chart.</div>
+                            <div className="text-sm">Supported chart types are: <span className="font-mono">{supportedChartTypes.join(', ')}</span></div>
+                        </div>
+                    )}
+                    {/* Only render the chart if the requested type is supported and matches the recommendation exactly */}
+                    {!shouldShowWarning && (
+                        <ResultChart data={rows} metadata={chartMetadata} />
+                    )}
+                </div>
+            </div>
+        );
+    }
+
+    // Default: full display
     return (
         <div className="relative group mt-4">
             {/* Decorative background blur */}
@@ -317,7 +372,6 @@ export const SQLResultDisplay: React.FC<SQLResultDisplayProps> = ({
                         {queryType === 'r_code' ? 'Generated R Code' : queryType === 'sas_code' ? 'Generated SAS Code' : queryType === 'python_code' ? 'Generated Python Code' : 'Generated SQL Query'}
                     </div>
                     <div className="flex items-center gap-2">
-
                         <button
                             onClick={openContributeDialog}
                             disabled={!sourceQuestion}
@@ -382,8 +436,6 @@ export const SQLResultDisplay: React.FC<SQLResultDisplayProps> = ({
                 {executionResult && (
                     <div className="border-t border-slate-700/50 bg-slate-900/50">
                         <div className="p-4 overflow-x-auto">
-
-
                             {executionResult.error && (
                                 <div className="mb-4">
                                     <h4 className="text-xs text-red-400 font-semibold mb-2 uppercase">Error</h4>
@@ -392,7 +444,6 @@ export const SQLResultDisplay: React.FC<SQLResultDisplayProps> = ({
                                     </pre>
                                 </div>
                             )}
-
                             {executionResult.results && executionResult.results.length > 0 && (
                                 <ExecutionResultViewer
                                     results={executionResult.results}
@@ -403,7 +454,6 @@ export const SQLResultDisplay: React.FC<SQLResultDisplayProps> = ({
                     </div>
                 )}
             </div>
-
 
             {/* Contribute Example Dialog */}
             {showDialog && (
