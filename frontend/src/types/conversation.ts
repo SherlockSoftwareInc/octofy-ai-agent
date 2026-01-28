@@ -1,4 +1,4 @@
-import type { DiscoveryResponse, GenerateSQLResponse, ExecutePythonResponse } from '../api/client';
+import type { DiscoveryResponse, GenerateSQLResponse, ExecutePythonResponse, ChartTypeOption } from '../api/client';
 
 export interface ChatMessage {
   id: string;
@@ -11,6 +11,8 @@ export interface ChatMessage {
   needsClarification?: boolean;
   sourceQuery?: string;
   executionResult?: ExecutePythonResponse;
+  /** User's requested chart type from natural language (e.g., "show as line chart") */
+  chartTypeOverride?: ChartTypeOption;
 }
 
 export interface Conversation {
