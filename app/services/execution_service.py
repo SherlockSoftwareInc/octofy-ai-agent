@@ -90,8 +90,10 @@ def execute_python_code(code: str, context: Optional[Dict[str, Any]] = None) -> 
     # We need __builtins__ in globals for imports to work
     global_scope = {'__builtins__': __builtins__}
     local_scope = context.copy() if context else {}
-    
-    # Ensure pandas is available as pd
+
+    # Ensure pandas is available as pd in both global and local scope
+    if 'pd' not in global_scope:
+        global_scope['pd'] = pd
     if 'pd' not in local_scope:
         local_scope['pd'] = pd
     
