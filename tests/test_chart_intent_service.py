@@ -4,6 +4,7 @@ Tests for Chart Intent Detection Service
 
 import pytest
 from app.services.chart_intent_service import detect_chart_intent, extract_data_query, ChartIntent
+from app.models.schemas import GenerateSQLRequest, ExecutePythonRequest
 
 
 class TestChartIntentDetection:
@@ -116,3 +117,29 @@ class TestExtractDataQuery:
         query = "show me sales by region"
         result = extract_data_query(query, None)
         assert result == query
+
+
+class TestSchemaChartIntent:
+    """Tests for chart_type_override in API schemas"""
+    
+    def test_generate_sql_request_has_chart_type_override(self):
+        request = GenerateSQLRequest(
+            query="show me sales",
+            chart_type_override="line"
+        )
+        assert request.chart_type_override == "line"
+    
+    def test_generate_sql_request_chart_override_default_none(self):
+        request = GenerateSQLRequest(query="show me sales")
+        assert request.chart_type_override is None
+    
+    def test_execute_python_request_has_chart_type_override(self):
+        request = ExecutePythonRequest(
+            code="print('hello')",
+            chart_type_override="bar"
+        )
+        assert request.chart_type_override == "bar"
+    
+    def test_execute_python_request_chart_override_default_none(self):
+        request = ExecutePythonRequest(code="print('hello')")
+        assert request.chart_type_override is None

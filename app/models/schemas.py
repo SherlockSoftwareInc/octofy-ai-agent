@@ -42,6 +42,7 @@ class GenerateSQLRequest(BaseModel):
     forceGeneral: bool = False # If True, skip classification and go straight to general LLM chat
     queryMode: Literal["generate", "search"] = "generate"  # "generate" for SQL generation, "search" for object search
     table_override: Optional[List[str]] = None # Explicit schema.table list from user selection
+    chart_type_override: Optional[Literal['bar', 'line', 'pie', 'scatter', 'kpi', 'none']] = None  # User-specified chart type
 
 class SearchObject(BaseModel):
     schema_name: str = Field(..., alias="schema")
@@ -67,6 +68,7 @@ class AgentStatus(BaseModel):
 class ExecutePythonRequest(BaseModel):
     code: str
     context: Optional[Dict[str, Any]] = None
+    chart_type_override: Optional[Literal['bar', 'line', 'pie', 'scatter', 'kpi', 'none']] = None  # User-specified chart type
 
 
 class ChartRecommendation(BaseModel):
