@@ -13,12 +13,12 @@
     "db_type": "mssql",
     "server": "localhost",
     "database_name": "northwind",
-    "connection_string_encrypted": "gAAAAABpeQlBrzvl-fcP4_09y9b_l2PP7P52HWMoqMgJi3safP2A38DFhUdummB1Xtc6fxmMEgYzUEIIjhOV_6bDkWuWCmniRC6GI7Y_fcuMIjICfK0xi3uO-tmn_XkwHu6uvRiQeubEQzq2XssQOWqDScKHMynGaC83cqyWJrU6BoCcxCAB2OvqAc7BWxfbbVelMX2XUGXoPr27snFldAT7h_PYVNelBthUP0447IlVKcfdqJJh9FXa3J_9_gH6H8mo5cOY-dNQgjTqNqzqjPXwxsA8hzQylg==",
+    "connection_string_encrypted": "gAAAAABpeVWcAOABqndULDrojtjlyEC8ETzG0IgTo7zD4iMdcEryYzzEqvgRdJ1xCP7NSRfLDBNaL0DFvWFIWLlHsxc2oxfDlg7R-ZahaPwdEclnbWX_-HCNKjC6zvjYQCFI4__dCyJnQ0dQanWKmHLhpcPlXzAv6btVijLUrvVYx4N4eJy1w_i9E_RQ7MlKCbEGKjhFgOWjG34hY3gkLTNetLrRUxUB03uDYCFzUiN2Pl8wOmoM171elENlntGNxNEsgfMpxssoaQ_i6StCbkX_UFmAQKEwUg==",
     "driver": "ODBC Driver 17 for SQL Server",
     "auth_type": "sql",
     "username": "sql_agent",
     "trust_server_certificate": true,
-    "python_connection_string_encrypted": "gAAAAABpeQlBPkhA2EDEO4do0z88e4sqYfaoEPZchtLB22Djd0WO9VhCChV4cBMgeYAMiOiq3zcDLrNHiJ7V39dcJWAwUKwXE3esP975l6ykKhnDG_SUht5zP4jp2r5Zxeevb5skvEX1sNxav5EoUspxleTTrNvAyk5gI-3kXbF2V75mq6ZKViXr7FeMXcC_-0z4os4dgkoBPJdHov0BbL9x2TrmzFpfgQBI_JWdM5qWHHxTXpexxvqPhat5ntsTcJNz92dXn0tO9a-vCA6rI-sU6K-fFXfoeg=="
+    "python_connection_string_encrypted": "gAAAAABpeVWczsckJAzeNbmHjB440jCCWAHBFKvmmmYWwB0eBKHt5lVXpIzPPhT0L5t7T1APDylKhf8KZIoqREPB0jWA-GFn4GpQMwKKZ70ZfRquliGKCXx-lM9KSVhzPxkBqoCTNG4pzMfqcI7sfObSzQYzWFUeS1HkyEwNChQ0E1QCwnk62BtHdvbhW_uU781cxSQD0W5NMvhAQLm1XeK-Rkjw5MtJA3XBIRbbvXP27abPaHmjEi2pPMmYrO1iTWJAgXKB2lj1"
   },
   "llm_config": {
     "llm_model": "deepseek-chat",
