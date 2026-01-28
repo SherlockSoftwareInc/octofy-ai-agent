@@ -2,7 +2,7 @@ import React, { useMemo, useState } from 'react';
 import { Copy, Check, Loader2, Gift, Play } from 'lucide-react';
 import { Toast } from '../Toast';
 import type { ToastType } from '../Toast';
-import { api, type FewShotItem, type ExecutePythonResponse, type ExecutePythonResult, type StructuredTableData } from '../../api/client';
+import { api, type FewShotItem, type ExecutePythonResponse, type ExecutePythonResult, type StructuredTableData, type ChartRecommendation, type ChartMetadata, type ChartTypeOption } from '../../api/client';
 import { DataTable } from '../DataTable/DataTable';
 
 
@@ -23,7 +23,19 @@ const ResultsWrapper = ({ children }: { children: React.ReactNode }) => (
     </div>
 );
 
-const ExecutionResultViewer: React.FC<{ results: ExecutePythonResult[]; recommendation?: any }> = ({ results }) => {
+/**
+ * Convert a ChartRecommendation (from backend) to ChartMetadata (for ResultChart)
+ */
+function recommendationToMetadata(rec: ChartRecommendation): ChartMetadata {
+    return {
+        type: rec.chart_type === 'kpi' ? 'none' : rec.chart_type as ChartMetadata['type'],
+        x_axis: rec.x_axis || null,
+        y_axes: rec.y_axis || [],
+        is_stacked: false,
+    };
+}
+
+const ExecutionResultViewer: React.FC<{ results: ExecutePythonResult[]; recommendation?: ChartRecommendation }> = ({ results, recommendation }) => {
     const normalizeTableData = (data: StructuredTableData | Array<Record<string, unknown>>, fallbackColumns?: string[]) => {
         if (Array.isArray(data)) {
             return { columns: fallbackColumns || Object.keys(data[0] || {}), rows: data };
@@ -46,10 +58,27 @@ const ExecutionResultViewer: React.FC<{ results: ExecutePythonResult[]; recommen
         });
     }, [results]);
 
+    // Convert recommendation to chart metadata if available
+    const chartMetadataFromRecommendation = useMemo(() => {
+        if (!recommendation || recommendation.chart_type === 'none' || recommendation.chart_type === 'kpi') {
+            return null;
+        }
+        return recommendationToMetadata(recommendation);
+    }, [recommendation]);
+
     return (
         <div className="space-y-6 w-full max-w-full">
             {resultsWithRows.map((res, idx) => {
                 const title = res.name;
+                
+                // Determine which chart metadata to use:
+                // 1. Prefer recommendation from backend (supports override)
+                // 2. Fall back to result-level chart_metadata
+                // 3. Fall back to viz_config based chart_metadata
+                const effectiveMetadata = chartMetadataFromRecommendation || res.chart_metadata;
+                const shouldShowChart = effectiveMetadata && effectiveMetadata.type !== 'none';
+                const vizConfigBlocksChart = res.viz_config && 
+                    (res.viz_config.category === 'no_chart' || res.viz_config.category === 'too_much_data');
 
                 return (
                     <div key={idx} className="w-full max-w-full bg-slate-900/50 rounded-xl border border-slate-800 p-4 shadow-sm overflow-hidden">
@@ -60,6 +89,11 @@ const ExecutionResultViewer: React.FC<{ results: ExecutePythonResult[]; recommen
                                     EXECUTION RESULT ({title.toUpperCase()})
                                 </h3>
                             </div>
+                            {recommendation && (
+                                <div className="text-xs text-slate-500">
+                                    {recommendation.title}
+                                </div>
+                            )}
                         </div>
 
                         <ResultsWrapper>
@@ -72,40 +106,30 @@ const ExecutionResultViewer: React.FC<{ results: ExecutePythonResult[]; recommen
                             </div>
                         </ResultsWrapper>
 
-
-                        {/* Chart Section - Conditional based on viz_config */}
-                        {res.viz_config && (
-                            <>
-                                {res.viz_config.category === 'no_chart' || res.viz_config.category === 'too_much_data' ? (
-                                    <div className="mt-4 p-3 bg-slate-800/50 border border-slate-700 rounded-lg">
-                                        <div className="flex items-center gap-2 text-sm text-slate-300">
-                                            <svg className="w-4 h-4 text-amber-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                                            </svg>
-                                            <span>{res.viz_config.message}</span>
-                                        </div>
-                                    </div>
-                                ) : (
-                                    res.chart_metadata && (
-                                        <ResultsWrapper>
-                                            <ResultChart
-                                                data={res.normalized.rows}
-                                                metadata={res.chart_metadata}
-                                            />
-                                        </ResultsWrapper>
-                                    )
-                                )}
-                            </>
-                        )}
-
-                        {/* Fallback to old chart_metadata if viz_config not present */}
-                        {!res.viz_config && res.chart_metadata && (
+                        {/* Chart Section */}
+                        {vizConfigBlocksChart ? (
+                            <div className="mt-4 p-3 bg-slate-800/50 border border-slate-700 rounded-lg">
+                                <div className="flex items-center gap-2 text-sm text-slate-300">
+                                    <svg className="w-4 h-4 text-amber-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                                    </svg>
+                                    <span>{res.viz_config?.message}</span>
+                                </div>
+                            </div>
+                        ) : shouldShowChart && effectiveMetadata ? (
                             <ResultsWrapper>
                                 <ResultChart
                                     data={res.normalized.rows}
-                                    metadata={res.chart_metadata}
+                                    metadata={effectiveMetadata}
                                 />
                             </ResultsWrapper>
+                        ) : null}
+
+                        {/* Show recommendation explanation if available */}
+                        {recommendation?.explanation && (
+                            <div className="mt-2 text-xs text-slate-500 italic">
+                                {recommendation.explanation}
+                            </div>
                         )}
                     </div>
                 );
@@ -121,6 +145,8 @@ interface SQLResultDisplayProps {
     queryType?: 'database' | 'r_code' | 'sas_code' | 'python_code' | 'general' | 'uncertain' | 'search';
     executionResult?: ExecutePythonResponse;
     onExecutionComplete?: (result: ExecutePythonResponse) => void;
+    /** Optional chart type override from user's natural language request */
+    chartTypeOverride?: ChartTypeOption;
 }
 
 export const SQLResultDisplay: React.FC<SQLResultDisplayProps> = ({
@@ -129,7 +155,8 @@ export const SQLResultDisplay: React.FC<SQLResultDisplayProps> = ({
     allUserMessages = [],
     queryType,
     executionResult,
-    onExecutionComplete
+    onExecutionComplete,
+    chartTypeOverride
 }) => {
     const [copied, setCopied] = useState(false);
     const [toast, setToast] = useState<{ message: string; type: ToastType } | null>(null);
@@ -254,7 +281,8 @@ export const SQLResultDisplay: React.FC<SQLResultDisplayProps> = ({
         if (!sql) return;
         setIsRunning(true);
         try {
-            const result = await api.executePython(sql);
+            // Pass chart type override to the execution API
+            const result = await api.executePython(sql, undefined, chartTypeOverride);
 
             // Call parent callback to persist the result
             if (onExecutionComplete) {
