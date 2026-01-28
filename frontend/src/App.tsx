@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { Send, Loader2, Sparkles, LayoutDashboard, User, Bot, Square, Eye, X, CheckCircle } from 'lucide-react';
 import { api } from './api/client';
-import type { GenerateSQLResponse, AgentStatus, ExecutePythonResponse, ChartTypeOption } from './api/client';
+import type { GenerateSQLResponse, AgentStatus, ExecutePythonResponse } from './api/client';
 import { SQLResultDisplay } from './components/SQL/SQLResultDisplay';
 import { AdminLayout } from './pages/Admin/AdminLayout';
 import { SchemaManager } from './pages/Admin/SchemaManager';
