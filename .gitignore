@@ -92,3 +92,8 @@ context_logs/
 deploy.tar.gz
 temp_files/
 config/agent_settings.json
+
+### --- Git Worktrees --- ###
+# Git worktree directories (should never be committed)
+.worktrees/
+worktrees/
