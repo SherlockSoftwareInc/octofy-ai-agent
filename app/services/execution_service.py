@@ -1,6 +1,7 @@
 from typing import Any, Dict, List, Optional
 import sys
 import io
+import sqlalchemy
 import pandas as pd
 import json
 import traceback
@@ -88,7 +89,12 @@ def execute_python_code(code: str, context: Optional[Dict[str, Any]] = None) -> 
     
     # Prepare execution scope with proper globals
     # We need __builtins__ in globals for imports to work
-    global_scope = {'__builtins__': __builtins__}
+    global_scope = {
+        '__builtins__': __builtins__,
+        'pd': pd,
+        'json': json,
+        'sqlalchemy': sqlalchemy,
+    }
     local_scope = context.copy() if context else {}
 
     # Ensure pandas is available as pd in both global and local scope

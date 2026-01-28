@@ -13,18 +13,18 @@
     "db_type": "mssql",
     "server": "localhost",
     "database_name": "northwind",
-    "connection_string_encrypted": "gAAAAABpeVWcAOABqndULDrojtjlyEC8ETzG0IgTo7zD4iMdcEryYzzEqvgRdJ1xCP7NSRfLDBNaL0DFvWFIWLlHsxc2oxfDlg7R-ZahaPwdEclnbWX_-HCNKjC6zvjYQCFI4__dCyJnQ0dQanWKmHLhpcPlXzAv6btVijLUrvVYx4N4eJy1w_i9E_RQ7MlKCbEGKjhFgOWjG34hY3gkLTNetLrRUxUB03uDYCFzUiN2Pl8wOmoM171elENlntGNxNEsgfMpxssoaQ_i6StCbkX_UFmAQKEwUg==",
+    "connection_string_encrypted": "gAAAAABpem6i77epXpRvLuWhShtIvhG4NLW5FJm5Mrxp1wnqyDmSvPFUjKKd3KTXSA4-ubbPMpGngAkDj7hMkPA4AD4g6Vh322dL5wO5-UBG5aSusH3H2VhxYqVgGqd6rOsHdwOE7hb8P-7E3y-hp8w5v6kmkbPjcXELPW6JRI3AJ_Tyz5lWvjMp7ScK3TbOVCpnzgfzqBtEd-RboLea03A6GoqqUhk6ZGBJCwGOLbqxhItoEI7zafA_0jWQM9rVg7Y9mxmIYA6z6ZTTPTqeTg8OzKKIj3AfbQ==",
     "driver": "ODBC Driver 17 for SQL Server",
     "auth_type": "sql",
     "username": "sql_agent",
     "trust_server_certificate": true,
-    "python_connection_string_encrypted": "gAAAAABpeVWczsckJAzeNbmHjB440jCCWAHBFKvmmmYWwB0eBKHt5lVXpIzPPhT0L5t7T1APDylKhf8KZIoqREPB0jWA-GFn4GpQMwKKZ70ZfRquliGKCXx-lM9KSVhzPxkBqoCTNG4pzMfqcI7sfObSzQYzWFUeS1HkyEwNChQ0E1QCwnk62BtHdvbhW_uU781cxSQD0W5NMvhAQLm1XeK-Rkjw5MtJA3XBIRbbvXP27abPaHmjEi2pPMmYrO1iTWJAgXKB2lj1"
+    "python_connection_string_encrypted": "gAAAAABpem6iZY8dDbSOFq9JzpbNx2E29c7VqmXXp8JsIOCHIivucEePLoAIiUK7FFIZYThIa9WIuvFIwp8fb-rwyjWznPC5hHtwsRop0YFtBHnr4ANlL-15_tt_ZrSUMPFvMHbpgj97m1vxGlj-eAqC8UdtPQl_Xc6Z1ZqL1dZwuL4Y7Uw5aBwDiEhj0QNlppIra4qLwE3tCKJRv4vQM9cp-WJC0C2h7iUTKTm6FSe8et0Xy7E4TgiKsi2p_YjFIbKFcV0wFd89"
   },
   "llm_config": {
-    "llm_model": "deepseek-chat",
+    "llm_model": "gpt-4-0613",
     "temperature": 0.0,
-    "llm_endpoint": "https://api.deepseek.com/",
-    "llm_api_key": "sk-d05a083b760d4874a07b29c5f1e073df"
+    "llm_endpoint": "https://api.openai.com/v1/",
+    "llm_api_key": "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"
   },
   "embedding_config": {
     "provider": "openai",
