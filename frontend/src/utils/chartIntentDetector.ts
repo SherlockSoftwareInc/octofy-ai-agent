@@ -139,3 +139,280 @@ export function getChartTypeLabel(chartType: ChartType): string {
     };
     return labels[chartType] || chartType;
 }
+
+// =============================================================================
+// ENHANCED RE-VISUALIZATION DETECTION
+// =============================================================================
+// These functions determine whether to re-visualize existing data with a new
+// chart type vs. generating new code for different data.
+
+/**
+ * Common business metrics that indicate what data is being requested
+ */
+const METRICS = [
+    'sales', 'revenue', 'profit', 'cost', 'expense', 'income', 'margin',
+    'count', 'total', 'sum', 'average', 'avg', 'mean', 'median',
+    'quantity', 'amount', 'price', 'rate', 'percentage', 'percent',
+    'growth', 'change', 'difference', 'ratio', 'share',
+    'orders', 'customers', 'users', 'visitors', 'transactions',
+    'inventory', 'stock', 'units', 'volume', 'capacity'
+];
+
+/**
+ * Common dimensions/groupings that indicate how data is sliced
+ */
+const DIMENSIONS = [
+    'category', 'categories', 'region', 'regions', 'country', 'countries',
+    'state', 'states', 'city', 'cities', 'location', 'locations',
+    'product', 'products', 'brand', 'brands', 'department', 'departments',
+    'customer', 'customers', 'segment', 'segments', 'channel', 'channels',
+    'store', 'stores', 'team', 'teams', 'employee', 'employees',
+    'vendor', 'vendors', 'supplier', 'suppliers'
+];
+
+/**
+ * Timeframe indicators that suggest specific time periods
+ */
+const TIMEFRAMES = [
+    // Years
+    '2020', '2021', '2022', '2023', '2024', '2025', '2026',
+    // Quarters
+    'q1', 'q2', 'q3', 'q4',
+    // Months
+    'january', 'february', 'march', 'april', 'may', 'june',
+    'july', 'august', 'september', 'october', 'november', 'december',
+    'jan', 'feb', 'mar', 'apr', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec',
+    // Relative periods
+    'last year', 'this year', 'next year', 'previous year',
+    'last month', 'this month', 'next month', 'previous month',
+    'last quarter', 'this quarter', 'next quarter', 'previous quarter',
+    'last week', 'this week', 'next week', 'previous week',
+    'ytd', 'mtd', 'qtd', 'year to date', 'month to date',
+    // Date ranges
+    'daily', 'weekly', 'monthly', 'quarterly', 'yearly', 'annual'
+];
+
+/**
+ * Modifiers that imply different data shape or aggregation
+ * These suggest the user wants a fundamentally different view
+ */
+const DATA_SHAPE_MODIFIERS = [
+    'trend', 'trends', 'trending',
+    'growth', 'growing',
+    'over time', 'by time', 'time series',
+    'comparison', 'compare', 'comparing', 'vs', 'versus', 'against',
+    'breakdown', 'break down', 'broken down',
+    'distribution', 'spread',
+    'top', 'bottom', 'best', 'worst', 'highest', 'lowest',
+    'cumulative', 'running total', 'rolling'
+];
+
+/**
+ * Explicit patterns that ALWAYS indicate chart-only (bypass keyword detection)
+ */
+const EXPLICIT_CHART_ONLY_PATTERNS = [
+    /^show\s+(this|that|it)\s+(as|in)\s+/i,
+    /^(display|render|visualize)\s+(this|that|it)\s+(as|in)\s+/i,
+    /^(switch|change|convert)\s+(to|this\s+to)\s+/i,
+    /^make\s+(this|it)\s+a\s+/i,
+    /^(use|try)\s+a\s+\w+\s*(chart|graph|plot)/i,
+    /^as\s+a?\s*(line|bar|pie|scatter)/i,
+    /^(line|bar|pie|scatter)\s*(chart|graph|plot)?\s*$/i,
+];
+
+/**
+ * Extract keywords from a query for comparison
+ */
+function extractKeywords(query: string): {
+    metrics: string[];
+    dimensions: string[];
+    timeframes: string[];
+    modifiers: string[];
+} {
+    const lowerQuery = query.toLowerCase();
+    
+    const foundMetrics = METRICS.filter(m => {
+        const regex = new RegExp(`\\b${m}\\b`, 'i');
+        return regex.test(lowerQuery);
+    });
+    
+    const foundDimensions = DIMENSIONS.filter(d => {
+        const regex = new RegExp(`\\b${d}\\b`, 'i');
+        return regex.test(lowerQuery);
+    });
+    
+    const foundTimeframes = TIMEFRAMES.filter(t => {
+        // For multi-word timeframes, use includes; for single words, use word boundary
+        if (t.includes(' ')) {
+            return lowerQuery.includes(t.toLowerCase());
+        }
+        const regex = new RegExp(`\\b${t}\\b`, 'i');
+        return regex.test(lowerQuery);
+    });
+    
+    const foundModifiers = DATA_SHAPE_MODIFIERS.filter(m => {
+        if (m.includes(' ')) {
+            return lowerQuery.includes(m.toLowerCase());
+        }
+        const regex = new RegExp(`\\b${m}\\b`, 'i');
+        return regex.test(lowerQuery);
+    });
+    
+    return {
+        metrics: foundMetrics,
+        dimensions: foundDimensions,
+        timeframes: foundTimeframes,
+        modifiers: foundModifiers,
+    };
+}
+
+/**
+ * Check if two sets of keywords have conflicts (different data being requested)
+ */
+function hasConflictingKeywords(
+    prevKeywords: ReturnType<typeof extractKeywords>,
+    newKeywords: ReturnType<typeof extractKeywords>
+): boolean {
+    // If new query has different metrics, it's different data
+    if (newKeywords.metrics.length > 0 && prevKeywords.metrics.length > 0) {
+        const hasNewMetric = newKeywords.metrics.some(m => !prevKeywords.metrics.includes(m));
+        if (hasNewMetric) return true;
+    }
+    
+    // If new query has different dimensions, it's different data
+    if (newKeywords.dimensions.length > 0 && prevKeywords.dimensions.length > 0) {
+        const hasNewDimension = newKeywords.dimensions.some(d => !prevKeywords.dimensions.includes(d));
+        if (hasNewDimension) return true;
+    }
+    
+    // If new query has different timeframes, it's different data
+    if (newKeywords.timeframes.length > 0 && prevKeywords.timeframes.length > 0) {
+        const hasNewTimeframe = newKeywords.timeframes.some(t => !prevKeywords.timeframes.includes(t));
+        if (hasNewTimeframe) return true;
+    }
+    
+    // If new query adds timeframes where there were none, it might be more specific
+    if (newKeywords.timeframes.length > 0 && prevKeywords.timeframes.length === 0) {
+        return true;
+    }
+    
+    return false;
+}
+
+/**
+ * Check if a query is an explicit chart-only pattern
+ * These patterns bypass all other detection and always trigger re-visualization
+ */
+export function isExplicitChartOnlyPattern(query: string): boolean {
+    const trimmed = query.trim();
+    return EXPLICIT_CHART_ONLY_PATTERNS.some(pattern => pattern.test(trimmed));
+}
+
+/**
+ * Check if new query requests different data than the previous query
+ */
+export function isDifferentDataRequest(newQuery: string, prevQuery: string): boolean {
+    const newKeywords = extractKeywords(newQuery);
+    const prevKeywords = extractKeywords(prevQuery);
+    
+    // If new query has data shape modifiers, it likely wants different data/view
+    if (newKeywords.modifiers.length > 0) {
+        // Exception: if previous query had the same modifiers, it's okay
+        const hasNewModifier = newKeywords.modifiers.some(m => !prevKeywords.modifiers.includes(m));
+        if (hasNewModifier) return true;
+    }
+    
+    // Check for conflicting keywords
+    return hasConflictingKeywords(prevKeywords, newKeywords);
+}
+
+/**
+ * Main decision function: Should we re-visualize existing data or generate new code?
+ * 
+ * @param chartIntent - Detected chart intent from the new query
+ * @param newQuery - The user's new query
+ * @param lastExecutedQuery - The query that produced the current results (if any)
+ * @returns true if we should re-visualize, false if we should generate new code
+ */
+export function shouldTriggerRevisualization(
+    chartIntent: ChartIntent | null,
+    newQuery: string,
+    lastExecutedQuery: string | undefined
+): boolean {
+    // No chart intent detected - definitely not a re-visualization
+    if (!chartIntent) {
+        return false;
+    }
+    
+    // Priority 1: Explicit chart-only patterns ALWAYS re-visualize
+    // Examples: "show it as line chart", "switch to bar chart"
+    if (isExplicitChartOnlyPattern(newQuery)) {
+        return true;
+    }
+    
+    // Priority 2: No previous execution - need to generate code first
+    if (!lastExecutedQuery) {
+        return false;
+    }
+    
+    // Priority 3: Check if user is requesting different data
+    if (isDifferentDataRequest(newQuery, lastExecutedQuery)) {
+        return false;
+    }
+    
+    // Priority 4: If isChartOnlyRequest is true from basic detection, trust it
+    if (chartIntent.isChartOnlyRequest) {
+        return true;
+    }
+    
+    // Priority 5: Chart intent detected with no conflicting keywords - re-visualize
+    // This catches cases like "show sales as line chart" after "show sales"
+    return true;
+}
+
+/**
+ * Get a reason for why we're generating new code instead of re-visualizing
+ * Useful for toast notifications
+ */
+export function getNewCodeReason(newQuery: string, lastExecutedQuery: string | undefined): string | null {
+    if (!lastExecutedQuery) {
+        return 'No previous results to re-visualize';
+    }
+    
+    const newKeywords = extractKeywords(newQuery);
+    const prevKeywords = extractKeywords(lastExecutedQuery);
+    
+    // Check for new modifiers
+    if (newKeywords.modifiers.length > 0) {
+        const newModifier = newKeywords.modifiers.find(m => !prevKeywords.modifiers.includes(m));
+        if (newModifier) {
+            return `Detected "${newModifier}" - generating new analysis`;
+        }
+    }
+    
+    // Check for different timeframes
+    if (newKeywords.timeframes.length > 0) {
+        const newTimeframe = newKeywords.timeframes.find(t => !prevKeywords.timeframes.includes(t));
+        if (newTimeframe) {
+            return `Different time period detected (${newTimeframe})`;
+        }
+    }
+    
+    // Check for different metrics
+    if (newKeywords.metrics.length > 0) {
+        const newMetric = newKeywords.metrics.find(m => !prevKeywords.metrics.includes(m));
+        if (newMetric) {
+            return `Different metric detected (${newMetric})`;
+        }
+    }
+    
+    // Check for different dimensions
+    if (newKeywords.dimensions.length > 0) {
+        const newDimension = newKeywords.dimensions.find(d => !prevKeywords.dimensions.includes(d));
+        if (newDimension) {
+            return `Different grouping detected (${newDimension})`;
+        }
+    }
+    
+    return null;
+}
