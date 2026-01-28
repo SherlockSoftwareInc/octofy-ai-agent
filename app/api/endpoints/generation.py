@@ -189,7 +189,9 @@ async def execute_python_endpoint(request: ExecutePythonRequest, api_key: str = 
                         df = pd.DataFrame(target_df_data)
 
                     viz_service = VisualizationService()
-                    recommendation = viz_service.get_chart_recommendation(df, request.code)
+                    recommendation = viz_service.get_chart_recommendation(
+                        df, request.code, request.chart_type_override
+                    )
                 except Exception as viz_err:
                     logger.error(f"Visualization recommendation failed: {viz_err}")
 

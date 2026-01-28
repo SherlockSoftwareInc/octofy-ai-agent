@@ -90,8 +90,10 @@ export interface SearchObject {
 }
 
 
+export type ChartTypeOption = 'bar' | 'line' | 'pie' | 'scatter' | 'kpi' | 'none';
+
 export interface ChartRecommendation {
-    chart_type: 'bar' | 'line' | 'pie' | 'scatter' | 'kpi' | 'none';
+    chart_type: ChartTypeOption;
     x_axis?: string;
     y_axis?: string[];
     title?: string;
@@ -114,7 +116,7 @@ export interface StructuredTableData {
 }
 
 export interface ChartMetadata {
-    type: 'bar' | 'stacked-bar' | 'none';
+    type: 'bar' | 'stacked-bar' | 'line' | 'pie' | 'scatter' | 'kpi' | 'none';
     x_axis: string | null;
     y_axes: string[];
     is_stacked: boolean;
@@ -432,8 +434,12 @@ export const api = {
         return finalResult;
     },
 
-    executePython: async (code: string, context?: any): Promise<ExecutePythonResponse> => {
-        const response = await axios.post(`${API_BASE_URL}/execute-python`, { code, context });
+    executePython: async (code: string, context?: any, chartTypeOverride?: ChartTypeOption): Promise<ExecutePythonResponse> => {
+        const response = await axios.post(`${API_BASE_URL}/execute-python`, { 
+            code, 
+            context,
+            chart_type_override: chartTypeOverride 
+        });
         return response.data;
     },
 

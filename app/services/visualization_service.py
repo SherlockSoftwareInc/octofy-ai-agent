@@ -14,12 +14,30 @@ class VisualizationService:
     def __init__(self):
         self.llm_service = get_llm_service()
 
-    def get_chart_recommendation(self, df: pd.DataFrame, user_query: str) -> Optional[ChartRecommendation]:
+    def get_chart_recommendation(
+        self, 
+        df: pd.DataFrame, 
+        user_query: str,
+        chart_type_override: Optional[str] = None
+    ) -> Optional[ChartRecommendation]:
         """
         Analyzes the DataFrame and user query to recommend the best visualization.
+        
+        Args:
+            df: DataFrame containing the data to visualize
+            user_query: User's original query/question
+            chart_type_override: If provided, use this chart type instead of LLM recommendation
+        
+        Returns:
+            ChartRecommendation or None if no visualization is appropriate
         """
         if df is None or df.empty:
             return None
+
+        # If chart type override is provided, skip LLM and build recommendation directly
+        if chart_type_override and chart_type_override != 'none':
+            logger.info(f"Using chart type override: {chart_type_override}")
+            return self._build_override_recommendation(df, chart_type_override, user_query)
 
         # 1. Profile the Data
         profile = self._profile_data(df)
@@ -203,3 +221,88 @@ Return valid JSON ONLY. No markdown, no explanations outside the JSON.
                 rec.colors = valid_colors
 
         return True
+
+    def _build_override_recommendation(
+        self, 
+        df: pd.DataFrame, 
+        chart_type: str,
+        user_query: str = ""
+    ) -> Optional[ChartRecommendation]:
+        """
+        Build a chart recommendation using explicit chart type override.
+        Attempts to intelligently select x/y axes based on data types.
+        
+        Args:
+            df: DataFrame to visualize
+            chart_type: The chart type requested by user
+            user_query: Original user query for context
+        
+        Returns:
+            ChartRecommendation with the specified chart type
+        """
+        columns = list(df.columns)
+        
+        # Separate numeric and categorical columns
+        numeric_cols = df.select_dtypes(include=['number']).columns.tolist()
+        categorical_cols = df.select_dtypes(include=['object', 'category']).columns.tolist()
+        datetime_cols = df.select_dtypes(include=['datetime64']).columns.tolist()
+        
+        x_axis = None
+        y_axis = []
+        
+        if chart_type == 'line':
+            # Line charts: prefer datetime/categorical for X, numeric for Y
+            if datetime_cols:
+                x_axis = datetime_cols[0]
+            elif categorical_cols:
+                x_axis = categorical_cols[0]
+            elif columns:
+                x_axis = columns[0]
+            y_axis = numeric_cols[:3] if numeric_cols else []
+            
+        elif chart_type == 'bar':
+            # Bar charts: categorical X, numeric Y
+            if categorical_cols:
+                x_axis = categorical_cols[0]
+            elif columns:
+                x_axis = columns[0]
+            y_axis = numeric_cols[:3] if numeric_cols else []
+            
+        elif chart_type == 'pie':
+            # Pie charts: categorical label, single numeric value
+            if categorical_cols:
+                x_axis = categorical_cols[0]
+            elif columns:
+                x_axis = columns[0]
+            y_axis = numeric_cols[:1] if numeric_cols else []
+            
+        elif chart_type == 'scatter':
+            # Scatter: two numeric columns
+            if len(numeric_cols) >= 2:
+                x_axis = numeric_cols[0]
+                y_axis = [numeric_cols[1]]
+            elif len(numeric_cols) == 1 and columns:
+                x_axis = columns[0]
+                y_axis = numeric_cols
+                
+        elif chart_type == 'kpi':
+            # KPI: single value
+            if numeric_cols:
+                y_axis = [numeric_cols[0]]
+        
+        # Fallback if we couldn't determine axes
+        if not x_axis and not y_axis:
+            if len(columns) >= 2:
+                x_axis = columns[0]
+                y_axis = [columns[1]]
+            elif len(columns) == 1:
+                y_axis = [columns[0]]
+        
+        return ChartRecommendation(
+            chart_type=chart_type,  # type: ignore
+            x_axis=x_axis,
+            y_axis=y_axis if y_axis else None,
+            title=f"Data Visualization ({chart_type.title()} Chart)",
+            explanation=f"User requested {chart_type} chart visualization",
+            colors=None
+        )

@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
-import { Send, Loader2, Sparkles, LayoutDashboard, User, Bot, Square, Eye, X } from 'lucide-react';
+import { Send, Loader2, Sparkles, LayoutDashboard, User, Bot, Square, Eye, X, CheckCircle } from 'lucide-react';
 import { api } from './api/client';
-import type { GenerateSQLResponse, AgentStatus, ExecutePythonResponse } from './api/client';
+import type { GenerateSQLResponse, AgentStatus, ExecutePythonResponse, ChartTypeOption } from './api/client';
 import { SQLResultDisplay } from './components/SQL/SQLResultDisplay';
 import { AdminLayout } from './pages/Admin/AdminLayout';
 import { SchemaManager } from './pages/Admin/SchemaManager';
@@ -24,6 +24,7 @@ import {
   generateInitialTitle,
   generateAutoTitle
 } from './utils/conversationStorage';
+import { detectChartIntent, getChartTypeLabel, shouldTriggerRevisualization, getNewCodeReason } from './utils/chartIntentDetector';
 
 function App() {
   // Simple Router State (Hash based or state based)
@@ -357,11 +358,103 @@ function App() {
 
     if (!conversationId) return;
 
+    // Detect chart intent from user query
+    const chartIntent = detectChartIntent(query);
+    const chartTypeOverride = chartIntent?.chartType;
+
+    // Find the last AI message with Python code and execution results
+    const lastPythonMessage = [...chatHistory].reverse().find(
+      msg => msg.type === 'ai' && 
+             msg.queryType === 'python_code' && 
+             msg.sqlResult?.sql &&
+             msg.executionResult
+    );
+
+    // Get the source query from the last executed message for comparison
+    const lastExecutedQuery = lastPythonMessage?.sourceQuery;
+
+    // Check if we should re-visualize (vs generate new code)
+    const shouldRevisualize = chartIntent && 
+      lastPythonMessage?.sqlResult?.sql && 
+      lastPythonMessage?.executionResult &&
+      shouldTriggerRevisualization(chartIntent, query, lastExecutedQuery);
+
+    if (shouldRevisualize && lastPythonMessage) {
+      // Re-visualization: Update existing chart in-place
+      const userMessage: ChatMessage = {
+        id: generateMessageId(),
+        type: 'user',
+        content: query,
+        timestamp: new Date(),
+        chartTypeOverride: chartTypeOverride
+      };
+
+      setQuery('');
+      setIsLoading(true);
+
+      try {
+        // Re-execute the same Python code with the new chart type override
+        const result = await api.executePython(
+          lastPythonMessage.sqlResult!.sql, 
+          undefined, 
+          chartTypeOverride
+        );
+
+        // UPDATE the existing AI message in-place (not create a new one)
+        const aiMessageIndex = chatHistory.findIndex(m => m.id === lastPythonMessage.id);
+        
+        if (aiMessageIndex !== -1) {
+          const updatedAIMessage: ChatMessage = {
+            ...lastPythonMessage,
+            executionResult: result,
+            chartTypeOverride: chartTypeOverride
+          };
+
+          // Build new message list: keep everything, update the AI message, add user message at end
+          const updatedMessages = [
+            ...chatHistory.slice(0, aiMessageIndex),
+            updatedAIMessage,
+            ...chatHistory.slice(aiMessageIndex + 1),
+            userMessage
+          ];
+          
+          updateConversation(conversationId, { messages: updatedMessages });
+        } else {
+          // Fallback: just add user message if AI message not found
+          const updatedMessages = [...chatHistory, userMessage];
+          updateConversation(conversationId, { messages: updatedMessages });
+        }
+      } catch (error) {
+        console.error('Re-visualization failed:', error);
+        // Add user message and error message
+        const errorMessage: ChatMessage = {
+          id: generateMessageId(),
+          type: 'ai',
+          content: 'Sorry, I couldn\'t update the visualization. Please try again.',
+          timestamp: new Date()
+        };
+        const updatedMessages = [...chatHistory, userMessage, errorMessage];
+        updateConversation(conversationId, { messages: updatedMessages });
+      } finally {
+        setIsLoading(false);
+      }
+      return;
+    }
+
+    // If chart intent detected but we're NOT re-visualizing, show toast explaining why
+    if (chartIntent && lastExecutedQuery) {
+      const reason = getNewCodeReason(query, lastExecutedQuery);
+      if (reason) {
+        setToast({ message: reason, type: 'info' });
+      }
+    }
+
     const userMessage: ChatMessage = {
       id: generateMessageId(),
       type: 'user',
       content: query,
-      timestamp: new Date()
+      timestamp: new Date(),
+      chartTypeOverride: chartTypeOverride
     };
 
     // Add user message to chat history
@@ -476,7 +569,8 @@ function App() {
           discoveryResult: context,
           sqlResult: result,
           queryType: normalizedQueryType,
-          sourceQuery: currentQuery
+          sourceQuery: currentQuery,
+          chartTypeOverride: chartTypeOverride  // Pass chart type preference from user query
         };
 
         const updatedMessages = [...currentMessages, aiMessage];
@@ -705,9 +799,18 @@ function App() {
                           }`}>
                           {/* User Message */}
                           {message.type === 'user' && (
-                            <p className="text-slate-200 leading-relaxed">
-                              {message.content}
-                            </p>
+                            <div className="space-y-2">
+                              <p className="text-slate-200 leading-relaxed">
+                                {message.content}
+                              </p>
+                              {/* Chart Type Updated Badge */}
+                              {message.chartTypeOverride && (
+                                <div className="flex items-center gap-1.5 text-emerald-400 text-xs font-medium">
+                                  <CheckCircle size={14} />
+                                  <span>Updated to {getChartTypeLabel(message.chartTypeOverride)}</span>
+                                </div>
+                              )}
+                            </div>
                           )}
 
                           {/* AI Message */}
@@ -861,6 +964,7 @@ function App() {
                                       queryType={message.queryType}
                                       executionResult={message.executionResult}
                                       onExecutionComplete={(result) => handleExecutionComplete(message.id, result)}
+                                      chartTypeOverride={message.chartTypeOverride}
                                     />
                                   ) : (
                                     // Show explanation when no SQL was generated
