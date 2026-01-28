@@ -91,3 +91,4 @@ Thumbs.db
 context_logs/
 deploy.tar.gz
 temp_files/
+config/agent_settings.json
