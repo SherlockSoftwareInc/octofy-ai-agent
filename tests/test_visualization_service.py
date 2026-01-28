@@ -140,6 +140,43 @@ class TestVisualizationServiceOverride:
         assert "bar" in result.title.lower()
         assert result.explanation is not None
         assert "bar" in result.explanation.lower()
+    
+    def test_string_numeric_values_detected(self, service):
+        """Numeric values stored as strings should still be used for Y axis"""
+        # Simulate data where numeric values are stored as strings (common after JSON serialization)
+        df = pd.DataFrame({
+            'country': ['Argentina', 'Austria', 'Belgium', 'Brazil', 'Canada'],
+            'value1': ['0.0000', '25601.3448', '6306.6999', '20148.8199', '7372.6800'],
+            'value2': ['1816.6000', '57401.8439', '11434.4801', '41941.1875', '31298.0603'],
+            'value3': ['6302.5000', '45000.6500', '16083.6750', '44835.7690', '11525.5500']
+        })
+        
+        result = service.get_chart_recommendation(df, "test query", chart_type_override="line")
+        
+        assert result is not None
+        assert result.chart_type == "line"
+        assert result.x_axis == "country"
+        # Should detect string columns as numeric and use them for Y axis
+        assert result.y_axis is not None
+        assert len(result.y_axis) > 0
+    
+    def test_fallback_uses_remaining_columns(self, service):
+        """When no numeric columns, should fallback to using remaining columns"""
+        # DataFrame with only string columns
+        df = pd.DataFrame({
+            'category': ['A', 'B', 'C'],
+            'label1': ['X', 'Y', 'Z'],
+            'label2': ['P', 'Q', 'R']
+        })
+        
+        result = service.get_chart_recommendation(df, "test query", chart_type_override="bar")
+        
+        assert result is not None
+        assert result.chart_type == "bar"
+        assert result.x_axis is not None
+        # Should use remaining columns for Y axis as fallback
+        assert result.y_axis is not None
+        assert len(result.y_axis) > 0
 
 
 class TestEndpointChartOverrideWiring:
