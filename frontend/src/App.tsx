@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { Send, Loader2, Sparkles, LayoutDashboard, User, Bot, Square, Eye, X } from 'lucide-react';
 import { api } from './api/client';
-import type { GenerateSQLResponse, AgentStatus, ExecutePythonResponse } from './api/client';
+import type { GenerateSQLResponse, AgentStatus, ExecutePythonResponse, ChartTypeOption } from './api/client';
 import { SQLResultDisplay } from './components/SQL/SQLResultDisplay';
 import { AdminLayout } from './pages/Admin/AdminLayout';
 import { SchemaManager } from './pages/Admin/SchemaManager';
@@ -24,6 +24,7 @@ import {
   generateInitialTitle,
   generateAutoTitle
 } from './utils/conversationStorage';
+import { detectChartIntent, isRevisualizationRequest, getChartTypeLabel } from './utils/chartIntentDetector';
 
 function App() {
   // Simple Router State (Hash based or state based)
@@ -357,11 +358,81 @@ function App() {
 
     if (!conversationId) return;
 
+    // Detect chart intent from user query
+    const chartIntent = detectChartIntent(query);
+    const chartTypeOverride = chartIntent?.chartType;
+
+    // Check if this is a re-visualization request (e.g., "show as line chart")
+    if (chartIntent?.isChartOnlyRequest) {
+      // Find the last AI message with Python code and execution results
+      const lastPythonMessage = [...chatHistory].reverse().find(
+        msg => msg.type === 'ai' && 
+               msg.queryType === 'python_code' && 
+               msg.sqlResult?.sql &&
+               msg.executionResult
+      );
+
+      if (lastPythonMessage?.sqlResult?.sql && lastPythonMessage?.executionResult) {
+        // Re-run execution with new chart type
+        const userMessage: ChatMessage = {
+          id: generateMessageId(),
+          type: 'user',
+          content: query,
+          timestamp: new Date(),
+          chartTypeOverride: chartTypeOverride
+        };
+
+        const currentMessages = [...chatHistory, userMessage];
+        updateConversation(conversationId, { messages: currentMessages });
+        setQuery('');
+        setIsLoading(true);
+
+        try {
+          // Re-execute the same Python code with the new chart type override
+          const result = await api.executePython(
+            lastPythonMessage.sqlResult.sql, 
+            undefined, 
+            chartTypeOverride
+          );
+
+          // Create AI response with updated visualization
+          const aiMessage: ChatMessage = {
+            id: generateMessageId(),
+            type: 'ai',
+            content: `Here's the data visualized as a ${getChartTypeLabel(chartTypeOverride!)}:`,
+            timestamp: new Date(),
+            sqlResult: lastPythonMessage.sqlResult,
+            queryType: 'python_code',
+            sourceQuery: query,
+            executionResult: result,
+            chartTypeOverride: chartTypeOverride
+          };
+
+          const updatedMessages = [...currentMessages, aiMessage];
+          updateConversation(conversationId, { messages: updatedMessages });
+        } catch (error) {
+          console.error('Re-visualization failed:', error);
+          const errorMessage: ChatMessage = {
+            id: generateMessageId(),
+            type: 'ai',
+            content: 'Sorry, I couldn\'t update the visualization. Please try again.',
+            timestamp: new Date()
+          };
+          const updatedMessages = [...currentMessages, errorMessage];
+          updateConversation(conversationId, { messages: updatedMessages });
+        } finally {
+          setIsLoading(false);
+        }
+        return;
+      }
+    }
+
     const userMessage: ChatMessage = {
       id: generateMessageId(),
       type: 'user',
       content: query,
-      timestamp: new Date()
+      timestamp: new Date(),
+      chartTypeOverride: chartTypeOverride
     };
 
     // Add user message to chat history
@@ -476,7 +547,8 @@ function App() {
           discoveryResult: context,
           sqlResult: result,
           queryType: normalizedQueryType,
-          sourceQuery: currentQuery
+          sourceQuery: currentQuery,
+          chartTypeOverride: chartTypeOverride  // Pass chart type preference from user query
         };
 
         const updatedMessages = [...currentMessages, aiMessage];
@@ -861,6 +933,7 @@ function App() {
                                       queryType={message.queryType}
                                       executionResult={message.executionResult}
                                       onExecutionComplete={(result) => handleExecutionComplete(message.id, result)}
+                                      chartTypeOverride={message.chartTypeOverride}
                                     />
                                   ) : (
                                     // Show explanation when no SQL was generated
