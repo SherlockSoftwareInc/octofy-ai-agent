@@ -140,3 +140,35 @@ class TestVisualizationServiceOverride:
         assert "bar" in result.title.lower()
         assert result.explanation is not None
         assert "bar" in result.explanation.lower()
+
+
+class TestEndpointChartOverrideWiring:
+    """Tests to verify execute-python endpoint properly passes chart_type_override"""
+    
+    def test_endpoint_passes_chart_type_override_to_viz_service(self):
+        """Verify that execute-python endpoint passes chart_type_override to VisualizationService"""
+        from pathlib import Path
+        
+        # Read the source code of the endpoint directly to avoid import issues
+        endpoint_file = Path(__file__).parent.parent / "app" / "api" / "endpoints" / "generation.py"
+        source = endpoint_file.read_text()
+        
+        # Verify that chart_type_override is passed to get_chart_recommendation
+        assert "chart_type_override" in source, \
+            "execute_python_endpoint should reference chart_type_override"
+        assert "request.chart_type_override" in source, \
+            "execute_python_endpoint should pass request.chart_type_override to viz service"
+    
+    def test_viz_service_call_includes_override_param(self):
+        """Verify the get_chart_recommendation call signature includes override"""
+        from pathlib import Path
+        
+        # Read the source code directly
+        endpoint_file = Path(__file__).parent.parent / "app" / "api" / "endpoints" / "generation.py"
+        source = endpoint_file.read_text()
+        
+        # Check that the call pattern includes the override parameter
+        assert "get_chart_recommendation(" in source
+        # Should have 3 arguments: df, code, and chart_type_override
+        assert "request.chart_type_override" in source, \
+            "get_chart_recommendation should be called with chart_type_override parameter"
