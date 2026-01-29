@@ -1039,3 +1039,151 @@ import sqlalchemy
         context_text=prompt
     )
     yield {"type": "result", "payload": response}
+
+
+def regenerate_python_with_error_feedback(
+    original_request: str,
+    failed_code: str,
+    error_message: str,
+    schema_context: str,
+    attempt_number: int
+) -> str:
+    """
+    Regenerate Python code based on execution error feedback.
+    
+    Args:
+        original_request: The user's original natural language request
+        failed_code: The Python code that failed to execute
+        error_message: The error message and traceback from execution
+        schema_context: The database schema context used for original generation
+        attempt_number: Which retry attempt this is (2-5)
+    
+    Returns:
+        Regenerated Python code as a string
+    """
+    llm_service = get_llm_service()
+    
+    # Strip DB_CONNECTION_STRING from failed code to avoid sending sensitive data
+    code_to_send = _strip_db_connection_injection(failed_code)
+    
+    prompt = f"""### ROLE
+You are an expert Python Programmer debugging code execution failures.
+
+### CONTEXT
+A Python script was generated to answer a user's request, but it failed during execution.
+Your task is to fix the code based on the error feedback.
+
+**IMPORTANT**: This is retry attempt {attempt_number} of 5. Focus on fixing the specific error while still fulfilling the original user request.
+
+### ORIGINAL USER REQUEST
+{original_request}
+
+### FAILED CODE
+```python
+{code_to_send}
+```
+
+### EXECUTION ERROR
+```
+{error_message}
+```
+
+### DATABASE SCHEMA
+{schema_context}
+
+### YOUR TASK
+1. Analyze the error carefully - identify the root cause
+2. Fix the specific issue in the code
+3. **CRITICAL**: The fix must still address the original user request
+4. **CRITICAL**: Do NOT change the goal - only fix the execution error
+5. Return corrected Python code that will execute successfully
+
+### COMMON ISSUES TO CHECK
+- **Connection Issues**: Ensure `engine.raw_connection()` is used with try/finally pattern
+- **SQL Syntax**: Check table names, column names match the schema exactly (case-sensitive)
+- **Data Types**: Ensure proper type conversions for operations
+- **Missing Imports**: Verify all required libraries are imported
+- **Variable Names**: Check for typos in variable names
+- **DataFrame Operations**: Ensure operations are valid for pandas DataFrames
+
+### PYTHON CODE GUIDELINES (SAME AS BEFORE)
+- **Connectivity:**
+    - The application will inject `DB_CONNECTION_STRING` at runtime (you don't need to define it)
+    - **MANDATORY PATTERN**: 
+      ```python
+      conn = engine.raw_connection()
+      try:
+          df = pd.read_sql("SELECT * FROM dbo.TableName", conn)
+      finally:
+          conn.close()
+      ```
+    - **DO NOT use context managers** (`with` statements for connections)
+- **Data Retrieval:**
+    - Use ONLY tables and columns from the DATABASE SCHEMA
+    - Use exact table/column names (case-sensitive)
+- **Final Output:**
+    - Assign final result to `final_result_df`
+    - Do NOT wrap in `def main():` function
+
+### OUTPUT FORMAT
+Return ONLY the corrected Python code:
+- Start with # comments explaining the fix
+- Include all imports
+- Use the MANDATORY connection pattern
+- No markdown blocks, no shell commands, no plain text explanations
+- Just executable Python code
+
+**Example Format:**
+# Fixed: Corrected table name from 'products' to 'dbo.Products'
+# Fixed: Added missing import for datetime
+import pandas as pd
+import sqlalchemy
+from datetime import datetime
+# ... rest of corrected code ...
+"""
+    
+    # Generate fixed code
+    fixed_code = llm_service.chat(prompt, temperature=0.1)
+    
+    # Clean up the generated code
+    fixed_code = _cleanup_python_code(fixed_code)
+    
+    return fixed_code
+
+
+def _strip_db_connection_injection(code: str) -> str:
+    """
+    Remove the injected DB_CONNECTION_STRING value from code before sending to LLM.
+    Keeps the variable reference but removes the actual connection string.
+    
+    Args:
+        code: Python code that may contain injected connection string
+    
+    Returns:
+        Code with DB_CONNECTION_STRING reference preserved but value stripped
+    """
+    if not code:
+        return code
+    
+    # Pattern to match DB_CONNECTION_STRING assignment (keep the pattern, remove the value)
+    # This regex looks for lines like: DB_CONNECTION_STRING = "mssql+pyodbc://..."
+    # We'll replace the value with a placeholder comment
+    
+    lines = code.split('\n')
+    cleaned_lines = []
+    
+    for line in lines:
+        # Check if this line contains DB_CONNECTION_STRING assignment
+        if 'DB_CONNECTION_STRING' in line and '=' in line:
+            # If it's a comment showing the example format, keep it
+            if line.strip().startswith('#'):
+                cleaned_lines.append(line)
+            # If it's an actual assignment, replace with comment
+            elif re.match(r'\s*DB_CONNECTION_STRING\s*=', line):
+                cleaned_lines.append('# DB_CONNECTION_STRING will be injected at runtime')
+            else:
+                cleaned_lines.append(line)
+        else:
+            cleaned_lines.append(line)
+    
+    return '\n'.join(cleaned_lines)

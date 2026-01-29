@@ -114,6 +114,7 @@ async def generate_python_endpoint(request: GenerateSQLRequest, api_key: str = D
 
 from app.models.schemas import ExecutePythonRequest, ExecutePythonResponse
 from app.services.execution_service import execute_python_code
+from app.services.code_generation_service import regenerate_python_with_error_feedback
 
 from app.services.visualization_service import VisualizationService
 
@@ -121,8 +122,11 @@ from app.services.visualization_service import VisualizationService
 async def execute_python_endpoint(request: ExecutePythonRequest, api_key: str = Depends(verify_api_key)):
     """
     Executes Python code and returns the output and any results.
-    automatically appends a chart recommendation if a DataFrame is produced.
+    Automatically retries up to 5 times if execution fails, using LLM to fix errors.
+    Appends a chart recommendation if a DataFrame is produced.
     """
+    MAX_RETRY_ATTEMPTS = 5
+    
     try:
         from app.services.settings_service import load_settings, decrypt_string
         
@@ -138,6 +142,7 @@ async def execute_python_endpoint(request: ExecutePythonRequest, api_key: str = 
         exec_context = request.context or {}
         
         # Inject DB_CONNECTION_STRING if available
+        decrypted_conn_str = None
         if encrypted_conn_str:
             try:
                 decrypted_conn_str = decrypt_string(encrypted_conn_str)
@@ -152,18 +157,64 @@ async def execute_python_endpoint(request: ExecutePythonRequest, api_key: str = 
                         
             except Exception as e:
                 logger.error(f"Failed to decrypt python connection string: {e}")
-                
-        # 2. Execute Code with profiling enabled
-        # Extract user_query from context if available
-        user_query = exec_context.get("user_query", "") if exec_context else ""
-        result = execute_python_code(
-            request.code, 
-            exec_context,
-            enable_profiling=True,  # Always enable profiling for workflow analysis
-            user_query=user_query
-        )
         
-        # Initialize recommendation (will be set if visualization is possible)
+        # Extract user_query and schema_context from context (needed for retry)
+        user_query = exec_context.get("user_query", "") if exec_context else ""
+        schema_context = exec_context.get("schema_context", "") if exec_context else ""
+        
+        # 2. Execute Code with Retry Loop
+        current_code = request.code
+        original_error = None
+        attempt = 1
+        result = None
+        
+        while attempt <= MAX_RETRY_ATTEMPTS:
+            logger.info(f"Executing Python code (attempt {attempt}/{MAX_RETRY_ATTEMPTS})")
+            
+            result = execute_python_code(
+                current_code, 
+                exec_context,
+                enable_profiling=True,  # Always enable profiling for workflow analysis
+                user_query=user_query
+            )
+            
+            # Check if execution was successful
+            if result["success"]:
+                logger.info(f"Code execution succeeded on attempt {attempt}")
+                break
+            
+            # Execution failed - capture original error on first attempt
+            if attempt == 1:
+                original_error = result["error"]
+            
+            # If we've reached max attempts, stop retrying
+            if attempt >= MAX_RETRY_ATTEMPTS:
+                logger.warning(f"Code execution failed after {MAX_RETRY_ATTEMPTS} attempts")
+                break
+            
+            # Retry: regenerate code using error feedback
+            logger.info(f"Retrying code generation (attempt {attempt + 1}/{MAX_RETRY_ATTEMPTS})")
+            try:
+                current_code = regenerate_python_with_error_feedback(
+                    original_request=user_query,
+                    failed_code=current_code,
+                    error_message=result["error"],
+                    schema_context=schema_context,
+                    attempt_number=attempt + 1
+                )
+                
+                # Re-inject DB_CONNECTION_STRING for next execution
+                if decrypted_conn_str:
+                    exec_context['DB_CONNECTION_STRING'] = decrypted_conn_str
+                    
+            except Exception as regen_error:
+                logger.error(f"Error during code regeneration: {regen_error}")
+                # If regeneration fails, stop retrying
+                break
+            
+            attempt += 1
+        
+        # 3. Process Results and Generate Visualization
         recommendation = None
         
         if result["success"] and result.get("results"):
@@ -197,12 +248,12 @@ async def execute_python_endpoint(request: ExecutePythonRequest, api_key: str = 
 
                     viz_service = VisualizationService()
                     recommendation = viz_service.get_chart_recommendation(
-                        df, request.code, request.chart_type_override
+                        df, current_code, request.chart_type_override
                     )
                 except Exception as viz_err:
                     logger.error(f"Visualization recommendation failed: {viz_err}")
 
-
+        # 4. Build Response with Auto-Fix Information
         return ExecutePythonResponse(
             success=result["success"],
             output=result["output"],
@@ -211,7 +262,11 @@ async def execute_python_endpoint(request: ExecutePythonRequest, api_key: str = 
             recommendation=recommendation,
             execution_time=result.get("execution_time", 0.0),
             data_profile=result.get("data_profile"),
-            insights=result.get("insights", [])
+            insights=result.get("insights", []),
+            code=current_code if result["success"] and attempt > 1 else None,  # Only include if auto-fixed
+            auto_fixed=result["success"] and attempt > 1,  # True if succeeded after retry
+            fix_attempt=attempt,
+            original_error=original_error if result["success"] and attempt > 1 else None
         )
     except Exception as e:
         logger.error(f"Error in execute_python_endpoint: {str(e)}")
