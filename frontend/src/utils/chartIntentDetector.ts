@@ -217,7 +217,8 @@ const EXPLICIT_CHART_ONLY_PATTERNS = [
     /^make\s+(this|it)\s+a\s+/i,
     /^(use|try)\s+a\s+\w+\s*(chart|graph|plot)/i,
     /^as\s+a?\s*(line|bar|pie|scatter)/i,
-    /^(line|bar|pie|scatter)\s*(chart|graph|plot)?\s*$/i,
+    // Match simple chart requests like "line chart", "bar chart please", "pie chart pls"
+    /^(line|bar|pie|scatter)\s*(chart|graph|plot)?\s*(please|pls|plz|thanks|thx)?\s*$/i,
 ];
 
 /**
