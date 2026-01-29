@@ -153,8 +153,15 @@ async def execute_python_endpoint(request: ExecutePythonRequest, api_key: str = 
             except Exception as e:
                 logger.error(f"Failed to decrypt python connection string: {e}")
                 
-        # 2. Execute Code
-        result = execute_python_code(request.code, exec_context)
+        # 2. Execute Code with profiling enabled
+        # Extract user_query from context if available
+        user_query = exec_context.get("user_query", "") if exec_context else ""
+        result = execute_python_code(
+            request.code, 
+            exec_context,
+            enable_profiling=True,  # Always enable profiling for workflow analysis
+            user_query=user_query
+        )
         
         # Initialize recommendation (will be set if visualization is possible)
         recommendation = None
@@ -202,7 +209,9 @@ async def execute_python_endpoint(request: ExecutePythonRequest, api_key: str = 
             error=result["error"],
             results=result.get("results"),
             recommendation=recommendation,
-            execution_time=0.0  # TODO: Measure time
+            execution_time=result.get("execution_time", 0.0),
+            data_profile=result.get("data_profile"),
+            insights=result.get("insights", [])
         )
     except Exception as e:
         logger.error(f"Error in execute_python_endpoint: {str(e)}")
