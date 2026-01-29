@@ -374,21 +374,24 @@ export const SQLResultDisplay: React.FC<SQLResultDisplayProps> = ({
         }
     };
 
-    // CHART ONLY MODE: Only show the chart for python_code results (for re-visualization)
-    if (chartOnly && queryType === 'python_code' && executionResult && executionResult.results && executionResult.results.length > 0) {
+    // CHART ONLY MODE: Only show the chart for code execution results (Python/R/SAS - for re-visualization)
+    if (chartOnly && (queryType === 'python_code' || queryType === 'r_code' || queryType === 'sas_code') && executionResult && executionResult.results && executionResult.results.length > 0) {
         // Use the same normalization logic as ExecutionResultViewer
         const rec = executionResult.recommendation;
         const supportedChartTypes = ['bar', 'line', 'pie', 'scatter', 'column', 'stackedBar', 'stackedColumn', 'clusteredColumn', 'area', 'radar', 'treemap', 'funnel'];
-        const requestedType = rec?.chart_type;
+        // #region agent log
+        const requestedType = chartTypeOverride || rec?.chart_type;
+        fetch('http://127.0.0.1:7242/ingest/46ec3597-91be-4ee3-bc4e-4aece9c658e1',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'SQLResultDisplay.tsx:chartOnly-python',message:'Chart-only Python branch',data:{chartTypeOverride,recChartType:rec?.chart_type,requestedType},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'A'})}).catch(()=>{});
+        // #endregion
         const isSupported = requestedType && supportedChartTypes.includes(requestedType);
-        // Only use chartMetadata if the requested type is supported and matches the recommendation exactly
-        let chartMetadata = null;
+        // Use chartTypeOverride when provided - prefer user's explicit request over API recommendation
+        let chartMetadata: ChartMetadata | null = null;
         if (rec && isSupported && requestedType !== 'none') {
             const meta = recommendationToMetadata(rec);
-            // Only use if the type matches exactly what was requested
-            if (meta.type === requestedType) {
-                chartMetadata = meta;
-            }
+            const effectiveType = (chartTypeOverride && supportedChartTypes.includes(chartTypeOverride))
+                ? chartTypeOverride
+                : meta.type;
+            chartMetadata = { ...meta, type: effectiveType as ChartMetadata['type'] };
         }
 
         // Normalize data for chart (handle both StructuredTableData and array)
@@ -419,6 +422,71 @@ export const SQLResultDisplay: React.FC<SQLResultDisplayProps> = ({
                     {/* Only render the chart if the requested type is supported and matches the recommendation exactly */}
                     {!shouldShowWarning && (
                         <ResultChart data={rows} metadata={chartMetadata as ChartMetadata} />
+                    )}
+                </div>
+            </div>
+        );
+    }
+
+    // CHART ONLY MODE: Only show the chart for SQL execution results (for re-visualization)
+    if (chartOnly && queryType === 'database' && sqlExecutionResult && sqlExecutionResult.success && sqlExecutionResult.results && sqlExecutionResult.results.length > 0) {
+        // Use the same normalization logic as SQLExecutionResultViewer
+        const rec = sqlExecutionResult.recommendation;
+        const supportedChartTypes = ['bar', 'line', 'pie', 'scatter', 'column', 'stackedBar', 'stackedColumn', 'clusteredColumn', 'area', 'radar', 'treemap', 'funnel'];
+        // #region agent log
+        const requestedType = chartTypeOverride || rec?.chart_type;
+        fetch('http://127.0.0.1:7242/ingest/46ec3597-91be-4ee3-bc4e-4aece9c658e1',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'SQLResultDisplay.tsx:chartOnly-database',message:'Chart-only Database branch',data:{chartTypeOverride,recChartType:rec?.chart_type,requestedType},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'B'})}).catch(()=>{});
+        // #endregion
+        const isSupported = requestedType && supportedChartTypes.includes(requestedType);
+        // Use chartTypeOverride when provided - prefer user's explicit request over API recommendation
+        let chartMetadata: ChartMetadata | null = null;
+        if (rec && isSupported && requestedType !== 'none') {
+            const meta = recommendationToMetadata(rec);
+            const effectiveType = (chartTypeOverride && supportedChartTypes.includes(chartTypeOverride))
+                ? chartTypeOverride
+                : meta.type;
+            chartMetadata = { ...meta, type: effectiveType as ChartMetadata['type'] };
+        }
+
+        // Normalize data for chart
+        let rows: any[] = [];
+        const result = sqlExecutionResult.results[0];
+        if (result && result.data) {
+            if (Array.isArray(result.data)) {
+                rows = result.data;
+            } else if ((result.data as any).data && Array.isArray((result.data as any).data)) {
+                rows = (result.data as any).data;
+            }
+        }
+
+        // If not supported or not an exact match, show only the warning message, no chart
+        const shouldShowWarning = !isSupported || !chartMetadata || requestedType !== chartMetadata?.type;
+        return (
+            <div className="relative group mt-4">
+                <div className="absolute -inset-1 bg-gradient-to-r from-cyan-500 to-blue-500 rounded-2xl opacity-20 group-hover:opacity-30 blur transition duration-500"></div>
+                <div className="relative bg-slate-900 rounded-xl border border-slate-700/50 shadow-xl overflow-hidden p-6 flex flex-col items-center">
+                    {shouldShowWarning && (
+                        <div className="mb-4 p-4 bg-amber-900/40 border border-amber-600/40 rounded-lg text-amber-200 text-center">
+                            <div className="font-semibold mb-1">Sorry, I am not able to provide a <span className="uppercase">{requestedType}</span> chart.</div>
+                            <div className="text-sm">Supported chart types are: <span className="font-mono">{supportedChartTypes.join(', ')}</span></div>
+                        </div>
+                    )}
+                    {/* Only render the chart if the requested type is supported and matches the recommendation exactly */}
+                    {!shouldShowWarning && (
+                        <ResultChart data={rows} metadata={chartMetadata as ChartMetadata} />
+                    )}
+                    
+                    {/* Show SQL Summary if available */}
+                    {sqlSummary && (
+                        <div className="w-full mt-4 p-4 bg-purple-900/20 border border-purple-500/30 rounded-lg">
+                            <div className="flex items-center gap-2 mb-2 text-sm font-semibold text-purple-300">
+                                <div className="w-2 h-2 bg-purple-500 rounded-full"></div>
+                                AI Summary
+                            </div>
+                            <div className="text-sm text-purple-200 whitespace-pre-line">
+                                {sqlSummary}
+                            </div>
+                        </div>
                     )}
                 </div>
             </div>

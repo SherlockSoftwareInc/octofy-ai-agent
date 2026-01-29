@@ -372,32 +372,38 @@ export function shouldTriggerRevisualization(
 ): boolean {
     // No chart intent detected - definitely not a re-visualization
     if (!chartIntent) {
+        console.log('🔍 shouldTriggerRevisualization: NO chart intent');
         return false;
     }
     
     // Priority 1: Explicit chart-only patterns ALWAYS re-visualize
     // Examples: "show it as line chart", "switch to bar chart"
     if (isExplicitChartOnlyPattern(newQuery)) {
+        console.log('🔍 shouldTriggerRevisualization: YES - explicit chart-only pattern');
         return true;
     }
     
     // Priority 2: No previous execution - need to generate code first
     if (!lastExecutedQuery) {
+        console.log('🔍 shouldTriggerRevisualization: NO - no previous execution');
         return false;
     }
     
     // Priority 3: Check if user is requesting different data
     if (isDifferentDataRequest(newQuery, lastExecutedQuery)) {
+        console.log('🔍 shouldTriggerRevisualization: NO - different data requested');
         return false;
     }
     
     // Priority 4: If isChartOnlyRequest is true from basic detection, trust it
     if (chartIntent.isChartOnlyRequest) {
+        console.log('🔍 shouldTriggerRevisualization: YES - isChartOnlyRequest=true');
         return true;
     }
     
     // Priority 5: Chart intent detected with no conflicting keywords - re-visualize
     // This catches cases like "show sales as line chart" after "show sales"
+    console.log('🔍 shouldTriggerRevisualization: YES - chart intent with no conflicts');
     return true;
 }
 
