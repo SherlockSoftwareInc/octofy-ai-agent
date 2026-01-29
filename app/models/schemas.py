@@ -74,6 +74,14 @@ class ExecutePythonRequest(BaseModel):
     chart_type_override: Optional[ChartTypeLiteral] = None  # User-specified chart type
 
 
+class ExecuteSQLRequest(BaseModel):
+    sql: str  # SQL query to execute
+    context: Optional[Dict[str, Any]] = None  # Optional execution context (user_query, schema_context, etc.)
+    chart_type_override: Optional[ChartTypeLiteral] = None  # User-specified chart type preference
+    timeout_seconds: Optional[int] = 60  # Configurable timeout for query execution (default: 60 seconds)
+    max_rows: Optional[int] = 10000  # Row limit for results to prevent memory exhaustion
+
+
 class ChartRecommendation(BaseModel):
     chart_type: ChartTypeLiteral
     x_axis: Optional[str] = None
@@ -178,6 +186,22 @@ class ExecutePythonResponse(BaseModel):
     auto_fixed: bool = False  # NEW: Flag indicating auto-retry happened
     fix_attempt: int = 1  # NEW: Which attempt succeeded (1-5)
     original_error: Optional[str] = None  # NEW: Original error before auto-fix
+
+
+class ExecuteSQLResponse(BaseModel):
+    success: bool
+    output: Optional[Any] = None  # Structured query results (columns + rows)
+    error: Optional[str] = None
+    results: Optional[List[Dict[str, Any]]] = None  # List of result sets (for multi-query support)
+    recommendation: Optional[ChartRecommendation] = None
+    execution_time: float = 0.0
+    rows_affected: Optional[int] = None  # Number of rows returned or affected
+    data_profile: Optional[DataProfile] = None  # Auto-generated data profile
+    insights: List[Insight] = []  # Auto-generated insights
+    sql: Optional[str] = None  # The final working SQL (if auto-fixed)
+    auto_fixed: bool = False  # Flag indicating auto-retry happened
+    fix_attempt: int = 1  # Which attempt succeeded (1-5)
+    original_error: Optional[str] = None  # Original error before auto-fix
 
 
 

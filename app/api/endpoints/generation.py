@@ -280,3 +280,128 @@ async def execute_python_endpoint(request: ExecutePythonRequest, api_key: str = 
             recommendation=None,
             execution_time=0.0
         )
+
+
+from app.models.schemas import ExecuteSQLRequest, ExecuteSQLResponse
+from app.services.validation_service import execute_sql_query
+from app.services.generation_service import regenerate_sql_with_error_feedback
+
+@router.post("/execute-sql", response_model=ExecuteSQLResponse)
+async def execute_sql_endpoint(request: ExecuteSQLRequest, api_key: str = Depends(verify_api_key)):
+    """
+    Executes SQL query and returns results with automatic retry on failure.
+    Automatically retries up to 5 times if execution fails, using LLM to fix errors.
+    Includes data profiling, insights, and chart recommendations.
+    """
+    MAX_RETRY_ATTEMPTS = 5
+    
+    try:
+        # Extract context for retry
+        user_query = request.context.get("user_query", "") if request.context else ""
+        schema_context = request.context.get("schema_context", "") if request.context else ""
+        
+        # Retry loop
+        current_sql = request.sql
+        original_error = None
+        attempt = 1
+        result = None
+        
+        while attempt <= MAX_RETRY_ATTEMPTS:
+            logger.info(f"Executing SQL query (attempt {attempt}/{MAX_RETRY_ATTEMPTS})")
+            
+            result = execute_sql_query(
+                current_sql,
+                timeout_seconds=request.timeout_seconds or 60,
+                max_rows=request.max_rows or 10000,
+                enable_profiling=True,
+                user_query=user_query
+            )
+            
+            if result["success"]:
+                logger.info(f"SQL execution succeeded on attempt {attempt}")
+                break
+            
+            # Capture original error on first attempt
+            if attempt == 1:
+                original_error = result["error"]
+            
+            # Max attempts reached
+            if attempt >= MAX_RETRY_ATTEMPTS:
+                logger.warning(f"SQL execution failed after {MAX_RETRY_ATTEMPTS} attempts")
+                break
+            
+            # Retry: regenerate SQL
+            logger.info(f"Retrying SQL generation (attempt {attempt + 1}/{MAX_RETRY_ATTEMPTS})")
+            try:
+                current_sql = regenerate_sql_with_error_feedback(
+                    original_request=user_query,
+                    failed_sql=current_sql,
+                    error_message=result["error"],
+                    schema_context=schema_context,
+                    attempt_number=attempt + 1
+                )
+            except Exception as regen_error:
+                logger.error(f"Error during SQL regeneration: {regen_error}")
+                break
+            
+            attempt += 1
+        
+        # Generate visualization recommendation
+        recommendation = None
+        if result["success"] and result.get("results"):
+            # Use VisualizationService for chart recommendation
+            dataframes = [r for r in result["results"] if r["type"] == "sql_result"]
+            
+            if dataframes:
+                target_df_data = None
+                
+                # Use first result set
+                target_df_data = dataframes[0]["data"]
+                
+                try:
+                    import pandas as pd
+                    
+                    if isinstance(target_df_data, dict) and "data" in target_df_data:
+                        rows = target_df_data.get("data", [])
+                        columns = target_df_data.get("columns")
+                        df = pd.DataFrame(rows)
+                        if columns:
+                            df = df[[col for col in columns if col in df.columns]]
+                    else:
+                        df = pd.DataFrame(target_df_data)
+                    
+                    viz_service = VisualizationService()
+                    recommendation = viz_service.get_chart_recommendation(
+                        df, user_query or current_sql, request.chart_type_override
+                    )
+                except Exception as viz_err:
+                    logger.error(f"Visualization recommendation failed: {viz_err}")
+        
+        # Build response
+        return ExecuteSQLResponse(
+            success=result["success"],
+            output=result["output"],
+            error=result["error"],
+            results=result.get("results"),
+            recommendation=recommendation,
+            execution_time=result.get("execution_time", 0.0),
+            rows_affected=result.get("rows_affected"),
+            data_profile=result.get("data_profile"),
+            insights=result.get("insights", []),
+            sql=current_sql if result["success"] and attempt > 1 else None,
+            auto_fixed=result["success"] and attempt > 1,
+            fix_attempt=attempt,
+            original_error=original_error if result["success"] and attempt > 1 else None
+        )
+    except Exception as e:
+        logger.error(f"Error in execute_sql_endpoint: {str(e)}")
+        logger.error(traceback.format_exc())
+        # Return error response
+        return ExecuteSQLResponse(
+            success=False,
+            output=None,
+            error=str(e),
+            results=None,
+            recommendation=None,
+            execution_time=0.0
+        )
