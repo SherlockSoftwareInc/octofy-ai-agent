@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { Send, Loader2, Sparkles, LayoutDashboard, User, Bot, Square, Eye, X, CheckCircle } from 'lucide-react';
 import { api } from './api/client';
-import type { GenerateSQLResponse, AgentStatus, ExecutePythonResponse, ExecuteSQLResponse } from './api/client';
+import type { GenerateSQLResponse, AgentStatus, ExecutePythonResponse, ExecuteSQLResponse, ChartTypeOption } from './api/client';
 import { SQLResultDisplay } from './components/SQL/SQLResultDisplay';
 import { AdminLayout } from './pages/Admin/AdminLayout';
 import { SchemaManager } from './pages/Admin/SchemaManager';
@@ -74,7 +74,7 @@ function App() {
     if (loadedConversations.length > 0) {
       const firstConv = loadedConversations[0];
       console.log('First conversation messages:', firstConv.messages.length);
-      
+
       // Check for messages with sqlExecutionResult
       const messagesWithSQLExecution = firstConv.messages.filter(msg => msg.sqlExecutionResult);
       console.log('Messages with sqlExecutionResult:', messagesWithSQLExecution.length);
@@ -103,7 +103,7 @@ function App() {
   useEffect(() => {
     if (conversations.length > 0) {
       console.log('=== SAVING CONVERSATIONS TO STORAGE ===');
-      const messagesWithSQLExecution = conversations.flatMap(c => 
+      const messagesWithSQLExecution = conversations.flatMap(c =>
         c.messages.filter(m => m.sqlExecutionResult)
       );
       console.log('Total messages with sqlExecutionResult:', messagesWithSQLExecution.length);
@@ -115,7 +115,7 @@ function App() {
         });
       }
       console.log('=======================================');
-      
+
       conversationStorage.saveConversations(conversations);
     }
   }, [conversations]);
@@ -310,44 +310,55 @@ function App() {
   };
 
   // Handle execution result updates
-  const handleExecutionComplete = async (messageId: string, result: ExecutePythonResponse) => {
+  const handleExecutionComplete = async (
+    messageId: string,
+    result: ExecutePythonResponse,
+    contextInfo?: { sourceQuery?: string, chartTypeOverride?: ChartTypeOption }
+  ) => {
     if (!activeConversationId) return;
+    // Use functional update to ensure we work with the latest state
+    setConversations(prevConversations => {
+      return prevConversations.map(conv => {
+        if (conv.id !== activeConversationId) return conv;
 
-    // Find the message to update
-    const msgToUpdate = chatHistory.find(msg => msg.id === messageId);
-    if (!msgToUpdate) {
-      // fallback: just update executionResult
-      const updatedMessages = chatHistory.map(msg =>
-        msg.id === messageId ? { ...msg, executionResult: result } : msg
-      );
-      updateConversation(activeConversationId, { messages: updatedMessages });
-      return;
-    }
+        const messages = conv.messages;
+        const msgToUpdate = messages.find(msg => msg.id === messageId);
 
-    // Store analysis context if profiling data is available
-    let analysisContext: AnalysisContext | undefined;
-    if (result.data_profile || result.insights) {
-      analysisContext = {
-        data_profile: result.data_profile,
-        insights: result.insights || [],
-        refinement_history: msgToUpdate.analysisContext?.refinement_history || [],
-        suggested_refinements: result.suggested_refinements || []
-      };
-    }
+        if (!msgToUpdate) {
+          // If message not found, fallback to just updating the execution result on the matching ID
+          // This handles race conditions where the message might have been added but we can't find it for some reason
+          const updatedMessages = messages.map(msg =>
+            msg.id === messageId ? { ...msg, executionResult: result } : msg
+          );
+          return { ...conv, messages: updatedMessages };
+        }
 
-    // First, update the UI immediately with execution results (no summary yet)
-    const updatedMessagesImmediate = chatHistory.map(msg =>
-      msg.id === messageId ? { 
-        ...msg, 
-        executionResult: result,
-        analysisContext: analysisContext 
-      } : msg
-    );
-    updateConversation(activeConversationId, { messages: updatedMessagesImmediate });
-    
+        // Calculate analysis context
+        let analysisContext: AnalysisContext | undefined;
+        if (result.data_profile || result.insights) {
+          analysisContext = {
+            data_profile: result.data_profile,
+            insights: result.insights || [],
+            refinement_history: msgToUpdate.analysisContext?.refinement_history || [],
+            suggested_refinements: result.suggested_refinements || []
+          };
+        }
+
+        const updatedMessages = messages.map(msg =>
+          msg.id === messageId ? {
+            ...msg,
+            executionResult: result,
+            analysisContext: analysisContext
+          } : msg
+        );
+
+        return { ...conv, messages: updatedMessages };
+      });
+    });
+
+    // Log for debugging
     console.log('✅ Code execution result added to message:', {
       messageId,
-      queryType: msgToUpdate.queryType,
       hasExecutionResult: !!result,
       hasResults: !!result.results
     });
@@ -356,22 +367,36 @@ function App() {
     if (result && result.success && result.results && result.results.length > 0) {
       try {
         const firstResult = result.results[0];
-        const userRequest = msgToUpdate.sourceQuery || msgToUpdate.content;
-        const chartType = msgToUpdate.chartTypeOverride;
+
+        // Resolve context from args or stale history
+        let userRequest = contextInfo?.sourceQuery;
+        let chartType = contextInfo?.chartTypeOverride;
+
+        if (!userRequest) {
+          const msg = chatHistory.find(m => m.id === messageId);
+          if (msg) {
+            userRequest = msg.sourceQuery || msg.content;
+            chartType = chartType || msg.chartTypeOverride;
+          }
+        }
+
+        // If we still don't have userRequest, we might be in a race condition where we can't summarize yet
+        if (!userRequest) return;
+
         // Only send a preview of data (avoid huge payloads)
         let previewData = firstResult.data;
         if (Array.isArray(previewData) && previewData.length > 20) {
           previewData = previewData.slice(0, 20);
         }
-        
+
         // Add timeout to prevent hanging
-        const timeoutPromise = new Promise<never>((_, reject) => 
+        const timeoutPromise = new Promise<never>((_, reject) =>
           setTimeout(() => reject(new Error('Summary timeout')), 15000)
         );
-        
+
         const summaryPromise = api.summarizeResults(userRequest, previewData, chartType);
         const summaryResult = await Promise.race([summaryPromise, timeoutPromise]);
-        
+
         // Update with summary after it arrives
         setConversations(prev => prev.map(conv => {
           if (conv.id !== activeConversationId) return conv;
@@ -389,44 +414,52 @@ function App() {
     }
   };
 
-  const handleSQLExecutionComplete = async (messageId: string, result: ExecuteSQLResponse) => {
+  const handleSQLExecutionComplete = async (
+    messageId: string,
+    result: ExecuteSQLResponse,
+    contextInfo?: { sourceQuery?: string, chartTypeOverride?: ChartTypeOption }
+  ) => {
     if (!activeConversationId) return;
+    // Use functional update to ensure we work with the latest state
+    setConversations(prevConversations => {
+      return prevConversations.map(conv => {
+        if (conv.id !== activeConversationId) return conv;
 
-    // Find the message to update
-    const msgToUpdate = chatHistory.find(msg => msg.id === messageId);
-    if (!msgToUpdate) {
-      // fallback: just update sqlExecutionResult
-      const updatedMessages = chatHistory.map(msg =>
-        msg.id === messageId ? { ...msg, sqlExecutionResult: result } : msg
-      );
-      updateConversation(activeConversationId, { messages: updatedMessages });
-      return;
-    }
+        const messages = conv.messages;
+        const msgToUpdate = messages.find(msg => msg.id === messageId);
 
-    // Store analysis context if profiling data is available
-    let analysisContext: AnalysisContext | undefined;
-    if (result.data_profile || result.insights) {
-      analysisContext = {
-        data_profile: result.data_profile,
-        insights: result.insights || [],
-        refinement_history: msgToUpdate?.analysisContext?.refinement_history || [],
-        suggested_refinements: [] // SQL doesn't have suggested refinements yet
-      };
-    }
+        if (!msgToUpdate) {
+          const updatedMessages = messages.map(msg =>
+            msg.id === messageId ? { ...msg, sqlExecutionResult: result } : msg
+          );
+          return { ...conv, messages: updatedMessages };
+        }
 
-    // First, update the UI immediately with execution results (no summary yet)
-    const updatedMessagesImmediate = chatHistory.map(msg =>
-      msg.id === messageId ? { 
-        ...msg, 
-        sqlExecutionResult: result,
-        analysisContext: analysisContext 
-      } : msg
-    );
-    updateConversation(activeConversationId, { messages: updatedMessagesImmediate });
-    
+        // Calculate analysis context
+        let analysisContext: AnalysisContext | undefined;
+        if (result.data_profile || result.insights) {
+          analysisContext = {
+            data_profile: result.data_profile,
+            insights: result.insights || [],
+            refinement_history: msgToUpdate.analysisContext?.refinement_history || [],
+            suggested_refinements: []
+          };
+        }
+
+        const updatedMessages = messages.map(msg =>
+          msg.id === messageId ? {
+            ...msg,
+            sqlExecutionResult: result,
+            analysisContext: analysisContext
+          } : msg
+        );
+
+        return { ...conv, messages: updatedMessages };
+      });
+    });
+
     console.log('✅ SQL execution result added to message:', {
       messageId,
-      queryType: msgToUpdate.queryType,
       hasSQLExecutionResult: !!result,
       hasResults: !!result.results
     });
@@ -435,8 +468,21 @@ function App() {
     if (result && result.success && result.results && result.results.length > 0) {
       try {
         const firstResult = result.results[0];
-        const userRequest = msgToUpdate.sourceQuery || msgToUpdate.content;
-        const chartType = msgToUpdate.chartTypeOverride;
+
+        // Resolve context from args or stale history
+        let userRequest = contextInfo?.sourceQuery;
+        let chartType = contextInfo?.chartTypeOverride;
+
+        if (!userRequest) {
+          const msg = chatHistory.find(m => m.id === messageId);
+          if (msg) {
+            userRequest = msg.sourceQuery || msg.content;
+            chartType = chartType || msg.chartTypeOverride;
+          }
+        }
+
+        if (!userRequest) return;
+
         // Only send a preview of data (avoid huge payloads)
         let previewData = firstResult.data;
         if (Array.isArray(previewData)) {
@@ -449,15 +495,15 @@ function App() {
             previewData = { ...(previewData as any), data: dataArray.slice(0, 20) };
           }
         }
-        
+
         // Add timeout to prevent hanging
-        const timeoutPromise = new Promise<never>((_, reject) => 
+        const timeoutPromise = new Promise<never>((_, reject) =>
           setTimeout(() => reject(new Error('Summary timeout')), 15000)
         );
-        
+
         const summaryPromise = api.summarizeResults(userRequest, previewData, chartType);
         const summaryResult = await Promise.race([summaryPromise, timeoutPromise]);
-        
+
         // Update with summary after it arrives
         setConversations(prev => prev.map(conv => {
           if (conv.id !== activeConversationId) return conv;
@@ -477,10 +523,10 @@ function App() {
 
   const handleRefinementClick = async (suggestion: string) => {
     if (!activeConversationId) return;
-    
+
     // Set the query input with the suggestion
     setQuery(suggestion);
-    
+
     // Optionally focus on the textarea for user review
     if (textareaRef.current) {
       textareaRef.current.focus();
@@ -567,46 +613,46 @@ function App() {
 
     // Find the last AI message with Python/R/SAS code execution results
     const lastCodeExecutionMessage = [...chatHistory].reverse().find(
-      msg => msg.type === 'ai' && 
-             (msg.queryType === 'python_code' || msg.queryType === 'r_code' || msg.queryType === 'sas_code') &&
-             msg.sqlResult?.sql &&
-             msg.executionResult
+      msg => msg.type === 'ai' &&
+        (msg.queryType === 'python_code' || msg.queryType === 'r_code' || msg.queryType === 'sas_code') &&
+        msg.sqlResult?.sql &&
+        msg.executionResult
     );
 
     // Find the last AI message with SQL execution results
     const lastSQLMessage = [...chatHistory].reverse().find(
-      msg => msg.type === 'ai' && 
-             msg.queryType === 'database' && 
-             msg.sqlResult?.sql &&
-             msg.sqlExecutionResult
+      msg => msg.type === 'ai' &&
+        msg.queryType === 'database' &&
+        msg.sqlResult?.sql &&
+        msg.sqlExecutionResult
     );
 
     // Find the last AI message with generated SQL (but not yet executed)
     const lastGeneratedSQLMessage = [...chatHistory].reverse().find(
-      msg => msg.type === 'ai' && 
-             msg.queryType === 'database' && 
-             msg.sqlResult?.sql &&
-             !msg.sqlExecutionResult
+      msg => msg.type === 'ai' &&
+        msg.queryType === 'database' &&
+        msg.sqlResult?.sql &&
+        !msg.sqlExecutionResult
     );
 
     // Get the source query from the last executed message for comparison
     const lastExecutedQuery = lastCodeExecutionMessage?.sourceQuery || lastSQLMessage?.sourceQuery;
 
     // Check if we should re-visualize code execution (Python/R/SAS vs generate new code)
-    const shouldRevisualizeCode = chartIntent && 
-      lastCodeExecutionMessage?.sqlResult?.sql && 
+    const shouldRevisualizeCode = chartIntent &&
+      lastCodeExecutionMessage?.sqlResult?.sql &&
       lastCodeExecutionMessage?.executionResult &&
       shouldTriggerRevisualization(chartIntent, query, lastCodeExecutionMessage?.sourceQuery);
 
     // Check if we should re-visualize SQL execution (vs generate new SQL)
-    const shouldRevisualizeSQL = chartIntent && 
-      lastSQLMessage?.sqlResult?.sql && 
+    const shouldRevisualizeSQL = chartIntent &&
+      lastSQLMessage?.sqlResult?.sql &&
       lastSQLMessage?.sqlExecutionResult &&
       shouldTriggerRevisualization(chartIntent, query, lastSQLMessage?.sourceQuery);
 
     // #region agent log
     if (chartIntent) {
-      fetch('http://127.0.0.1:7242/ingest/46ec3597-91be-4ee3-bc4e-4aece9c658e1',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'App.tsx:handleSend',message:'Chart intent and re-visualization',data:{query,chartType:chartIntent.chartType,isChartOnly:chartIntent.isChartOnlyRequest,foundCodeMessage:!!lastCodeExecutionMessage,codeHasResult:!!lastCodeExecutionMessage?.executionResult,foundSQLMessage:!!lastSQLMessage,sqlHasResult:!!lastSQLMessage?.sqlExecutionResult,shouldRevisualizeCode,shouldRevisualizeSQL},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'C'})}).catch(()=>{});
+      fetch('http://127.0.0.1:7242/ingest/46ec3597-91be-4ee3-bc4e-4aece9c658e1', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'App.tsx:handleSend', message: 'Chart intent and re-visualization', data: { query, chartType: chartIntent.chartType, isChartOnly: chartIntent.isChartOnlyRequest, foundCodeMessage: !!lastCodeExecutionMessage, codeHasResult: !!lastCodeExecutionMessage?.executionResult, foundSQLMessage: !!lastSQLMessage, sqlHasResult: !!lastSQLMessage?.sqlExecutionResult, shouldRevisualizeCode, shouldRevisualizeSQL }, timestamp: Date.now(), sessionId: 'debug-session', hypothesisId: 'C' }) }).catch(() => { });
     }
     // #endregion
 
@@ -645,22 +691,36 @@ function App() {
           chartTypeOverride: chartTypeOverride
         };
 
+        // Prepare initial analysis context if available in the result
+        // This avoids flickering before handleExecutionComplete runs
+        if (result.data_profile || result.insights) {
+          aiMessage.analysisContext = {
+            data_profile: result.data_profile,
+            insights: result.insights || [],
+            refinement_history: lastCodeExecutionMessage.analysisContext?.refinement_history || [],
+            suggested_refinements: result.suggested_refinements || []
+          };
+        }
+
         // Add both user message and new AI message to the chat
         const updatedMessages = [...chatHistory, userMessage, aiMessage];
         updateConversation(conversationId, { messages: updatedMessages });
-        
+
         // Fetch summary and analysis context for new visualization (non-blocking)
-        await handleExecutionComplete(aiMessage.id, result);
-        
+        await handleExecutionComplete(aiMessage.id, result, {
+          sourceQuery: lastCodeExecutionMessage.sourceQuery || lastCodeExecutionMessage.content,
+          chartTypeOverride: chartTypeOverride
+        });
+
       } catch (error) {
         console.error('Re-visualization failed:', error);
         // Build helpful error message with supported chart types
         const supportedCharts = ['Bar', 'Line', 'Pie', 'Scatter', 'Column', 'Area', 'Treemap', 'Radar', 'Funnel', 'Stacked Bar', 'Stacked Column', 'Clustered Column'];
         const requestedChartLabel = chartTypeOverride ? getChartTypeLabel(chartTypeOverride) : 'the requested chart';
-        const codeType = lastCodeExecutionMessage.queryType === 'r_code' ? 'R' : 
-                        lastCodeExecutionMessage.queryType === 'sas_code' ? 'SAS' : 'Python';
+        const codeType = lastCodeExecutionMessage.queryType === 'r_code' ? 'R' :
+          lastCodeExecutionMessage.queryType === 'sas_code' ? 'SAS' : 'Python';
         const errorContent = `Sorry, I couldn't update the ${codeType} visualization to ${requestedChartLabel}. This may be due to incompatible data structure for this chart type.\n\n**Supported chart types:** ${supportedCharts.join(', ')}.\n\nPlease try a different chart type or ensure your data has the required columns.`;
-        
+
         const errorMessage: ChatMessage = {
           id: generateMessageId(),
           type: 'ai',
@@ -694,9 +754,9 @@ function App() {
         const sourceQuery = lastSQLMessage.sourceQuery || lastSQLMessage.content || '';
         const result = await api.executeSQL(
           lastSQLMessage.sqlResult!.sql,
-          { 
+          {
             user_query: sourceQuery,
-            schema_context: 'Re-visualization request' 
+            schema_context: 'Re-visualization request'
           },
           chartTypeOverride
         );
@@ -714,20 +774,33 @@ function App() {
           chartTypeOverride: chartTypeOverride
         };
 
+        // Prepare initial analysis context if available in the result
+        if (result.data_profile || result.insights) {
+          aiMessage.analysisContext = {
+            data_profile: result.data_profile,
+            insights: result.insights || [],
+            refinement_history: lastSQLMessage.analysisContext?.refinement_history || [],
+            suggested_refinements: []
+          };
+        }
+
         // Add both user message and new AI message to the chat
         const updatedMessages = [...chatHistory, userMessage, aiMessage];
         updateConversation(conversationId, { messages: updatedMessages });
-        
+
         // Fetch summary for new visualization (non-blocking)
-        await handleSQLExecutionComplete(aiMessage.id, result);
-        
+        await handleSQLExecutionComplete(aiMessage.id, result, {
+          sourceQuery: lastSQLMessage.sourceQuery || lastSQLMessage.content,
+          chartTypeOverride: chartTypeOverride
+        });
+
       } catch (error) {
         console.error('SQL re-visualization failed:', error);
         // Build helpful error message with supported chart types
         const supportedCharts = ['Bar', 'Line', 'Pie', 'Scatter', 'Column', 'Area', 'Treemap', 'Radar', 'Funnel', 'Stacked Bar', 'Stacked Column', 'Clustered Column'];
         const requestedChartLabel = chartTypeOverride ? getChartTypeLabel(chartTypeOverride) : 'the requested chart';
         const errorContent = `Sorry, I couldn't update the visualization to ${requestedChartLabel}. This may be due to incompatible data structure for this chart type.\n\n**Supported chart types:** ${supportedCharts.join(', ')}.\n\nPlease try a different chart type or ensure your data has the required columns.`;
-        
+
         const errorMessage: ChatMessage = {
           id: generateMessageId(),
           type: 'ai',
@@ -763,9 +836,9 @@ function App() {
         const sourceQuery = lastGeneratedSQLMessage.sourceQuery || lastGeneratedSQLMessage.content || '';
         const result = await api.executeSQL(
           lastGeneratedSQLMessage.sqlResult!.sql,
-          { 
+          {
             user_query: sourceQuery,
-            schema_context: 'First execution with chart type override' 
+            schema_context: 'First execution with chart type override'
           },
           chartTypeOverride
         );
@@ -783,19 +856,32 @@ function App() {
           chartTypeOverride: chartTypeOverride
         };
 
+        // Prepare initial analysis context if available in the result
+        if (result.data_profile || result.insights) {
+          aiMessage.analysisContext = {
+            data_profile: result.data_profile,
+            insights: result.insights || [],
+            refinement_history: [],
+            suggested_refinements: []
+          };
+        }
+
         // Add both user message and new AI message to the chat
         const updatedMessages = [...chatHistory, userMessage, aiMessage];
         updateConversation(conversationId, { messages: updatedMessages });
-        
+
         // Fetch summary for visualization (non-blocking)
-        await handleSQLExecutionComplete(aiMessage.id, result);
-        
+        await handleSQLExecutionComplete(aiMessage.id, result, {
+          sourceQuery: lastGeneratedSQLMessage.sourceQuery || lastGeneratedSQLMessage.content,
+          chartTypeOverride: chartTypeOverride
+        });
+
       } catch (error) {
         console.error('SQL visualization failed:', error);
         const supportedCharts = ['Bar', 'Line', 'Pie', 'Scatter', 'Column', 'Area', 'Treemap', 'Radar', 'Funnel', 'Stacked Bar', 'Stacked Column', 'Clustered Column'];
         const requestedChartLabel = chartTypeOverride ? getChartTypeLabel(chartTypeOverride) : 'the requested chart';
         const errorContent = `Sorry, I couldn't create the ${requestedChartLabel} visualization. The SQL execution may have failed or the data structure may be incompatible.\n\n**Supported chart types:** ${supportedCharts.join(', ')}.`;
-        
+
         const errorMessage: ChatMessage = {
           id: generateMessageId(),
           type: 'ai',
@@ -1333,8 +1419,14 @@ function App() {
                                     queryType={message.queryType}
                                     executionResult={message.executionResult}
                                     sqlExecutionResult={message.sqlExecutionResult}
-                                    onExecutionComplete={(result) => handleExecutionComplete(message.id, result)}
-                                    onSQLExecutionComplete={(result) => handleSQLExecutionComplete(message.id, result)}
+                                    onExecutionComplete={(result) => handleExecutionComplete(message.id, result, {
+                                      sourceQuery: message.sourceQuery,
+                                      chartTypeOverride: message.chartTypeOverride
+                                    })}
+                                    onSQLExecutionComplete={(result) => handleSQLExecutionComplete(message.id, result, {
+                                      sourceQuery: message.sourceQuery,
+                                      chartTypeOverride: message.chartTypeOverride
+                                    })}
                                     chartTypeOverride={message.chartTypeOverride}
                                     chartOnly={true}
                                     pythonSummary={message.pythonSummary || ''}
@@ -1354,8 +1446,14 @@ function App() {
                                     queryType={message.queryType}
                                     executionResult={message.executionResult}
                                     sqlExecutionResult={message.sqlExecutionResult}
-                                    onExecutionComplete={(result) => handleExecutionComplete(message.id, result)}
-                                    onSQLExecutionComplete={(result) => handleSQLExecutionComplete(message.id, result)}
+                                    onExecutionComplete={(result) => handleExecutionComplete(message.id, result, {
+                                      sourceQuery: message.sourceQuery,
+                                      chartTypeOverride: message.chartTypeOverride
+                                    })}
+                                    onSQLExecutionComplete={(result) => handleSQLExecutionComplete(message.id, result, {
+                                      sourceQuery: message.sourceQuery,
+                                      chartTypeOverride: message.chartTypeOverride
+                                    })}
                                     chartTypeOverride={message.chartTypeOverride}
                                     chartOnly={true}
                                     pythonSummary={message.pythonSummary || ''}
@@ -1376,8 +1474,14 @@ function App() {
                                         queryType={message.queryType}
                                         executionResult={message.executionResult}
                                         sqlExecutionResult={message.sqlExecutionResult}
-                                        onExecutionComplete={(result) => handleExecutionComplete(message.id, result)}
-                                        onSQLExecutionComplete={(result) => handleSQLExecutionComplete(message.id, result)}
+                                        onExecutionComplete={(result) => handleExecutionComplete(message.id, result, {
+                                          sourceQuery: message.sourceQuery,
+                                          chartTypeOverride: message.chartTypeOverride
+                                        })}
+                                        onSQLExecutionComplete={(result) => handleSQLExecutionComplete(message.id, result, {
+                                          sourceQuery: message.sourceQuery,
+                                          chartTypeOverride: message.chartTypeOverride
+                                        })}
                                         chartTypeOverride={message.chartTypeOverride}
                                         pythonSummary={message.pythonSummary || ''}
                                         sqlSummary={message.sqlSummary || ''}
@@ -1394,30 +1498,30 @@ function App() {
                                       </div>
                                     )}
                                   </div>
-                                  )
-                                )}
+                                )
+                              )}
 
                               {/* Workflow Components - Insights, Refinement Suggestions, and Data Profile */}
                               {message.analysisContext && (
                                 <div className="mt-4 space-y-3">
                                   {/* Insights Panel */}
-                                  {message.analysisContext.insights && 
-                                   message.analysisContext.insights.length > 0 && (
-                                    <InsightsPanel insights={message.analysisContext.insights} />
-                                  )}
-                                  
+                                  {message.analysisContext.insights &&
+                                    message.analysisContext.insights.length > 0 && (
+                                      <InsightsPanel insights={message.analysisContext.insights} />
+                                    )}
+
                                   {/* Refinement Suggestions */}
-                                  {message.analysisContext.suggested_refinements && 
-                                   message.analysisContext.suggested_refinements.length > 0 && (
-                                    <RefinementSuggestions
-                                      suggestions={message.analysisContext.suggested_refinements}
-                                      onSuggestionClick={handleRefinementClick}
-                                    />
-                                  )}
-                                  
+                                  {message.analysisContext.suggested_refinements &&
+                                    message.analysisContext.suggested_refinements.length > 0 && (
+                                      <RefinementSuggestions
+                                        suggestions={message.analysisContext.suggested_refinements}
+                                        onSuggestionClick={handleRefinementClick}
+                                      />
+                                    )}
+
                                   {/* Data Profile Card (collapsible) */}
                                   {message.analysisContext.data_profile && (
-                                    <DataProfileCard 
+                                    <DataProfileCard
                                       profile={message.analysisContext.data_profile}
                                       className="mt-2"
                                     />

@@ -9,6 +9,16 @@ import { DataTable } from '../DataTable/DataTable';
 
 
 import { ResultChart } from './ResultChart';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
+
+const markdownComponents = {
+    ul: ({ node, ...props }: any) => <ul className="list-disc list-outside ml-4 space-y-1" {...props} />,
+    ol: ({ node, ...props }: any) => <ol className="list-decimal list-outside ml-4 space-y-1" {...props} />,
+    strong: ({ node, ...props }: any) => <strong className="font-bold text-white" {...props} />,
+    p: ({ node, ...props }: any) => <p className="mb-2 last:mb-0" {...props} />,
+    a: ({ node, ...props }: any) => <a className="text-blue-400 hover:underline" target="_blank" rel="noopener noreferrer" {...props} />,
+};
 
 const ResultsWrapper = ({ children }: { children: React.ReactNode }) => (
     <div style={{
@@ -29,7 +39,7 @@ const ResultsWrapper = ({ children }: { children: React.ReactNode }) => (
 function recommendationToMetadata(rec: ChartRecommendation): ChartMetadata {
     // Determine if this is a stacked chart type
     const isStacked = rec.chart_type === 'stackedBar' || rec.chart_type === 'stackedColumn';
-    
+
     return {
         type: rec.chart_type as ChartMetadata['type'],
         x_axis: rec.x_axis || null,
@@ -73,14 +83,14 @@ const ExecutionResultViewer: React.FC<{ results: ExecutePythonResult[]; recommen
         <div className="space-y-6 w-full max-w-full">
             {resultsWithRows.map((res, idx) => {
                 const title = res.name;
-                
+
                 // Determine which chart metadata to use:
                 // 1. Prefer recommendation from backend (supports override)
                 // 2. Fall back to result-level chart_metadata
                 // 3. Fall back to viz_config based chart_metadata
                 const effectiveMetadata = chartMetadataFromRecommendation || res.chart_metadata;
                 const shouldShowChart = effectiveMetadata && effectiveMetadata.type !== 'none';
-                const vizConfigBlocksChart = res.viz_config && 
+                const vizConfigBlocksChart = res.viz_config &&
                     (res.viz_config.category === 'no_chart' || res.viz_config.category === 'too_much_data');
 
                 return (
@@ -111,10 +121,17 @@ const ExecutionResultViewer: React.FC<{ results: ExecutePythonResult[]; recommen
 
                         {/* LLM Summary Section */}
                         {idx === 0 && pythonSummary && (
-                          <div className="mt-3 p-3 bg-slate-800/40 border border-indigo-700/30 rounded-lg">
-                            <div className="text-xs text-indigo-300 font-semibold mb-1">AI Summary</div>
-                            <div className="text-sm text-indigo-100 whitespace-pre-line">{pythonSummary}</div>
-                          </div>
+                            <div className="mt-3 p-3 bg-slate-800/40 border border-indigo-700/30 rounded-lg">
+                                <div className="text-xs text-indigo-300 font-semibold mb-1">AI Summary</div>
+                                <div className="text-sm text-indigo-100">
+                                    <ReactMarkdown
+                                        remarkPlugins={[remarkGfm]}
+                                        components={markdownComponents}
+                                    >
+                                        {pythonSummary}
+                                    </ReactMarkdown>
+                                </div>
+                            </div>
                         )}
 
                         {/* Chart Section */}
@@ -308,8 +325,8 @@ export const SQLResultDisplay: React.FC<SQLResultDisplayProps> = ({
         try {
             // Pass chart type override and source query to the execution API
             const result = await api.executePython(
-                sql, 
-                sourceQuestion ? { user_query: sourceQuestion } : undefined, 
+                sql,
+                sourceQuestion ? { user_query: sourceQuestion } : undefined,
                 chartTypeOverride
             );
 
@@ -338,11 +355,11 @@ export const SQLResultDisplay: React.FC<SQLResultDisplayProps> = ({
         setIsSQLRunning(true);
         try {
             const result = await api.executeSQL(
-                sql, 
-                sourceQuestion ? { 
+                sql,
+                sourceQuestion ? {
                     user_query: sourceQuestion,
-                    schema_context: 'Generated from SQL generation pipeline' 
-                } : undefined, 
+                    schema_context: 'Generated from SQL generation pipeline'
+                } : undefined,
                 chartTypeOverride
             );
 
@@ -353,9 +370,9 @@ export const SQLResultDisplay: React.FC<SQLResultDisplayProps> = ({
 
             // Show success notification if auto-fixed
             if (result.auto_fixed) {
-                setToast({ 
-                    message: `SQL automatically fixed on attempt ${result.fix_attempt}/5`, 
-                    type: 'success' 
+                setToast({
+                    message: `SQL automatically fixed on attempt ${result.fix_attempt}/5`,
+                    type: 'success'
                 });
             }
 
@@ -381,7 +398,7 @@ export const SQLResultDisplay: React.FC<SQLResultDisplayProps> = ({
         const supportedChartTypes = ['bar', 'line', 'pie', 'scatter', 'column', 'stackedBar', 'stackedColumn', 'clusteredColumn', 'area', 'radar', 'treemap', 'funnel'];
         // #region agent log
         const requestedType = chartTypeOverride || rec?.chart_type;
-        fetch('http://127.0.0.1:7242/ingest/46ec3597-91be-4ee3-bc4e-4aece9c658e1',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'SQLResultDisplay.tsx:chartOnly-python',message:'Chart-only Python branch',data:{chartTypeOverride,recChartType:rec?.chart_type,requestedType},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'A'})}).catch(()=>{});
+        fetch('http://127.0.0.1:7242/ingest/46ec3597-91be-4ee3-bc4e-4aece9c658e1', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'SQLResultDisplay.tsx:chartOnly-python', message: 'Chart-only Python branch', data: { chartTypeOverride, recChartType: rec?.chart_type, requestedType }, timestamp: Date.now(), sessionId: 'debug-session', hypothesisId: 'A' }) }).catch(() => { });
         // #endregion
         const isSupported = requestedType && supportedChartTypes.includes(requestedType);
         // Use chartTypeOverride when provided - prefer user's explicit request over API recommendation
@@ -435,7 +452,7 @@ export const SQLResultDisplay: React.FC<SQLResultDisplayProps> = ({
         const supportedChartTypes = ['bar', 'line', 'pie', 'scatter', 'column', 'stackedBar', 'stackedColumn', 'clusteredColumn', 'area', 'radar', 'treemap', 'funnel'];
         // #region agent log
         const requestedType = chartTypeOverride || rec?.chart_type;
-        fetch('http://127.0.0.1:7242/ingest/46ec3597-91be-4ee3-bc4e-4aece9c658e1',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'SQLResultDisplay.tsx:chartOnly-database',message:'Chart-only Database branch',data:{chartTypeOverride,recChartType:rec?.chart_type,requestedType},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'B'})}).catch(()=>{});
+        fetch('http://127.0.0.1:7242/ingest/46ec3597-91be-4ee3-bc4e-4aece9c658e1', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'SQLResultDisplay.tsx:chartOnly-database', message: 'Chart-only Database branch', data: { chartTypeOverride, recChartType: rec?.chart_type, requestedType }, timestamp: Date.now(), sessionId: 'debug-session', hypothesisId: 'B' }) }).catch(() => { });
         // #endregion
         const isSupported = requestedType && supportedChartTypes.includes(requestedType);
         // Use chartTypeOverride when provided - prefer user's explicit request over API recommendation
@@ -475,7 +492,7 @@ export const SQLResultDisplay: React.FC<SQLResultDisplayProps> = ({
                     {!shouldShowWarning && (
                         <ResultChart data={rows} metadata={chartMetadata as ChartMetadata} />
                     )}
-                    
+
                     {/* Show SQL Summary if available */}
                     {sqlSummary && (
                         <div className="w-full mt-4 p-4 bg-purple-900/20 border border-purple-500/30 rounded-lg">
@@ -483,8 +500,13 @@ export const SQLResultDisplay: React.FC<SQLResultDisplayProps> = ({
                                 <div className="w-2 h-2 bg-purple-500 rounded-full"></div>
                                 AI Summary
                             </div>
-                            <div className="text-sm text-purple-200 whitespace-pre-line">
-                                {sqlSummary}
+                            <div className="text-sm text-purple-200">
+                                <ReactMarkdown
+                                    remarkPlugins={[remarkGfm]}
+                                    components={markdownComponents}
+                                >
+                                    {sqlSummary}
+                                </ReactMarkdown>
                             </div>
                         </div>
                     )}
@@ -573,11 +595,10 @@ export const SQLResultDisplay: React.FC<SQLResultDisplayProps> = ({
                         <button
                             onClick={handleRunSQL}
                             disabled={isSQLRunning}
-                            className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg transition-all duration-200 border ${
-                                isSQLRunning
-                                    ? 'bg-blue-600/20 text-blue-200 border-blue-500/40 cursor-wait'
-                                    : 'bg-blue-600/20 text-blue-200 border-blue-500/40 hover:bg-blue-500/30'
-                            }`}
+                            className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg transition-all duration-200 border ${isSQLRunning
+                                ? 'bg-blue-600/20 text-blue-200 border-blue-500/40 cursor-wait'
+                                : 'bg-blue-600/20 text-blue-200 border-blue-500/40 hover:bg-blue-500/30'
+                                }`}
                             title="Run SQL Query"
                         >
                             {isSQLRunning ? <Loader2 size={12} className="animate-spin" /> : <Play size={12} className="fill-current" />}
@@ -628,7 +649,7 @@ export const SQLResultDisplay: React.FC<SQLResultDisplayProps> = ({
                                     )}
                                 </div>
                             )}
-                            
+
                             {sqlExecutionResult.error && (
                                 <div className="mb-4">
                                     <h4 className="text-xs text-red-400 font-semibold mb-2 uppercase">Error</h4>
@@ -637,7 +658,7 @@ export const SQLResultDisplay: React.FC<SQLResultDisplayProps> = ({
                                     </pre>
                                 </div>
                             )}
-                            
+
                             {sqlExecutionResult.results && sqlExecutionResult.results.length > 0 && (
                                 <ExecutionResultViewer
                                     results={sqlExecutionResult.results}
