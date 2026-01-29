@@ -7,8 +7,18 @@ import pandas as pd
 import json
 import traceback
 import logging
+import time
 
 logger = logging.getLogger(__name__)
+
+# Import workflow services
+try:
+    from app.services.profiling_service import ProfilingService
+    from app.services.insight_service import InsightService
+    WORKFLOW_SERVICES_AVAILABLE = True
+except ImportError as e:
+    logger.warning(f"Workflow services not available: {e}")
+    WORKFLOW_SERVICES_AVAILABLE = False
 
 # Thresholds for data visualization
 MAX_ROWS = 200
@@ -111,17 +121,27 @@ def get_chart_category(df: pd.DataFrame) -> tuple:
         "This dataset is best viewed as a table."
     )
 
-def execute_python_code(code: str, context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+def execute_python_code(
+    code: str, 
+    context: Optional[Dict[str, Any]] = None,
+    enable_profiling: bool = True,
+    user_query: str = ""
+) -> Dict[str, Any]:
     """
     Executes Python code and captures stdout and any resulting DataFrame.
     
     Args:
         code: The Python code to execute.
         context: Optional dictionary of variables to inject into the execution scope.
+        enable_profiling: Whether to enable automatic data profiling and insight generation
+        user_query: Original user query for context in insight generation
         
     Returns:
-        Dict containing success status, output, error message, and results (serialized DataFrames).
+        Dict containing success status, output, error message, results (serialized DataFrames),
+        data_profile (if enabled), and insights (if enabled).
     """
+    
+    start_time = time.time()
     
     # Sanitize code to remove LLM artifacts (markdown blocks, shell prefixes)
     code = _sanitize_code(code)
@@ -329,9 +349,60 @@ def execute_python_code(code: str, context: Optional[Dict[str, Any]] = None) -> 
     output = stdout_buffer.getvalue()
     stdout_buffer.close()
     
+    execution_time = time.time() - start_time
+    
+    # Initialize profiling outputs
+    data_profile = None
+    insights = []
+    suggested_refinements = []
+    
+    # Perform data profiling and insight generation if enabled and successful
+    if enable_profiling and execution_success and results and WORKFLOW_SERVICES_AVAILABLE:
+        try:
+            # Get the first DataFrame result for profiling
+            first_result = results[0]
+            if first_result.get("type") == "dataframe" and first_result.get("data"):
+                # Convert back to DataFrame from structured data
+                df_data = first_result["data"]["data"]
+                df_for_profiling = pd.DataFrame(df_data)
+                
+                # Profile the DataFrame
+                profiling_service = ProfilingService()
+                data_profile = profiling_service.profile_dataframe(df_for_profiling)
+                logger.info(f"Generated data profile: {data_profile.profiling_level} level, "
+                          f"{data_profile.row_count} rows, {data_profile.column_count} cols")
+                
+                # Generate insights
+                insight_service = InsightService()
+                insights = insight_service.generate_insights(
+                    profile=data_profile,
+                    user_query=user_query or "analyze data",
+                    df_sample=df_for_profiling.head(10)
+                )
+                logger.info(f"Generated {len(insights)} insights")
+                
+                # Generate refinement suggestions
+                suggested_refinements = insight_service.suggest_refinements(
+                    profile=data_profile,
+                    insights=insights
+                )
+                logger.info(f"Generated {len(suggested_refinements)} refinement suggestions")
+                
+        except Exception as e:
+            logger.error(f"Error during profiling/insight generation: {str(e)}")
+            # Continue without profiling if it fails
+    
+    # Convert data_profile and insights to dicts for JSON serialization
+    profile_dict = data_profile.model_dump() if data_profile else None
+    insights_dicts = [insight.model_dump() for insight in insights]
+    
     return {
         "success": execution_success,
         "output": structured_output if structured_output is not None else output,
         "error": error_message,
-        "results": results
+        "results": results,
+        "execution_time": execution_time,
+        "data_profile": profile_dict,
+        "insights": insights_dicts,
+        "suggested_refinements": suggested_refinements
     }

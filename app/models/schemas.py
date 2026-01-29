@@ -79,6 +79,89 @@ class ChartRecommendation(BaseModel):
     explanation: Optional[str] = None
     colors: Optional[List[str]] = None
 
+
+# --- Workflow Analysis Models ---
+
+class NumericStats(BaseModel):
+    """Statistical profile for numeric columns"""
+    min: float
+    max: float
+    mean: float
+    median: float
+    std: float
+    q25: float
+    q75: float
+    null_count: int
+    null_percentage: float
+    outliers: List[Any] = []  # Values beyond 3*IQR
+
+
+class CategoricalStats(BaseModel):
+    """Statistical profile for categorical columns"""
+    unique_count: int
+    top_values: List[Dict[str, Any]] = []  # [{value, count, percentage}]
+    null_count: int
+    null_percentage: float
+
+
+class ColumnProfile(BaseModel):
+    """Profile for a single column"""
+    column_name: str
+    data_type: str
+    numeric_stats: Optional[NumericStats] = None
+    categorical_stats: Optional[CategoricalStats] = None
+
+
+class DataProfile(BaseModel):
+    """Complete data profiling result"""
+    row_count: int
+    column_count: int
+    columns: List[ColumnProfile]
+    correlations: Optional[List[Dict[str, Any]]] = None  # [{col1, col2, correlation}]
+    has_datetime: bool = False
+    datetime_columns: List[str] = []
+    profiling_level: Literal["basic", "distribution", "relationship"] = "basic"
+
+
+class Insight(BaseModel):
+    """Generated insight from data analysis"""
+    insight_type: Literal["outlier", "trend", "correlation", "missing_data", "distribution", "recommendation"]
+    title: str
+    description: str
+    severity: Literal["info", "warning", "critical"] = "info"
+    related_columns: List[str] = []
+    confidence: float = 1.0  # 0-1 score
+
+
+class RefinementIntent(BaseModel):
+    """Detected user refinement intent"""
+    intent_type: Literal["drill_down", "filter", "compare", "trend", "forecast", "new_query"]
+    confidence: float  # 0-1 score
+    target_columns: List[str] = []  # e.g., ["region"] for drill_down
+    comparison_dimension: Optional[str] = None  # e.g., "year" for temporal comparison
+    filter_values: List[str] = []
+
+
+class AnalysisContext(BaseModel):
+    """Workflow analysis context for a message"""
+    data_profile: Optional[DataProfile] = None
+    insights: List[Insight] = []
+    refinement_history: List[Dict[str, Any]] = []  # [{intent, query, timestamp}]
+    suggested_refinements: List[str] = []  # Prompt suggestions
+
+
+class WorkflowTemplate(BaseModel):
+    """Reusable workflow template"""
+    id: str
+    name: str
+    description: str
+    query_pattern: str  # Original user query
+    tables_used: List[str]
+    refinement_sequence: List[Dict[str, str]] = []  # [{step, intent, description}]
+    created_at: str
+    user_id: str  # For per-user storage
+
+
 class ExecutePythonResponse(BaseModel):
     success: bool
     output: Optional[Any] = None
@@ -86,6 +169,8 @@ class ExecutePythonResponse(BaseModel):
     results: Optional[List[Dict[str, Any]]] = None
     recommendation: Optional[ChartRecommendation] = None
     execution_time: float
+    data_profile: Optional[DataProfile] = None  # NEW: Auto-generated data profile
+    insights: List[Insight] = []  # NEW: Auto-generated insights
 
 
 
@@ -211,15 +296,6 @@ class AgentSettings(BaseModel):
     embedding_config: EmbeddingConfig
     vector_config: VectorConfig
     app_meta: AppMeta
-
-AuthType = Literal[
-    "sql",
-    "windows",
-    "ad_integrated",
-    "ad_password",
-    "ad_interactive",
-    "ad_service_principal"
-]
 
 class ConnectionTestRequest(BaseModel):
     driver: str = "ODBC Driver 17 for SQL Server"
