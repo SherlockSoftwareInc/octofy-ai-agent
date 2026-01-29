@@ -171,6 +171,10 @@ class ExecutePythonResponse(BaseModel):
     execution_time: float
     data_profile: Optional[DataProfile] = None  # NEW: Auto-generated data profile
     insights: List[Insight] = []  # NEW: Auto-generated insights
+    code: Optional[str] = None  # NEW: The final working code (if auto-fixed)
+    auto_fixed: bool = False  # NEW: Flag indicating auto-retry happened
+    fix_attempt: int = 1  # NEW: Which attempt succeeded (1-5)
+    original_error: Optional[str] = None  # NEW: Original error before auto-fix
 
 
 
