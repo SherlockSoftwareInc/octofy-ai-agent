@@ -1,6 +1,7 @@
 from typing import Any, Dict, List, Optional
 import sys
 import io
+import re
 import sqlalchemy
 import pandas as pd
 import json
@@ -12,6 +13,45 @@ logger = logging.getLogger(__name__)
 # Thresholds for data visualization
 MAX_ROWS = 200
 MAX_COLS = 15
+
+
+def _sanitize_code(code: str) -> str:
+    """
+    Sanitize code before execution by removing common LLM artifacts:
+    - Markdown code blocks (```python...``` or '''python...''')
+    - Shell command prefixes
+    """
+    if not code:
+        return code
+    
+    code = code.strip()
+    
+    # Remove markdown code blocks with backticks
+    code = re.sub(r'^```python\s*\n?', '', code, flags=re.IGNORECASE)
+    code = re.sub(r'^```\s*\n?', '', code)
+    code = re.sub(r'\n?```$', '', code)
+    
+    # Remove markdown-style blocks with triple single quotes ('''python ... ''')
+    code = re.sub(r"^'''python\s*\n?", '', code, flags=re.IGNORECASE)
+    code = re.sub(r"^'''\s*\n?", '', code)
+    code = re.sub(r"\n?'''$", '', code)
+    
+    # Remove markdown-style blocks with triple double quotes (\"\"\"python ... \"\"\")
+    code = re.sub(r'^"""python\s*\n?', '', code, flags=re.IGNORECASE)
+    code = re.sub(r'^"""\s*\n?', '', code)
+    code = re.sub(r'\n?"""$', '', code)
+    
+    # Remove shell command prefixes
+    lines = code.split('\n')
+    if lines:
+        first_line = lines[0].strip()
+        # Check if first line is a shell command to run python
+        if re.match(r'^python[3]?\s+(-[a-z]+\s+)?["\']?', first_line, re.IGNORECASE):
+            lines = lines[1:]
+        elif re.match(r'^[$%>]\s*python', first_line, re.IGNORECASE):
+            lines = lines[1:]
+    
+    return '\n'.join(lines).strip()
 
 def get_chart_category(df: pd.DataFrame) -> tuple:
     """
@@ -82,6 +122,9 @@ def execute_python_code(code: str, context: Optional[Dict[str, Any]] = None) -> 
     Returns:
         Dict containing success status, output, error message, and results (serialized DataFrames).
     """
+    
+    # Sanitize code to remove LLM artifacts (markdown blocks, shell prefixes)
+    code = _sanitize_code(code)
     
     # Create a buffer to capture stdout
     stdout_buffer = io.StringIO()

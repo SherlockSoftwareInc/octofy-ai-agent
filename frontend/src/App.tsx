@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { Send, Loader2, Sparkles, LayoutDashboard, User, Bot, Square, Eye, X, CheckCircle } from 'lucide-react';
 import { api } from './api/client';
-import type { GenerateSQLResponse, AgentStatus, ExecutePythonResponse, ChartTypeOption } from './api/client';
+import type { GenerateSQLResponse, AgentStatus, ExecutePythonResponse } from './api/client';
 import { SQLResultDisplay } from './components/SQL/SQLResultDisplay';
 import { AdminLayout } from './pages/Admin/AdminLayout';
 import { SchemaManager } from './pages/Admin/SchemaManager';
@@ -274,14 +274,61 @@ function App() {
   };
 
   // Handle execution result updates
-  const handleExecutionComplete = (messageId: string, result: ExecutePythonResponse) => {
+  const handleExecutionComplete = async (messageId: string, result: ExecutePythonResponse) => {
     if (!activeConversationId) return;
 
-    const updatedMessages = chatHistory.map(msg =>
+    // Find the message to update
+    const msgToUpdate = chatHistory.find(msg => msg.id === messageId);
+    if (!msgToUpdate) {
+      // fallback: just update executionResult
+      const updatedMessages = chatHistory.map(msg =>
+        msg.id === messageId ? { ...msg, executionResult: result } : msg
+      );
+      updateConversation(activeConversationId, { messages: updatedMessages });
+      return;
+    }
+
+    // First, update the UI immediately with execution results (no summary yet)
+    const updatedMessagesImmediate = chatHistory.map(msg =>
       msg.id === messageId ? { ...msg, executionResult: result } : msg
     );
+    updateConversation(activeConversationId, { messages: updatedMessagesImmediate });
 
-    updateConversation(activeConversationId, { messages: updatedMessages });
+    // Then fetch summary in the background (non-blocking)
+    if (result && result.success && result.results && result.results.length > 0) {
+      try {
+        const firstResult = result.results[0];
+        const userRequest = msgToUpdate.sourceQuery || msgToUpdate.content;
+        const chartType = msgToUpdate.chartTypeOverride;
+        // Only send a preview of data (avoid huge payloads)
+        let previewData = firstResult.data;
+        if (Array.isArray(previewData) && previewData.length > 20) {
+          previewData = previewData.slice(0, 20);
+        }
+        
+        // Add timeout to prevent hanging
+        const timeoutPromise = new Promise<never>((_, reject) => 
+          setTimeout(() => reject(new Error('Summary timeout')), 15000)
+        );
+        
+        const summaryPromise = api.summarizeResults(userRequest, previewData, chartType);
+        const summaryResult = await Promise.race([summaryPromise, timeoutPromise]);
+        
+        // Update with summary after it arrives
+        setConversations(prev => prev.map(conv => {
+          if (conv.id !== activeConversationId) return conv;
+          return {
+            ...conv,
+            messages: conv.messages.map(msg =>
+              msg.id === messageId ? { ...msg, pythonSummary: summaryResult.summary } : msg
+            )
+          };
+        }));
+      } catch (e) {
+        console.error('Summary fetch failed:', e);
+        // Silently fail - summary is optional
+      }
+    }
   };
 
   const parseObjectName = (rawObject: string) => {
@@ -958,6 +1005,7 @@ function App() {
                                     onExecutionComplete={(result) => handleExecutionComplete(message.id, result)}
                                     chartTypeOverride={message.chartTypeOverride}
                                     chartOnly={true}
+                                    pythonSummary={message.pythonSummary || ''}
                                   />
                                 </div>
                               ) : (
@@ -975,6 +1023,7 @@ function App() {
                                         executionResult={message.executionResult}
                                         onExecutionComplete={(result) => handleExecutionComplete(message.id, result)}
                                         chartTypeOverride={message.chartTypeOverride}
+                                        pythonSummary={message.pythonSummary || ''}
                                       />
                                     ) : (
                                       // Show explanation when no SQL was generated
