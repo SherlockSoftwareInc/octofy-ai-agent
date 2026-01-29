@@ -27,7 +27,7 @@ import {
   generateInitialTitle,
   generateAutoTitle
 } from './utils/conversationStorage';
-import { detectChartIntent, getChartTypeLabel, shouldTriggerRevisualization, getNewCodeReason } from './utils/chartIntentDetector';
+import { detectChartIntent, getChartTypeLabel, shouldTriggerRevisualization, getNewCodeReason, isExplicitChartOnlyPattern } from './utils/chartIntentDetector';
 
 function App() {
   // Simple Router State (Hash based or state based)
@@ -526,16 +526,57 @@ function App() {
              msg.executionResult
     );
 
-    // Get the source query from the last executed message for comparison
-    const lastExecutedQuery = lastPythonMessage?.sourceQuery;
+    // Find the last AI message with SQL execution results
+    const lastSQLMessage = [...chatHistory].reverse().find(
+      msg => msg.type === 'ai' && 
+             msg.queryType === 'database' && 
+             msg.sqlResult?.sql &&
+             msg.sqlExecutionResult
+    );
 
-    // Check if we should re-visualize (vs generate new code)
-    const shouldRevisualize = chartIntent && 
+    // Also find the last generated SQL (even if not executed) for better UX
+    const lastGeneratedSQLMessage = [...chatHistory].reverse().find(
+      msg => msg.type === 'ai' && 
+             msg.queryType === 'database' && 
+             msg.sqlResult?.sql
+    );
+
+    // DEBUG: Log detection results
+    console.log('=== RE-VISUALIZATION DEBUG ===');
+    console.log('Query:', query);
+    console.log('Chart Intent:', chartIntent);
+    console.log('Last Python Message:', lastPythonMessage ? 'Found' : 'Not found');
+    console.log('Last SQL Message (executed):', lastSQLMessage ? {
+      hasSQL: !!lastSQLMessage.sqlResult?.sql,
+      hasExecutionResult: !!lastSQLMessage.sqlExecutionResult,
+      sourceQuery: lastSQLMessage.sourceQuery
+    } : 'Not found');
+    console.log('Last SQL Message (generated but maybe not executed):', lastGeneratedSQLMessage ? {
+      hasSQL: !!lastGeneratedSQLMessage.sqlResult?.sql,
+      hasExecutionResult: !!lastGeneratedSQLMessage.sqlExecutionResult,
+      sourceQuery: lastGeneratedSQLMessage.sourceQuery
+    } : 'Not found');
+
+    // Get the source query from the last executed message for comparison
+    const lastExecutedQuery = lastPythonMessage?.sourceQuery || lastSQLMessage?.sourceQuery;
+
+    // Check if we should re-visualize Python code (vs generate new code)
+    const shouldRevisualizePython = chartIntent && 
       lastPythonMessage?.sqlResult?.sql && 
       lastPythonMessage?.executionResult &&
-      shouldTriggerRevisualization(chartIntent, query, lastExecutedQuery);
+      shouldTriggerRevisualization(chartIntent, query, lastPythonMessage?.sourceQuery);
 
-    if (shouldRevisualize && lastPythonMessage) {
+    // Check if we should re-visualize SQL execution (vs generate new SQL)
+    const shouldRevisualizeSQL = chartIntent && 
+      lastSQLMessage?.sqlResult?.sql && 
+      lastSQLMessage?.sqlExecutionResult &&
+      shouldTriggerRevisualization(chartIntent, query, lastSQLMessage?.sourceQuery);
+
+    console.log('Should Revisualize Python:', shouldRevisualizePython);
+    console.log('Should Revisualize SQL:', shouldRevisualizeSQL);
+    console.log('==============================');
+
+    if (shouldRevisualizePython && lastPythonMessage) {
       // Re-visualization: Always create a new AI message for the new chart
       const userMessage: ChatMessage = {
         id: generateMessageId(),
@@ -573,12 +614,151 @@ function App() {
         // Add both user message and new AI message to the chat
         const updatedMessages = [...chatHistory, userMessage, aiMessage];
         updateConversation(conversationId, { messages: updatedMessages });
+        
+        // Fetch summary and analysis context for new visualization (non-blocking)
+        await handleExecutionComplete(aiMessage.id, result);
+        
       } catch (error) {
         console.error('Re-visualization failed:', error);
         // Build helpful error message with supported chart types
         const supportedCharts = ['Bar', 'Line', 'Pie', 'Scatter', 'Column', 'Area', 'Treemap', 'Radar', 'Funnel', 'Stacked Bar', 'Stacked Column', 'Clustered Column'];
         const requestedChartLabel = chartTypeOverride ? getChartTypeLabel(chartTypeOverride) : 'the requested chart';
         const errorContent = `Sorry, I couldn't update the visualization to ${requestedChartLabel}. This may be due to incompatible data structure for this chart type.\n\n**Supported chart types:** ${supportedCharts.join(', ')}.\n\nPlease try a different chart type or ensure your data has the required columns.`;
+        
+        const errorMessage: ChatMessage = {
+          id: generateMessageId(),
+          type: 'ai',
+          content: errorContent,
+          timestamp: new Date()
+        };
+        const updatedMessages = [...chatHistory, userMessage, errorMessage];
+        updateConversation(conversationId, { messages: updatedMessages });
+      } finally {
+        setIsLoading(false);
+      }
+      return;
+    }
+
+    // Handle SQL re-visualization (for executed SQL queries with results)
+    if (shouldRevisualizeSQL && lastSQLMessage) {
+      // Re-visualization: Always create a new AI message for the new chart
+      const userMessage: ChatMessage = {
+        id: generateMessageId(),
+        type: 'user',
+        content: query,
+        timestamp: new Date(),
+        chartTypeOverride: chartTypeOverride
+      };
+
+      setQuery('');
+      setIsLoading(true);
+
+      try {
+        // Re-execute the same SQL query with the new chart type override
+        const sourceQuery = lastSQLMessage.sourceQuery || lastSQLMessage.content || '';
+        const result = await api.executeSQL(
+          lastSQLMessage.sqlResult!.sql,
+          { 
+            user_query: sourceQuery,
+            schema_context: 'Re-visualization request' 
+          },
+          chartTypeOverride
+        );
+
+        // Create a new AI message for the new chart
+        const aiMessage: ChatMessage = {
+          id: generateMessageId(),
+          type: 'ai',
+          content: 'Here is the updated visualization:',
+          timestamp: new Date(),
+          sqlResult: lastSQLMessage.sqlResult,
+          sqlExecutionResult: result,
+          queryType: 'database',
+          sourceQuery: lastSQLMessage.sourceQuery,
+          chartTypeOverride: chartTypeOverride
+        };
+
+        // Add both user message and new AI message to the chat
+        const updatedMessages = [...chatHistory, userMessage, aiMessage];
+        updateConversation(conversationId, { messages: updatedMessages });
+        
+        // Fetch summary for new visualization (non-blocking)
+        await handleSQLExecutionComplete(aiMessage.id, result);
+        
+      } catch (error) {
+        console.error('SQL re-visualization failed:', error);
+        // Build helpful error message with supported chart types
+        const supportedCharts = ['Bar', 'Line', 'Pie', 'Scatter', 'Column', 'Area', 'Treemap', 'Radar', 'Funnel', 'Stacked Bar', 'Stacked Column', 'Clustered Column'];
+        const requestedChartLabel = chartTypeOverride ? getChartTypeLabel(chartTypeOverride) : 'the requested chart';
+        const errorContent = `Sorry, I couldn't update the visualization to ${requestedChartLabel}. This may be due to incompatible data structure for this chart type.\n\n**Supported chart types:** ${supportedCharts.join(', ')}.\n\nPlease try a different chart type or ensure your data has the required columns.`;
+        
+        const errorMessage: ChatMessage = {
+          id: generateMessageId(),
+          type: 'ai',
+          content: errorContent,
+          timestamp: new Date()
+        };
+        const updatedMessages = [...chatHistory, userMessage, errorMessage];
+        updateConversation(conversationId, { messages: updatedMessages });
+      } finally {
+        setIsLoading(false);
+      }
+      return;
+    }
+
+    // Handle case where SQL is generated but NOT executed - execute it with chart type override
+    // This handles the scenario where user says "Convert to line chart" after generating SQL
+    const isChartOnlyRequest = chartIntent && isExplicitChartOnlyPattern(query);
+    if (isChartOnlyRequest && !lastSQLMessage && lastGeneratedSQLMessage) {
+      // User wants a chart type change, SQL exists but hasn't been executed yet
+      const userMessage: ChatMessage = {
+        id: generateMessageId(),
+        type: 'user',
+        content: query,
+        timestamp: new Date(),
+        chartTypeOverride: chartTypeOverride
+      };
+
+      setQuery('');
+      setIsLoading(true);
+
+      try {
+        // Execute the generated SQL with the chart type override
+        const sourceQuery = lastGeneratedSQLMessage.sourceQuery || lastGeneratedSQLMessage.content || '';
+        const result = await api.executeSQL(
+          lastGeneratedSQLMessage.sqlResult!.sql,
+          { 
+            user_query: sourceQuery,
+            schema_context: 'First execution with chart type override' 
+          },
+          chartTypeOverride
+        );
+
+        // Create a new AI message with the visualization
+        const aiMessage: ChatMessage = {
+          id: generateMessageId(),
+          type: 'ai',
+          content: `Here is the ${getChartTypeLabel(chartTypeOverride || 'line')} visualization:`,
+          timestamp: new Date(),
+          sqlResult: lastGeneratedSQLMessage.sqlResult,
+          sqlExecutionResult: result,
+          queryType: 'database',
+          sourceQuery: lastGeneratedSQLMessage.sourceQuery,
+          chartTypeOverride: chartTypeOverride
+        };
+
+        // Add both user message and new AI message to the chat
+        const updatedMessages = [...chatHistory, userMessage, aiMessage];
+        updateConversation(conversationId, { messages: updatedMessages });
+        
+        // Fetch summary for visualization (non-blocking)
+        await handleSQLExecutionComplete(aiMessage.id, result);
+        
+      } catch (error) {
+        console.error('SQL visualization failed:', error);
+        const supportedCharts = ['Bar', 'Line', 'Pie', 'Scatter', 'Column', 'Area', 'Treemap', 'Radar', 'Funnel', 'Stacked Bar', 'Stacked Column', 'Clustered Column'];
+        const requestedChartLabel = chartTypeOverride ? getChartTypeLabel(chartTypeOverride) : 'the requested chart';
+        const errorContent = `Sorry, I couldn't create the ${requestedChartLabel} visualization. The SQL execution may have failed or the data structure may be incompatible.\n\n**Supported chart types:** ${supportedCharts.join(', ')}.`;
         
         const errorMessage: ChatMessage = {
           id: generateMessageId(),
