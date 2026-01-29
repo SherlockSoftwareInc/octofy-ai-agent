@@ -14,7 +14,10 @@ import type { ToastType } from './components/Toast';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { Sidebar } from './components/Sidebar/Sidebar';
 import { ObjectTypeLabel } from './components/ObjectTypeLabel';
-import type { Conversation, ChatMessage } from './types/conversation';
+import type { Conversation, ChatMessage, AnalysisContext } from './types/conversation';
+import { InsightsPanel } from './components/InsightsPanel';
+import { RefinementSuggestions } from './components/RefinementSuggestions';
+import { DataProfileCard } from './components/DataProfileCard';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import {
@@ -288,9 +291,24 @@ function App() {
       return;
     }
 
+    // Store analysis context if profiling data is available
+    let analysisContext: AnalysisContext | undefined;
+    if (result.data_profile || result.insights) {
+      analysisContext = {
+        data_profile: result.data_profile,
+        insights: result.insights || [],
+        refinement_history: msgToUpdate.analysisContext?.refinement_history || [],
+        suggested_refinements: result.suggested_refinements || []
+      };
+    }
+
     // First, update the UI immediately with execution results (no summary yet)
     const updatedMessagesImmediate = chatHistory.map(msg =>
-      msg.id === messageId ? { ...msg, executionResult: result } : msg
+      msg.id === messageId ? { 
+        ...msg, 
+        executionResult: result,
+        analysisContext: analysisContext 
+      } : msg
     );
     updateConversation(activeConversationId, { messages: updatedMessagesImmediate });
 
@@ -328,6 +346,18 @@ function App() {
         console.error('Summary fetch failed:', e);
         // Silently fail - summary is optional
       }
+    }
+  };
+
+  const handleRefinementClick = async (suggestion: string) => {
+    if (!activeConversationId) return;
+    
+    // Set the query input with the suggestion
+    setQuery(suggestion);
+    
+    // Optionally focus on the textarea for user review
+    if (textareaRef.current) {
+      textareaRef.current.focus();
     }
   };
 
@@ -441,9 +471,10 @@ function App() {
 
       try {
         // Re-execute the same Python code with the new chart type override
+        const sourceQuery = lastPythonMessage.sourceQuery || lastPythonMessage.content || '';
         const result = await api.executePython(
           lastPythonMessage.sqlResult!.sql,
-          undefined,
+          { user_query: sourceQuery },
           chartTypeOverride
         );
 
@@ -1037,7 +1068,35 @@ function App() {
                                       </div>
                                     )}
                                   </div>
-                                )
+                                  )
+                                )}
+
+                              {/* Workflow Components - Insights, Refinement Suggestions, and Data Profile */}
+                              {message.analysisContext && (
+                                <div className="mt-4 space-y-3">
+                                  {/* Insights Panel */}
+                                  {message.analysisContext.insights && 
+                                   message.analysisContext.insights.length > 0 && (
+                                    <InsightsPanel insights={message.analysisContext.insights} />
+                                  )}
+                                  
+                                  {/* Refinement Suggestions */}
+                                  {message.analysisContext.suggested_refinements && 
+                                   message.analysisContext.suggested_refinements.length > 0 && (
+                                    <RefinementSuggestions
+                                      suggestions={message.analysisContext.suggested_refinements}
+                                      onSuggestionClick={handleRefinementClick}
+                                    />
+                                  )}
+                                  
+                                  {/* Data Profile Card (collapsible) */}
+                                  {message.analysisContext.data_profile && (
+                                    <DataProfileCard 
+                                      profile={message.analysisContext.data_profile}
+                                      className="mt-2"
+                                    />
+                                  )}
+                                </div>
                               )}
                             </div>
                           )}

@@ -10,6 +10,7 @@ import json
 from typing import List, Dict, Any, Optional
 from app.models.schemas import DataProfile, Insight, ColumnProfile
 from app.services.llm_service import get_llm_service
+from app.utils.sanitization import prepare_user_query_for_llm
 import logging
 
 logger = logging.getLogger(__name__)
@@ -240,6 +241,9 @@ class InsightService:
             Sorted list of insights (most relevant first)
         """
         try:
+            # Sanitize user query to prevent prompt injection
+            safe_user_query = prepare_user_query_for_llm(user_query)
+            
             # Build prompt with candidate insights
             insight_descriptions = []
             for i, insight in enumerate(candidates):
@@ -249,7 +253,7 @@ class InsightService:
             
             prompt = f"""Given the user's query and data insights below, rank the top {self.MAX_INSIGHTS_TO_RETURN} most relevant and actionable insights.
 
-User Query: "{user_query}"
+User Query: "{safe_user_query}"
 
 Dataset: {profile.row_count} rows, {profile.column_count} columns
 

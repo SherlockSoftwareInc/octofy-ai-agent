@@ -132,6 +132,9 @@ class MilvusVectorStore(VectorStoreBase):
         agent_settings = load_settings()
         embedding_config = agent_settings.embedding_config
         
+        # Track connection state
+        self._connected = False
+        
         # Initialize Embedding Client via Factory
         try:
             self.embedding_client = EmbeddingFactory.create_client(embedding_config)
@@ -156,11 +159,13 @@ class MilvusVectorStore(VectorStoreBase):
                 port=vector_config.port
             )
             print(f"Connected to Milvus at {vector_config.host}:{vector_config.port}")
+            self._connected = True
             self._ensure_values_collection()
             self._ensure_schema_collection()
             self._ensure_fewshot_collection()
         except Exception as e:
             print(f"Failed to connect to Milvus: {e}")
+            self._connected = False
 
     def _ensure_values_collection(self):
         """
@@ -367,6 +372,8 @@ class MilvusVectorStore(VectorStoreBase):
         Returns:
             List of matching items with their scores
         """
+        if not self._connected:
+            return []
         if not utility.has_collection(collection_name):
             print(f"Collection {collection_name} does not exist.")
             return []
@@ -407,7 +414,9 @@ class MilvusVectorStore(VectorStoreBase):
         return retrieved_items
 
     def search_schemas(self, query: str, top_k: int = 5) -> List[TableSchema]:
-        # Check if collection exists
+        # Check if connected and collection exists
+        if not self._connected:
+            return []
         if not utility.has_collection(settings.MILVUS_COLLECTION_SCHEMA):
             return []
 
@@ -443,6 +452,8 @@ class MilvusVectorStore(VectorStoreBase):
     
     def search_fewshots(self, query: str, top_k: int = 3, knowledge_type: Optional[str] = None) -> List[Dict[str, Any]]:
         """Search few-shot examples, optionally filtered by knowledge_type."""
+        if not self._connected:
+            return []
         if not utility.has_collection(settings.MILVUS_COLLECTION_FEWSHOT):
             return []
         
@@ -490,6 +501,8 @@ class MilvusVectorStore(VectorStoreBase):
         Returns:
             List of matching value items
         """
+        if not self._connected:
+            return []
         if not utility.has_collection(settings.MILVUS_COLLECTION_VALUES):
             return []
         
@@ -535,6 +548,8 @@ class MilvusVectorStore(VectorStoreBase):
     
     def get_all_schemas(self) -> List[TableSchema]:
         # Milvus query for specific fields
+        if not self._connected:
+             return []
         if not utility.has_collection(settings.MILVUS_COLLECTION_SCHEMA):
              return []
         
@@ -563,6 +578,8 @@ class MilvusVectorStore(VectorStoreBase):
         return schemas
 
     def get_schema_by_name(self, schema_name: str, table_name: str) -> Optional[TableSchema]:
+        if not self._connected:
+            return None
         if not utility.has_collection(settings.MILVUS_COLLECTION_SCHEMA):
             return None
 
@@ -591,6 +608,8 @@ class MilvusVectorStore(VectorStoreBase):
         )
 
     def insert_schema_embedding(self, schema: TableSchema, text_for_embedding: str, table_type: str = "table"):
+        if not self._connected:
+            raise Exception("Milvus is not connected. Cannot insert schema.")
         self._ensure_schema_collection()
         collection = Collection(settings.MILVUS_COLLECTION_SCHEMA)
         try:
@@ -621,6 +640,8 @@ class MilvusVectorStore(VectorStoreBase):
         collection.flush()
 
     def update_schema_description(self, schema_name: str, table_name: str, new_description: str):
+        if not self._connected:
+            raise Exception("Milvus is not connected. Cannot update schema.")
         if not utility.has_collection(settings.MILVUS_COLLECTION_SCHEMA):
             raise Exception(f"Collection {settings.MILVUS_COLLECTION_SCHEMA} does not exist")
 
@@ -664,6 +685,8 @@ class MilvusVectorStore(VectorStoreBase):
         collection.flush()
 
     def delete_schema(self, schema_name: str, table_name: str):
+        if not self._connected:
+            raise Exception("Milvus is not connected. Cannot delete schema.")
         if not utility.has_collection(settings.MILVUS_COLLECTION_SCHEMA):
             raise Exception(f"Collection {settings.MILVUS_COLLECTION_SCHEMA} does not exist")
 
@@ -675,6 +698,8 @@ class MilvusVectorStore(VectorStoreBase):
         collection.flush()
 
     def clear_schemas_collection(self):
+        if not self._connected:
+            return
         self._ensure_schema_collection()
         if not utility.has_collection(settings.MILVUS_COLLECTION_SCHEMA):
             return
@@ -688,6 +713,8 @@ class MilvusVectorStore(VectorStoreBase):
         collection.flush()
 
     def get_all_fewshots(self) -> List[Dict[str, Any]]:
+        if not self._connected:
+            return []
         if not utility.has_collection(settings.MILVUS_COLLECTION_FEWSHOT):
             return []
         collection = Collection(settings.MILVUS_COLLECTION_FEWSHOT)
@@ -702,6 +729,8 @@ class MilvusVectorStore(VectorStoreBase):
         return res
 
     def insert_fewshot_item(self, question: str, sql_query: str, knowledge_type: str = "sql_query"):
+        if not self._connected:
+            raise Exception("Milvus is not connected. Cannot insert fewshot item.")
         self._ensure_fewshot_collection()
         collection = Collection(settings.MILVUS_COLLECTION_FEWSHOT)
         
@@ -719,6 +748,8 @@ class MilvusVectorStore(VectorStoreBase):
         collection.flush()
         
     def delete_fewshot_item(self, item_id: int):
+        if not self._connected:
+            return
         if not utility.has_collection(settings.MILVUS_COLLECTION_FEWSHOT):
             return
         collection = Collection(settings.MILVUS_COLLECTION_FEWSHOT)
@@ -734,6 +765,8 @@ class MilvusVectorStore(VectorStoreBase):
     # --- Value Index Implementation ---
     
     def get_all_values(self) -> List[Dict[str, Any]]:
+        if not self._connected:
+            return []
         self._ensure_values_collection()
         if not utility.has_collection(settings.MILVUS_COLLECTION_VALUES):
             return []
@@ -749,6 +782,8 @@ class MilvusVectorStore(VectorStoreBase):
         return res
     
     def insert_value_item(self, value: str, schema_name: str, table_name: str, column_name: str, metadata: dict = None):
+        if not self._connected:
+            raise Exception("Milvus is not connected. Cannot insert value item.")
         self._ensure_values_collection()
         collection = Collection(settings.MILVUS_COLLECTION_VALUES)
         
@@ -773,6 +808,8 @@ class MilvusVectorStore(VectorStoreBase):
     def insert_value_items_batch(self, items: List[Dict[str, Any]]):
         if not items:
             return
+        if not self._connected:
+            raise Exception("Milvus is not connected. Cannot insert value items.")
 
         self._ensure_values_collection()
         collection = Collection(settings.MILVUS_COLLECTION_VALUES)
@@ -805,6 +842,8 @@ class MilvusVectorStore(VectorStoreBase):
         collection.flush()
     
     def delete_value_item(self, item_id: int):
+        if not self._connected:
+            return
         self._ensure_values_collection()
         if not utility.has_collection(settings.MILVUS_COLLECTION_VALUES):
             return
@@ -813,6 +852,8 @@ class MilvusVectorStore(VectorStoreBase):
         collection.flush()
     
     def clear_values_collection(self):
+        if not self._connected:
+            return
         self._ensure_values_collection()
         if not utility.has_collection(settings.MILVUS_COLLECTION_VALUES):
             return
@@ -829,6 +870,8 @@ class MilvusVectorStore(VectorStoreBase):
     
     def _ensure_contributions_collection(self):
         """Ensure the contributions collection exists with proper schema."""
+        if not self._connected:
+            return
         try:
             if utility.has_collection(settings.MILVUS_COLLECTION_CONTRIBUTIONS):
                 existing = Collection(settings.MILVUS_COLLECTION_CONTRIBUTIONS)
@@ -862,6 +905,8 @@ class MilvusVectorStore(VectorStoreBase):
             print(f"Failed to ensure contributions collection: {e}")
     
     def get_all_contributions(self) -> List[Dict[str, Any]]:
+        if not self._connected:
+            return []
         self._ensure_contributions_collection()
         if not utility.has_collection(settings.MILVUS_COLLECTION_CONTRIBUTIONS):
             return []
@@ -879,6 +924,8 @@ class MilvusVectorStore(VectorStoreBase):
     def insert_contribution(self, question: str, sql_query: str, knowledge_type: str = "sql_query", user_id: str = None) -> int:
         from datetime import datetime
         
+        if not self._connected:
+            raise Exception("Milvus is not connected. Cannot insert contribution.")
         self._ensure_contributions_collection()
         collection = Collection(settings.MILVUS_COLLECTION_CONTRIBUTIONS)
         
@@ -904,6 +951,8 @@ class MilvusVectorStore(VectorStoreBase):
         return -1
     
     def delete_contribution(self, contribution_id: int):
+        if not self._connected:
+            return
         self._ensure_contributions_collection()
         if not utility.has_collection(settings.MILVUS_COLLECTION_CONTRIBUTIONS):
             return
@@ -925,6 +974,8 @@ class MilvusVectorStore(VectorStoreBase):
         Uses L2 distance - lower values mean more similar.
         For normalized embeddings: 0 = identical, 0.5 = very similar, 1.0 = similar
         """
+        if not self._connected:
+            return (False, 0.0, None)
         if not utility.has_collection(settings.MILVUS_COLLECTION_FEWSHOT):
             return (False, 0.0, None)
         
@@ -976,6 +1027,9 @@ class MilvusVectorStore(VectorStoreBase):
             "contributions": []
         }
         
+        if not self._connected:
+            return export_data
+        
         try:
             # Schemas
             schemas = self.get_all_schemas()
@@ -1005,6 +1059,8 @@ class MilvusVectorStore(VectorStoreBase):
             edited_sql: Optional edited SQL query to use instead of original
             knowledge_type: Type of knowledge ("general", "sql_query", "r_code", "sas_code")
         """
+        if not self._connected:
+            raise Exception("Milvus is not connected. Cannot move contribution.")
         self._ensure_contributions_collection()
         
         # Get the contribution
