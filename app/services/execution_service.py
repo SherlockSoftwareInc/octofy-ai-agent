@@ -364,32 +364,41 @@ def execute_python_code(
             if first_result.get("type") == "dataframe" and first_result.get("data"):
                 # Convert back to DataFrame from structured data
                 df_data = first_result["data"]["data"]
-                df_for_profiling = pd.DataFrame(df_data)
                 
-                # Profile the DataFrame
-                profiling_service = ProfilingService()
-                data_profile = profiling_service.profile_dataframe(df_for_profiling)
-                logger.info(f"Generated data profile: {data_profile.profiling_level} level, "
-                          f"{data_profile.row_count} rows, {data_profile.column_count} cols")
-                
-                # Generate insights
-                insight_service = InsightService()
-                insights = insight_service.generate_insights(
-                    profile=data_profile,
-                    user_query=user_query or "analyze data",
-                    df_sample=df_for_profiling.head(10)
-                )
-                logger.info(f"Generated {len(insights)} insights")
-                
-                # Generate refinement suggestions
-                suggested_refinements = insight_service.suggest_refinements(
+                # SECURITY: Check data size before loading into memory
+                MAX_ROWS_FOR_PROFILING = 100000
+                if len(df_data) > MAX_ROWS_FOR_PROFILING:
+                    logger.warning(f"Dataset too large for profiling: {len(df_data)} rows (max: {MAX_ROWS_FOR_PROFILING})")
+                    # Skip profiling for large datasets
+                else:
+                    df_for_profiling = pd.DataFrame(df_data)
+                    
+                    # Profile the DataFrame
+                    profiling_service = ProfilingService()
+                    data_profile = profiling_service.profile_dataframe(df_for_profiling)
+                    logger.info(f"Generated data profile: {data_profile.profiling_level} level, "
+                              f"{data_profile.row_count} rows, {data_profile.column_count} cols")
+                    
+                    # Generate insights
+                    insight_service = InsightService()
+                    insights = insight_service.generate_insights(
+                        profile=data_profile,
+                        user_query=user_query or "analyze data",
+                        df_sample=df_for_profiling.head(10)
+                    )
+                    logger.info(f"Generated {len(insights)} insights")
+                    
+                    # Generate refinement suggestions
+                    suggested_refinements = insight_service.suggest_refinements(
                     profile=data_profile,
                     insights=insights
                 )
                 logger.info(f"Generated {len(suggested_refinements)} refinement suggestions")
                 
         except Exception as e:
-            logger.error(f"Error during profiling/insight generation: {str(e)}")
+            # Don't expose sensitive data in logs - only log exception type
+            logger.error(f"Error during profiling/insight generation: {type(e).__name__}")
+            logger.debug(f"Profiling error details: {str(e)}", exc_info=True)
             # Continue without profiling if it fails
     
     # Convert data_profile and insights to dicts for JSON serialization

@@ -295,8 +295,12 @@ export const SQLResultDisplay: React.FC<SQLResultDisplayProps> = ({
         if (!sql) return;
         setIsRunning(true);
         try {
-            // Pass chart type override to the execution API
-            const result = await api.executePython(sql, undefined, chartTypeOverride);
+            // Pass chart type override and source query to the execution API
+            const result = await api.executePython(
+                sql, 
+                sourceQuestion ? { user_query: sourceQuestion } : undefined, 
+                chartTypeOverride
+            );
 
             // Call parent callback to persist the result
             if (onExecutionComplete) {

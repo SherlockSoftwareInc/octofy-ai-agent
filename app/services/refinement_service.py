@@ -10,6 +10,7 @@ import json
 from typing import List, Dict, Any, Optional
 from app.models.schemas import RefinementIntent, AnalysisContext
 from app.services.llm_service import get_llm_service
+from app.utils.sanitization import prepare_user_query_for_llm, sanitize_conversation_history
 import logging
 
 logger = logging.getLogger(__name__)
@@ -189,24 +190,30 @@ class RefinementDetector:
             RefinementIntent from LLM classification
         """
         try:
-            # Build context
-            history_text = "\n".join(conversation_history[-3:]) if conversation_history else "No previous messages"
+            # Sanitize inputs to prevent prompt injection
+            safe_query = prepare_user_query_for_llm(query)
+            safe_history = sanitize_conversation_history(conversation_history, max_messages=3)
             
             # Get column names from previous profile
             previous_columns = []
             if previous_context.data_profile:
                 previous_columns = [col.column_name for col in previous_context.data_profile.columns]
             
+            # Limit column list length for prompt
+            columns_display = ', '.join(previous_columns[:10]) if previous_columns else 'Unknown'
+            if len(previous_columns) > 10:
+                columns_display += f" (and {len(previous_columns) - 10} more)"
+            
             prompt = f"""Classify the user's intent for this query in the context of an ongoing data analysis conversation.
 
 Previous Context:
-- User was analyzing data with columns: {', '.join(previous_columns) if previous_columns else 'Unknown'}
+- User was analyzing data with columns: {columns_display}
 - Previous insights: {len(previous_context.insights)} insights generated
 
 Recent Conversation:
-{history_text}
+{safe_history}
 
-Current Query: "{query}"
+Current Query: "{safe_query}"
 
 Classify the intent as ONE of:
 1. drill_down - User wants to see data broken down by a specific dimension/category

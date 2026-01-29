@@ -110,6 +110,7 @@ export interface ExecutePythonResponse {
     execution_time: number;
     data_profile?: any; // DataProfile from backend (will be typed in conversation.ts)
     insights?: any[]; // Insight[] from backend (will be typed in conversation.ts)
+    suggested_refinements?: string[]; // Suggested refinement queries
 }
 
 export interface StructuredTableData {
