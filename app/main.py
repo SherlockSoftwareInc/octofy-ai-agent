@@ -2,6 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import settings
 from app.api.endpoints import discovery, generation, admin, settings as settings_endpoint, contributions, schema as schema_endpoint
+from app.api.endpoints import summarize
 from app.services.ingest_service import create_milvus_collections, ingest_metadata
 from app.services.vector_store import get_vector_store
 import logging
@@ -31,6 +32,7 @@ app.include_router(schema_endpoint.router, prefix=settings.API_V1_STR, tags=["sc
 app.include_router(admin.router, prefix=f"{settings.API_V1_STR}/admin", tags=["admin"])
 app.include_router(settings_endpoint.router, prefix=f"{settings.API_V1_STR}/admin", tags=["settings"])
 app.include_router(contributions.router, prefix=settings.API_V1_STR, tags=["contributions"])
+app.include_router(summarize.router, prefix=settings.API_V1_STR, tags=["summarize"])
 
 @app.on_event("startup")
 async def startup_event():

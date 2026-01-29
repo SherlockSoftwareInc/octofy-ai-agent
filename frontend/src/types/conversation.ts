@@ -13,6 +13,10 @@ export interface ChatMessage {
   executionResult?: ExecutePythonResponse;
   /** User's requested chart type from natural language (e.g., "show as line chart") */
   chartTypeOverride?: ChartTypeOption;
+  /**
+   * LLM-generated summary of the Python execution result (if available)
+   */
+  pythonSummary?: string;
 }
 
 export interface Conversation {

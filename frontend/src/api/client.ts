@@ -443,6 +443,22 @@ export const api = {
         return response.data;
     },
 
+    /**
+     * Summarize Python execution results using LLM
+     */
+    summarizeResults: async (
+        userRequest: string,
+        resultData: any,
+        chartType?: string
+    ): Promise<{ summary: string }> => {
+        const response = await axios.post(`${API_BASE_URL}/summarize-results`, {
+            user_request: userRequest,
+            result_data: resultData,
+            chart_type: chartType || undefined
+        });
+        return response.data;
+    },
+
     // Contribution API (User-facing)
     contributions: {
         submit: async (request: ContributionRequest): Promise<ContributionResponse> => {
@@ -934,3 +950,24 @@ export interface VerifySettingsResponse {
     milvus_connected: boolean;
     milvus_message: string;
 }
+
+/**
+ * Summarize Python execution results using LLM
+ * @param userRequest The original user request string
+ * @param resultData The result data (tabular or otherwise) to summarize
+ * @param chartType (optional) Chart type if relevant
+ * @returns {Promise<{summary: string}>}
+ */
+// @ts-ignore
+export const summarizeResults = async (
+    userRequest: string,
+    resultData: any,
+    chartType?: string // Use string for compatibility
+): Promise<{ summary: string }> => {
+    const response = await axios.post(`${API_BASE_URL}/summarize-results`, {
+        user_request: userRequest,
+        result_data: resultData,
+        chart_type: chartType || undefined
+    });
+    return response.data;
+};

@@ -35,7 +35,7 @@ function recommendationToMetadata(rec: ChartRecommendation): ChartMetadata {
     };
 }
 
-const ExecutionResultViewer: React.FC<{ results: ExecutePythonResult[]; recommendation?: ChartRecommendation }> = ({ results, recommendation }) => {
+const ExecutionResultViewer: React.FC<{ results: ExecutePythonResult[]; recommendation?: ChartRecommendation; pythonSummary?: string }> = ({ results, recommendation, pythonSummary }) => {
     const normalizeTableData = (data: StructuredTableData | Array<Record<string, unknown>>, fallbackColumns?: string[]) => {
         if (Array.isArray(data)) {
             return { columns: fallbackColumns || Object.keys(data[0] || {}), rows: data };
@@ -61,7 +61,7 @@ const ExecutionResultViewer: React.FC<{ results: ExecutePythonResult[]; recommen
     // Convert recommendation to chart metadata if available
     const chartMetadataFromRecommendation = useMemo(() => {
         if (!recommendation || recommendation.chart_type === 'none' || recommendation.chart_type === 'kpi') {
-            return null;
+            return undefined;
         }
         return recommendationToMetadata(recommendation);
     }, [recommendation]);
@@ -106,6 +106,14 @@ const ExecutionResultViewer: React.FC<{ results: ExecutePythonResult[]; recommen
                             </div>
                         </ResultsWrapper>
 
+                        {/* LLM Summary Section */}
+                        {idx === 0 && pythonSummary && (
+                          <div className="mt-3 p-3 bg-slate-800/40 border border-indigo-700/30 rounded-lg">
+                            <div className="text-xs text-indigo-300 font-semibold mb-1">AI Summary</div>
+                            <div className="text-sm text-indigo-100 whitespace-pre-line">{pythonSummary}</div>
+                          </div>
+                        )}
+
                         {/* Chart Section */}
                         {vizConfigBlocksChart ? (
                             <div className="mt-4 p-3 bg-slate-800/50 border border-slate-700 rounded-lg">
@@ -120,7 +128,7 @@ const ExecutionResultViewer: React.FC<{ results: ExecutePythonResult[]; recommen
                             <ResultsWrapper>
                                 <ResultChart
                                     data={res.normalized.rows}
-                                    metadata={effectiveMetadata}
+                                    metadata={effectiveMetadata as ChartMetadata}
                                 />
                             </ResultsWrapper>
                         ) : null}
@@ -149,6 +157,8 @@ interface SQLResultDisplayProps {
     chartTypeOverride?: ChartTypeOption;
     /** If true, only show the chart (for re-visualization) */
     chartOnly?: boolean;
+    /** LLM summary of the result, if available */
+    pythonSummary?: string;
 }
 
 export const SQLResultDisplay: React.FC<SQLResultDisplayProps> = ({
@@ -159,7 +169,8 @@ export const SQLResultDisplay: React.FC<SQLResultDisplayProps> = ({
     executionResult,
     onExecutionComplete,
     chartTypeOverride,
-    chartOnly = false
+    chartOnly = false,
+    pythonSummary
 }) => {
     const [copied, setCopied] = useState(false);
     const [toast, setToast] = useState<{ message: string; type: ToastType } | null>(null);
@@ -330,10 +341,10 @@ export const SQLResultDisplay: React.FC<SQLResultDisplayProps> = ({
         if (result) {
             if (Array.isArray(result.data)) {
                 rows = result.data;
-            } else if (result.data && Array.isArray(result.data.data)) {
-                rows = result.data.data;
-            } else if (result.data && result.data.rows) {
-                rows = result.data.rows;
+            } else if (result.data && Array.isArray(result.data)) {
+                rows = result.data;
+            } else if (result.data && (result.data as any).data) {
+                rows = (result.data as any).data;
             }
         }
 
@@ -351,7 +362,7 @@ export const SQLResultDisplay: React.FC<SQLResultDisplayProps> = ({
                     )}
                     {/* Only render the chart if the requested type is supported and matches the recommendation exactly */}
                     {!shouldShowWarning && (
-                        <ResultChart data={rows} metadata={chartMetadata} />
+                        <ResultChart data={rows} metadata={chartMetadata as ChartMetadata} />
                     )}
                 </div>
             </div>
@@ -448,6 +459,7 @@ export const SQLResultDisplay: React.FC<SQLResultDisplayProps> = ({
                                 <ExecutionResultViewer
                                     results={executionResult.results}
                                     recommendation={executionResult.recommendation}
+                                    pythonSummary={pythonSummary}
                                 />
                             )}
                         </div>

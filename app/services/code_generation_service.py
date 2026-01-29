@@ -5,6 +5,7 @@ These functions generate R and SAS code based on user requests, using knowledge 
 filtered by knowledge_type for better relevance.
 """
 
+import re
 from app.models.schemas import GenerateSQLRequest, GenerateSQLResponse, AgentStatus
 from app.services.llm_service import get_llm_service
 from app.services.settings_service import get_settings_for_display
@@ -27,6 +28,91 @@ from app.services.discovery_service import perform_discovery, DiscoveryRequest
 from typing import Optional, Generator, Union, Dict, Any, List
 from datetime import datetime
 import logging
+
+
+def _cleanup_python_code(code: str) -> str:
+    """
+    Clean up LLM-generated Python code by removing:
+    - Markdown code blocks (```python ... ``` or '''python ... ''')
+    - Shell command prefixes (python script.py, python -c, etc.)
+    - Standalone 'python' keyword lines
+    - Leading/trailing whitespace
+    - Fix unterminated docstrings
+    """
+    if not code:
+        return code
+    
+    # Remove markdown code blocks
+    code = code.strip()
+    
+    # Remove ```python and ``` markers (backticks)
+    code = re.sub(r'^```python\s*\n?', '', code, flags=re.IGNORECASE)
+    code = re.sub(r'^```\s*\n?', '', code)
+    code = re.sub(r'\n?```$', '', code)
+    
+    # Remove '''python and ''' markers (single quotes - common LLM mistake)
+    # Only remove if it's a wrapper pattern (opening and closing), not a valid docstring
+    code = re.sub(r"^'''python\s*\n?", '', code, flags=re.IGNORECASE)
+    # Don't remove standalone ''' at start - it might be a valid docstring
+    code = re.sub(r"\n?'''$", '', code)
+    
+    # Remove """python markers but NOT standalone """ (which could be valid docstrings)
+    code = re.sub(r'^"""python\s*\n?', '', code, flags=re.IGNORECASE)
+    # Don't remove standalone """ at start - it's likely a valid docstring
+    code = re.sub(r'\n?"""$', '', code)
+    
+    # Remove shell command prefixes like "python script.py", "python -c", "python3 ..."
+    # These patterns match lines that start with python/python3 followed by arguments
+    lines = code.strip().split('\n')
+    cleaned_lines = []
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        # Skip standalone 'python' or 'python3' keyword lines (LLM artifact)
+        if stripped.lower() in ('python', 'python3'):
+            continue
+        # Skip shell command lines at the start
+        if i == 0:
+            if re.match(r'^python[3]?\s+(-[a-z]+\s+)?["\']?', stripped, re.IGNORECASE):
+                continue
+            if re.match(r'^[$%>]\s*python', stripped, re.IGNORECASE):
+                continue
+        cleaned_lines.append(line)
+    
+    code = '\n'.join(cleaned_lines).strip()
+    
+    # Fix unterminated docstrings - check if triple quotes are balanced
+    # Count occurrences of """ and '''
+    double_count = len(re.findall(r'"""', code))
+    single_count = len(re.findall(r"'''", code))
+    
+    # If there's an odd number, we have an unterminated string
+    # In that case, remove the opening docstring entirely to make valid code
+    if double_count % 2 == 1:
+        # Find the first """ and check if it's at the start (docstring)
+        first_match = re.search(r'^"""', code)
+        if first_match:
+            # Find where the docstring should end (before import or actual code)
+            # Look for the pattern: """ ... (text without """) ... import/def/class/# 
+            docstring_end = re.search(r'^""".*?(?=\n(?:import|from|def|class|#|\w+\s*=))', code, re.DOTALL)
+            if docstring_end:
+                # Remove the unterminated docstring
+                end_pos = docstring_end.end()
+                code = code[end_pos:].strip()
+            else:
+                # Can't find proper end, just remove the opening """
+                code = re.sub(r'^"""\s*', '', code)
+    
+    if single_count % 2 == 1:
+        first_match = re.search(r"^'''", code)
+        if first_match:
+            docstring_end = re.search(r"^'''.*?(?=\n(?:import|from|def|class|#|\w+\s*=))", code, re.DOTALL)
+            if docstring_end:
+                end_pos = docstring_end.end()
+                code = code[end_pos:].strip()
+            else:
+                code = re.sub(r"^'''\s*", '', code)
+    
+    return code
 
 logger = logging.getLogger(__name__)
 
@@ -914,14 +1000,37 @@ Date Ranges: {', '.join(date_ranges) if date_ranges else 'None'}
     - `print()` can be used for debugging or brief comments.
 
 ### OUTPUT FORMAT
-1.  Start with a multi-line comment block (using triple quotes) briefly explaining the approach.
-2.  Follow with the Python code.
-3.  Return raw text. Do NOT include markdown code blocks (```python).
+1.  Start with comment lines (using # on each line) briefly explaining the approach.
+2.  Follow with the Python code (imports, logic, etc.).
+3.  **CRITICAL**: Return ONLY valid, executable Python code.
+    - Use # comments for explanations, NOT triple-quoted docstrings.
+    - Do NOT output the word `python` as a standalone line.
+    - Do NOT use markdown code block syntax.
+    - Do NOT include any plain text outside of # comments.
+    - Do NOT include shell commands.
+    - The response should start with a # comment or an import statement.
+
+**CORRECT FORMAT EXAMPLE:**
+# This script retrieves product sales data and calculates totals.
+# 1. Query the database for invoice data
+# 2. Group by product and sum sales
+# 3. Sort by total sales descending
+import pandas as pd
+import sqlalchemy
+# ... rest of code ...
+
+**INCORRECT FORMATS (DO NOT DO THESE):**
+- Starting with triple quotes: \"""This script...\"""
+- Using 'python' keyword: '''python
+- Markdown blocks: ```python
 """
     
     # Call LLM to generate Python code
     yield AgentStatus(step_id=11, message="Generating Python code...")
     python_code = llm_service.chat(prompt, temperature=0.1)
+    
+    # Clean up the generated code - remove markdown blocks and shell prefixes
+    python_code = _cleanup_python_code(python_code)
     
     response = GenerateSQLResponse(
         sql=python_code,
