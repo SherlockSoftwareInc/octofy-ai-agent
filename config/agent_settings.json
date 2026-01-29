@@ -21,10 +21,10 @@
     "python_connection_string_encrypted": "gAAAAABpem6iZY8dDbSOFq9JzpbNx2E29c7VqmXXp8JsIOCHIivucEePLoAIiUK7FFIZYThIa9WIuvFIwp8fb-rwyjWznPC5hHtwsRop0YFtBHnr4ANlL-15_tt_ZrSUMPFvMHbpgj97m1vxGlj-eAqC8UdtPQl_Xc6Z1ZqL1dZwuL4Y7Uw5aBwDiEhj0QNlppIra4qLwE3tCKJRv4vQM9cp-WJC0C2h7iUTKTm6FSe8et0Xy7E4TgiKsi2p_YjFIbKFcV0wFd89"
   },
   "llm_config": {
-    "llm_model": "gpt-4-0613",
+    "llm_model": "deepseek-chat",
     "temperature": 0.0,
-    "llm_endpoint": "https://api.openai.com/v1/",
-    "llm_api_key": "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"
+    "llm_endpoint": "https://api.deepseek.com/",
+    "llm_api_key": "sk-d05a083b760d4874a07b29c5f1e073df"
   },
   "embedding_config": {
     "provider": "openai",
