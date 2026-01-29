@@ -9,7 +9,7 @@ import re
 from dataclasses import dataclass
 from typing import Optional, Literal
 
-ChartType = Literal['bar', 'line', 'pie', 'scatter', 'kpi', 'none']
+ChartType = Literal['bar', 'line', 'pie', 'scatter', 'column', 'stackedBar', 'stackedColumn', 'clusteredColumn', 'area', 'radar', 'treemap', 'funnel', 'none']
 
 @dataclass
 class ChartIntent:
@@ -33,14 +33,7 @@ CHART_TYPE_PATTERNS = {
         r'\bbar\s*chart\b',
         r'\bas\s+a?\s*bar\b',
         r'\bbar\s*graph\b',
-        r'\bcolumn\s*chart\b',
         r'\bhistogram\b',
-    ],
-    'pie': [
-        r'\bpie\s*chart\b',
-        r'\bas\s+a?\s*pie\b',
-        r'\bdoughnut\s*chart\b',
-        r'\bdonut\s*chart\b',
     ],
     'scatter': [
         r'\bscatter\s*plot\b',
@@ -48,6 +41,55 @@ CHART_TYPE_PATTERNS = {
         r'\bas\s+a?\s*scatter\b',
         r'\bxy\s*chart\b',
         r'\bxy\s*plot\b',
+    ],
+    'pie': [
+        r'\bpie\s*chart\b',
+        r'\bas\s+a?\s*pie\b',
+        r'\bdoughnut\s*chart\b',
+        r'\bdonut\s*chart\b',
+    ],
+    'treemap': [
+        r'\btreemap\b',
+        r'\btree\s*map\b',
+        r'\bhierarchical\s*chart\b',
+    ],
+    'area': [
+        r'\barea\s*chart\b',
+        r'\barea\s*graph\b',
+        r'\bas\s+a?\s*area\b',
+        r'\bfilled\s*line\b',
+        r'\bstacked\s*area\b',
+    ],
+    'radar': [
+        r'\bradar\s*chart\b',
+        r'\bspider\s*chart\b',
+        r'\bweb\s*chart\b',
+        r'\bas\s+a?\s*radar\b',
+    ],
+    'column': [
+        r'\bcolumn\s*chart\b',
+        r'\bcolumn\s*graph\b',
+    ],
+    'stackedBar': [
+        r'\bstacked\s*bar\b',
+        r'\bbar\s*stacked\b',
+    ],
+    'stackedColumn': [
+        r'\bstacked\s*column\b',
+        r'\bcolumn\s*stacked\b',
+    ],
+    'clusteredColumn': [
+        r'\bclustered\s*column\b',
+        r'\bgrouped\s*column\b',
+        r'\bclustered\s*bar\b',
+        r'\bgrouped\s*bar\b',
+    ],
+    'funnel': [
+        r'\bfunnel\s*chart\b',
+        r'\bfunnel\b',
+        r'\bsales\s*funnel\b',
+        r'\bconversion\s*funnel\b',
+        r'\bas\s+a?\s*funnel\b',
     ],
 }
 

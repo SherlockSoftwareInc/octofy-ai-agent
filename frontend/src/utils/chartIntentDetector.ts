@@ -5,7 +5,7 @@
  * Mirrors the backend chart_intent_service.py for consistent behavior.
  */
 
-export type ChartType = 'bar' | 'line' | 'pie' | 'scatter' | 'kpi' | 'none';
+export type ChartType = 'bar' | 'line' | 'pie' | 'scatter' | 'column' | 'stackedBar' | 'stackedColumn' | 'clusteredColumn' | 'area' | 'radar' | 'treemap' | 'funnel' | 'none';
 
 export interface ChartIntent {
     chartType: ChartType;
@@ -24,23 +24,44 @@ const CHART_ONLY_PATTERNS = [
 
 // Chart type patterns - order matters (more specific patterns first)
 const CHART_PATTERNS: Array<{ pattern: RegExp; chartType: ChartType }> = [
+    // Stacked patterns (must come before basic bar/column to be more specific)
+    { pattern: /\b(stacked\s*bar|bar\s*stacked)\b/i, chartType: 'stackedBar' },
+    { pattern: /\b(stacked\s*column|column\s*stacked)\b/i, chartType: 'stackedColumn' },
+    
+    // Clustered patterns
+    { pattern: /\b(clustered\s*column|grouped\s*column|clustered\s*bar|grouped\s*bar)\b/i, chartType: 'clusteredColumn' },
+    
+    // Area chart patterns
+    { pattern: /\b(area\s*(chart|graph)?|filled\s*line)\b/i, chartType: 'area' },
+    { pattern: /\bstacked\s*area\b/i, chartType: 'area' },
+    
+    // Radar chart patterns
+    { pattern: /\b(radar\s*(chart)?|spider\s*(chart)?|web\s*chart)\b/i, chartType: 'radar' },
+    
+    // Treemap patterns
+    { pattern: /\b(treemap|tree\s*map|hierarchical\s*chart)\b/i, chartType: 'treemap' },
+    
+    // Funnel chart patterns
+    { pattern: /\b(funnel\s*(chart)?|sales\s*funnel|conversion\s*funnel)\b/i, chartType: 'funnel' },
+    
     // Line chart patterns
     { pattern: /\b(line\s*(chart|graph|plot)?|trend\s*line)\b/i, chartType: 'line' },
     { pattern: /\b(time\s*series|over\s*time)\b/i, chartType: 'line' },
     
-    // Bar chart patterns  
-    { pattern: /\b(bar\s*(chart|graph)?|column\s*chart|histogram)\b/i, chartType: 'bar' },
+    // Column chart patterns (must come before bar)
+    { pattern: /\bcolumn\s*(chart|graph)?\b/i, chartType: 'column' },
     
-    // Pie chart patterns
-    { pattern: /\b(pie\s*(chart)?|donut|doughnut)\b/i, chartType: 'pie' },
-    { pattern: /\bproportion(s)?\b/i, chartType: 'pie' },
+    // Bar chart patterns  
+    { pattern: /\b(bar\s*(chart|graph)?|horizontal\s*bar)\b/i, chartType: 'bar' },
+    { pattern: /\bhistogram\b/i, chartType: 'column' },
     
     // Scatter plot patterns
     { pattern: /\b(scatter\s*(plot|chart)?|x\s*y\s*plot|correlation)\b/i, chartType: 'scatter' },
     { pattern: /\bplot\s+\w+\s+(vs|versus|against)\s+\w+/i, chartType: 'scatter' },
     
-    // KPI patterns
-    { pattern: /\b(kpi|metric|single\s*value|number\s*card)\b/i, chartType: 'kpi' },
+    // Pie chart patterns
+    { pattern: /\b(pie\s*(chart)?|donut|doughnut)\b/i, chartType: 'pie' },
+    { pattern: /\bproportion(s)?\b/i, chartType: 'pie' },
 ];
 
 /**
@@ -104,7 +125,7 @@ export function extractDataQuery(query: string, intent: ChartIntent | null): str
     
     // Remove patterns like "as a line chart", "in a bar graph", etc.
     const removalPatterns = [
-        /\s*(as|in|using)\s+a?\s*(line|bar|pie|scatter|column|donut|doughnut)\s*(chart|graph|plot)?\s*/gi,
+        /\s*(as|in|using)\s+a?\s*(line|bar|pie|scatter|column|area|radar|treemap|donut|doughnut)\s*(chart|graph|plot)?\s*/gi,
         /\s*(show|display|visualize|render)\s+(it|this|that|the\s+results?)\s+(as|in)\s+a?\s*/gi,
     ];
 
@@ -134,7 +155,14 @@ export function getChartTypeLabel(chartType: ChartType): string {
         line: 'Line Chart',
         pie: 'Pie Chart',
         scatter: 'Scatter Plot',
-        kpi: 'KPI Card',
+        column: 'Column Chart',
+        stackedBar: 'Stacked Bar Chart',
+        stackedColumn: 'Stacked Column Chart',
+        clusteredColumn: 'Clustered Column Chart',
+        area: 'Area Chart',
+        radar: 'Radar Chart',
+        treemap: 'Treemap',
+        funnel: 'Funnel Chart',
         none: 'No Chart',
     };
     return labels[chartType] || chartType;
@@ -216,9 +244,11 @@ const EXPLICIT_CHART_ONLY_PATTERNS = [
     /^(switch|change|convert)\s+(to|this\s+to)\s+/i,
     /^make\s+(this|it)\s+a\s+/i,
     /^(use|try)\s+a\s+\w+\s*(chart|graph|plot)/i,
-    /^as\s+a?\s*(line|bar|pie|scatter)/i,
+    /^as\s+a?\s*(line|bar|pie|scatter|column|area|radar|treemap|funnel)/i,
     // Match simple chart requests like "line chart", "bar chart please", "pie chart pls"
-    /^(line|bar|pie|scatter)\s*(chart|graph|plot)?\s*(please|pls|plz|thanks|thx)?\s*$/i,
+    /^(line|bar|pie|scatter|column|area|radar|treemap|funnel)\s*(chart|graph|plot)?\s*(please|pls|plz|thanks|thx)?\s*$/i,
+    // Match stacked and clustered variants
+    /^(stacked|clustered)\s*(bar|column)\s*(chart|graph)?\s*(please|pls|plz|thanks|thx)?\s*$/i,
 ];
 
 /**
