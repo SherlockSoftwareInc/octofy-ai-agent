@@ -1,8 +1,8 @@
 import React, { useMemo, useState } from 'react';
-import { Copy, Check, Loader2, Gift, Play } from 'lucide-react';
+import { Copy, Check, Loader2, Gift, Play, CheckCircle } from 'lucide-react';
 import { Toast } from '../Toast';
 import type { ToastType } from '../Toast';
-import { api, type FewShotItem, type ExecutePythonResponse, type ExecutePythonResult, type StructuredTableData, type ChartRecommendation, type ChartMetadata, type ChartTypeOption } from '../../api/client';
+import { api, type FewShotItem, type ExecutePythonResponse, type ExecuteSQLResponse, type ExecutePythonResult, type StructuredTableData, type ChartRecommendation, type ChartMetadata, type ChartTypeOption } from '../../api/client';
 import { DataTable } from '../DataTable/DataTable';
 
 
@@ -155,13 +155,17 @@ interface SQLResultDisplayProps {
     allUserMessages?: string[];
     queryType?: 'database' | 'r_code' | 'sas_code' | 'python_code' | 'general' | 'uncertain' | 'search';
     executionResult?: ExecutePythonResponse;
+    sqlExecutionResult?: ExecuteSQLResponse;
     onExecutionComplete?: (result: ExecutePythonResponse) => void;
+    onSQLExecutionComplete?: (result: ExecuteSQLResponse) => void;
     /** Optional chart type override from user's natural language request */
     chartTypeOverride?: ChartTypeOption;
     /** If true, only show the chart (for re-visualization) */
     chartOnly?: boolean;
-    /** LLM summary of the result, if available */
+    /** LLM summary of the Python execution result, if available */
     pythonSummary?: string;
+    /** LLM summary of the SQL execution result, if available */
+    sqlSummary?: string;
 }
 
 export const SQLResultDisplay: React.FC<SQLResultDisplayProps> = ({
@@ -170,10 +174,13 @@ export const SQLResultDisplay: React.FC<SQLResultDisplayProps> = ({
     allUserMessages = [],
     queryType,
     executionResult,
+    sqlExecutionResult,
     onExecutionComplete,
+    onSQLExecutionComplete,
     chartTypeOverride,
     chartOnly = false,
-    pythonSummary
+    pythonSummary,
+    sqlSummary
 }) => {
     const [copied, setCopied] = useState(false);
     const [toast, setToast] = useState<{ message: string; type: ToastType } | null>(null);
@@ -184,6 +191,7 @@ export const SQLResultDisplay: React.FC<SQLResultDisplayProps> = ({
     const [isLoadingFewShots, setIsLoadingFewShots] = useState(false);
     const [isSaving, setIsSaving] = useState(false);
     const [isRunning, setIsRunning] = useState(false);
+    const [isSQLRunning, setIsSQLRunning] = useState(false);
 
 
 
@@ -325,6 +333,47 @@ export const SQLResultDisplay: React.FC<SQLResultDisplayProps> = ({
         }
     };
 
+    const handleRunSQL = async () => {
+        if (!sql) return;
+        setIsSQLRunning(true);
+        try {
+            const result = await api.executeSQL(
+                sql, 
+                sourceQuestion ? { 
+                    user_query: sourceQuestion,
+                    schema_context: 'Generated from SQL generation pipeline' 
+                } : undefined, 
+                chartTypeOverride
+            );
+
+            // Call parent callback to persist the result
+            if (onSQLExecutionComplete) {
+                onSQLExecutionComplete(result);
+            }
+
+            // Show success notification if auto-fixed
+            if (result.auto_fixed) {
+                setToast({ 
+                    message: `SQL automatically fixed on attempt ${result.fix_attempt}/5`, 
+                    type: 'success' 
+                });
+            }
+
+            // Scroll result into view
+            setTimeout(() => {
+                if (resultContainerRef.current) {
+                    resultContainerRef.current.scrollIntoView({ behavior: 'smooth', block: 'end' });
+                }
+            }, 100);
+
+        } catch (error) {
+            console.error('SQL Execution failed:', error);
+            setToast({ message: 'SQL Execution failed', type: 'error' });
+        } finally {
+            setIsSQLRunning(false);
+        }
+    };
+
     // CHART ONLY MODE: Only show the chart for python_code results (for re-visualization)
     if (chartOnly && queryType === 'python_code' && executionResult && executionResult.results && executionResult.results.length > 0) {
         // Use the same normalization logic as ExecutionResultViewer
@@ -450,7 +499,26 @@ export const SQLResultDisplay: React.FC<SQLResultDisplayProps> = ({
                     </div>
                 )}
 
-                {/* Execution Results */}
+                {/* SQL Run Button */}
+                {queryType === 'database' && (
+                    <div className="px-4 py-2 bg-slate-900 border-t border-slate-800 flex justify-end gap-2">
+                        <button
+                            onClick={handleRunSQL}
+                            disabled={isSQLRunning}
+                            className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg transition-all duration-200 border ${
+                                isSQLRunning
+                                    ? 'bg-blue-600/20 text-blue-200 border-blue-500/40 cursor-wait'
+                                    : 'bg-blue-600/20 text-blue-200 border-blue-500/40 hover:bg-blue-500/30'
+                            }`}
+                            title="Run SQL Query"
+                        >
+                            {isSQLRunning ? <Loader2 size={12} className="animate-spin" /> : <Play size={12} className="fill-current" />}
+                            <span>{isSQLRunning ? 'Running...' : 'Run SQL'}</span>
+                        </button>
+                    </div>
+                )}
+
+                {/* Execution Results - Python */}
                 {executionResult && (
                     <div className="border-t border-slate-700/50 bg-slate-900/50">
                         <div className="p-4 overflow-x-auto">
@@ -467,6 +535,46 @@ export const SQLResultDisplay: React.FC<SQLResultDisplayProps> = ({
                                     results={executionResult.results}
                                     recommendation={executionResult.recommendation}
                                     pythonSummary={pythonSummary}
+                                />
+                            )}
+                        </div>
+                    </div>
+                )}
+
+                {/* Execution Results - SQL */}
+                {sqlExecutionResult && (
+                    <div className="border-t border-slate-700/50 bg-slate-900/50">
+                        <div className="p-4 overflow-x-auto">
+                            {/* Show auto-fix notification if applicable */}
+                            {sqlExecutionResult.auto_fixed && (
+                                <div className="mb-4 p-3 bg-blue-950/20 border border-blue-900/50 rounded-lg">
+                                    <div className="flex items-center gap-2 text-sm text-blue-300">
+                                        <CheckCircle size={16} />
+                                        <span>SQL automatically fixed on attempt {sqlExecutionResult.fix_attempt}/5</span>
+                                    </div>
+                                    {sqlExecutionResult.original_error && (
+                                        <details className="mt-2">
+                                            <summary className="text-xs text-blue-400 cursor-pointer">View original error</summary>
+                                            <pre className="text-xs text-blue-300 mt-2 font-mono">{sqlExecutionResult.original_error}</pre>
+                                        </details>
+                                    )}
+                                </div>
+                            )}
+                            
+                            {sqlExecutionResult.error && (
+                                <div className="mb-4">
+                                    <h4 className="text-xs text-red-400 font-semibold mb-2 uppercase">Error</h4>
+                                    <pre className="text-xs text-red-300 font-mono bg-red-950/20 p-3 rounded-lg border border-red-900/50 whitespace-pre-wrap">
+                                        {sqlExecutionResult.error}
+                                    </pre>
+                                </div>
+                            )}
+                            
+                            {sqlExecutionResult.results && sqlExecutionResult.results.length > 0 && (
+                                <ExecutionResultViewer
+                                    results={sqlExecutionResult.results}
+                                    recommendation={sqlExecutionResult.recommendation}
+                                    pythonSummary={sqlSummary}
                                 />
                             )}
                         </div>

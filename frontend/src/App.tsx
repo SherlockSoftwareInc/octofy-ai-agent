@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { Send, Loader2, Sparkles, LayoutDashboard, User, Bot, Square, Eye, X, CheckCircle } from 'lucide-react';
 import { api } from './api/client';
-import type { GenerateSQLResponse, AgentStatus, ExecutePythonResponse } from './api/client';
+import type { GenerateSQLResponse, AgentStatus, ExecutePythonResponse, ExecuteSQLResponse } from './api/client';
 import { SQLResultDisplay } from './components/SQL/SQLResultDisplay';
 import { AdminLayout } from './pages/Admin/AdminLayout';
 import { SchemaManager } from './pages/Admin/SchemaManager';
@@ -344,6 +344,85 @@ function App() {
         }));
       } catch (e) {
         console.error('Summary fetch failed:', e);
+        // Silently fail - summary is optional
+      }
+    }
+  };
+
+  const handleSQLExecutionComplete = async (messageId: string, result: ExecuteSQLResponse) => {
+    if (!activeConversationId) return;
+
+    // Find the message to update
+    const msgToUpdate = chatHistory.find(msg => msg.id === messageId);
+    if (!msgToUpdate) {
+      // fallback: just update sqlExecutionResult
+      const updatedMessages = chatHistory.map(msg =>
+        msg.id === messageId ? { ...msg, sqlExecutionResult: result } : msg
+      );
+      updateConversation(activeConversationId, { messages: updatedMessages });
+      return;
+    }
+
+    // Store analysis context if profiling data is available
+    let analysisContext: AnalysisContext | undefined;
+    if (result.data_profile || result.insights) {
+      analysisContext = {
+        data_profile: result.data_profile,
+        insights: result.insights || [],
+        refinement_history: msgToUpdate?.analysisContext?.refinement_history || [],
+        suggested_refinements: [] // SQL doesn't have suggested refinements yet
+      };
+    }
+
+    // First, update the UI immediately with execution results (no summary yet)
+    const updatedMessagesImmediate = chatHistory.map(msg =>
+      msg.id === messageId ? { 
+        ...msg, 
+        sqlExecutionResult: result,
+        analysisContext: analysisContext 
+      } : msg
+    );
+    updateConversation(activeConversationId, { messages: updatedMessagesImmediate });
+
+    // Then fetch summary in the background (non-blocking)
+    if (result && result.success && result.results && result.results.length > 0) {
+      try {
+        const firstResult = result.results[0];
+        const userRequest = msgToUpdate.sourceQuery || msgToUpdate.content;
+        const chartType = msgToUpdate.chartTypeOverride;
+        // Only send a preview of data (avoid huge payloads)
+        let previewData = firstResult.data;
+        if (Array.isArray(previewData)) {
+          // If it's structured table data format
+          previewData = previewData.slice(0, 20);
+        } else if (previewData && typeof previewData === 'object' && 'data' in previewData) {
+          // If it's {columns: [], data: []} format
+          const dataArray = (previewData as any).data;
+          if (Array.isArray(dataArray) && dataArray.length > 20) {
+            previewData = { ...(previewData as any), data: dataArray.slice(0, 20) };
+          }
+        }
+        
+        // Add timeout to prevent hanging
+        const timeoutPromise = new Promise<never>((_, reject) => 
+          setTimeout(() => reject(new Error('Summary timeout')), 15000)
+        );
+        
+        const summaryPromise = api.summarizeResults(userRequest, previewData, chartType);
+        const summaryResult = await Promise.race([summaryPromise, timeoutPromise]);
+        
+        // Update with summary after it arrives
+        setConversations(prev => prev.map(conv => {
+          if (conv.id !== activeConversationId) return conv;
+          return {
+            ...conv,
+            messages: conv.messages.map(msg =>
+              msg.id === messageId ? { ...msg, sqlSummary: summaryResult.summary } : msg
+            )
+          };
+        }));
+      } catch (e) {
+        console.error('SQL summary fetch failed:', e);
         // Silently fail - summary is optional
       }
     }
@@ -1037,10 +1116,13 @@ function App() {
                                     }
                                     queryType={message.queryType}
                                     executionResult={message.executionResult}
+                                    sqlExecutionResult={message.sqlExecutionResult}
                                     onExecutionComplete={(result) => handleExecutionComplete(message.id, result)}
+                                    onSQLExecutionComplete={(result) => handleSQLExecutionComplete(message.id, result)}
                                     chartTypeOverride={message.chartTypeOverride}
                                     chartOnly={true}
                                     pythonSummary={message.pythonSummary || ''}
+                                    sqlSummary={message.sqlSummary || ''}
                                   />
                                 </div>
                               ) : (
@@ -1056,9 +1138,12 @@ function App() {
                                         }
                                         queryType={message.queryType}
                                         executionResult={message.executionResult}
+                                        sqlExecutionResult={message.sqlExecutionResult}
                                         onExecutionComplete={(result) => handleExecutionComplete(message.id, result)}
+                                        onSQLExecutionComplete={(result) => handleSQLExecutionComplete(message.id, result)}
                                         chartTypeOverride={message.chartTypeOverride}
                                         pythonSummary={message.pythonSummary || ''}
+                                        sqlSummary={message.sqlSummary || ''}
                                       />
                                     ) : (
                                       // Show explanation when no SQL was generated

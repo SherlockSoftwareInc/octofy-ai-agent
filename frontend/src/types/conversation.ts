@@ -1,4 +1,4 @@
-import type { DiscoveryResponse, GenerateSQLResponse, ExecutePythonResponse, ChartTypeOption } from '../api/client';
+import type { DiscoveryResponse, GenerateSQLResponse, ExecutePythonResponse, ExecuteSQLResponse, ChartTypeOption } from '../api/client';
 
 // Workflow Analysis Types
 export interface NumericStats {
@@ -100,12 +100,18 @@ export interface ChatMessage {
   needsClarification?: boolean;
   sourceQuery?: string;
   executionResult?: ExecutePythonResponse;
+  /** SQL execution results (separate from Python execution) */
+  sqlExecutionResult?: ExecuteSQLResponse;
   /** User's requested chart type from natural language (e.g., "show as line chart") */
   chartTypeOverride?: ChartTypeOption;
   /**
    * LLM-generated summary of the Python execution result (if available)
    */
   pythonSummary?: string;
+  /**
+   * LLM-generated summary of the SQL execution result (if available)
+   */
+  sqlSummary?: string;
   /**
    * Workflow analysis context (profiling, insights, refinements)
    */

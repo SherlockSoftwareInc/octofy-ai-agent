@@ -21,7 +21,8 @@
                                ▼
 ┌─────────────────────────────────────────────────────────────────┐
 │                      Backend (FastAPI)                          │
-│  /api/v1/discovery   /api/v1/generate-sql   /api/v1/admin/*    │
+│  /api/v1/discovery   /api/v1/generate-sql   /api/v1/execute-sql│
+│  /api/v1/execute-python   /api/v1/admin/*                      │
 └──────────────────────────────┬──────────────────────────────────┘
                                │
           ┌────────────────────┼────────────────────┐
@@ -43,6 +44,7 @@
 | Feature | Description |
 |---------|-------------|
 | **Natural Language to SQL** | Converts user questions into optimized, validated T-SQL queries |
+| **SQL Execution & Analysis** | ⭐ NEW: Executes SQL with auto-retry, data profiling, and AI-powered insights |
 | **Multi-Language Code Gen** | Supports SQL, R, SAS, and Python code generation |
 | **Value Index** | Maps user terms (e.g., "North America") to exact database values |
 | **Schema Management** | Admin UI for managing table schemas with Excel bulk upload |
@@ -75,8 +77,16 @@
   3. Database validation using `SET NOEXEC ON`
   4. Intelligent recovery on failure (re-discovery, self-correction)
 
-### Stage 4: Final Output
-- Returns validated T-SQL with explanation, or structured error after 5 attempts
+### Stage 4: SQL Execution & Analysis ⭐ NEW
+- **Actual Execution**: Runs validated SQL against database
+- **Auto-Retry Loop** (max 5 attempts):
+  1. Execute SQL with configurable timeout and row limit
+  2. On error: regenerate SQL with error feedback using LLM
+  3. Re-execute until success or max attempts
+- **Data Profiling**: Statistical analysis of result sets (row counts, distributions, correlations)
+- **AI Insights**: Automatically detects trends, outliers, correlations, and generates recommendations
+- **Chart Recommendations**: Suggests optimal visualization type (bar, line, pie, etc.) based on data structure
+- **Full Transparency**: Response includes auto-fix metadata when retry occurs
 
 ---
 
@@ -148,8 +158,11 @@ cd frontend && npm run dev
 
 | Document | Description |
 |----------|-------------|
+| [GENERATE_SQL.md](GENERATE_SQL.md) | ⭐ NEW: Complete SQL generation & execution process guide |
+| [SQL_EXECUTION_AUTO_RETRY_FEATURE.md](SQL_EXECUTION_AUTO_RETRY_FEATURE.md) | ⭐ NEW: SQL execution with auto-retry feature details |
 | [BACKEND_API.md](BACKEND_API.md) | Complete API reference |
 | [FRONTEND.md](FRONTEND.md) | Frontend architecture and components |
+| [PYTHON_CODE_AUTO_RETRY_FEATURE.md](PYTHON_CODE_AUTO_RETRY_FEATURE.md) | Python execution with auto-retry |
 | [VALUE_INDEX_QUICKSTART.md](VALUE_INDEX_QUICKSTART.md) | Value index setup guide |
 | [EXCEL_UPLOAD_QUICKSTART.md](EXCEL_UPLOAD_QUICKSTART.md) | Bulk upload guide |
 | [SCHEMA_SYNC_FEATURE.md](SCHEMA_SYNC_FEATURE.md) | Schema synchronization |
@@ -174,6 +187,12 @@ octofy-ai-agent/
 │   ├── core/               # Config, auth, database
 │   ├── models/             # Pydantic schemas
 │   ├── services/           # Business logic
+│   │   ├── generation_service.py      # SQL generation logic
+│   │   ├── validation_service.py      # SQL validation & execution ⭐ UPDATED
+│   │   ├── execution_service.py       # Python code execution
+│   │   ├── profiling_service.py       # Data profiling (SQL & Python)
+│   │   ├── insight_service.py         # AI insights (SQL & Python)
+│   │   └── visualization_service.py   # Chart recommendations
 │   └── utils/              # Utilities
 ├── frontend/               # React frontend
 │   ├── src/

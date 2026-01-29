@@ -113,6 +113,22 @@ export interface ExecutePythonResponse {
     suggested_refinements?: string[]; // Suggested refinement queries
 }
 
+export interface ExecuteSQLResponse {
+    success: boolean;
+    output?: unknown;
+    error?: string;
+    results?: ExecutePythonResult[]; // Reuse same result type for SQL query results
+    recommendation?: ChartRecommendation;
+    execution_time: number;
+    rows_affected?: number;
+    data_profile?: any;
+    insights?: any[];
+    sql?: string; // Fixed SQL (if auto-corrected)
+    auto_fixed?: boolean;
+    fix_attempt?: number;
+    original_error?: string;
+}
+
 export interface StructuredTableData {
     columns: string[];
     data: Array<Record<string, unknown>>;
@@ -442,6 +458,17 @@ export const api = {
             code, 
             context,
             chart_type_override: chartTypeOverride 
+        });
+        return response.data;
+    },
+
+    executeSQL: async (sql: string, context?: any, chartTypeOverride?: ChartTypeOption, timeoutSeconds?: number, maxRows?: number): Promise<ExecuteSQLResponse> => {
+        const response = await axios.post(`${API_BASE_URL}/execute-sql`, { 
+            sql, 
+            context,
+            chart_type_override: chartTypeOverride,
+            timeout_seconds: timeoutSeconds,
+            max_rows: maxRows
         });
         return response.data;
     },

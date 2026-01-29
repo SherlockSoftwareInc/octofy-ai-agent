@@ -940,4 +940,94 @@ def _handle_general_query(request, llm_service):
         temperature=0.7
     )
     return GenerateSQLResponse(sql="", explanation=response_text, query_type="general")
+
+
+def regenerate_sql_with_error_feedback(
+    original_request: str,
+    failed_sql: str,
+    error_message: str,
+    schema_context: str,
+    attempt_number: int
+) -> str:
+    """
+    Regenerates SQL query based on execution error feedback.
+    
+    This is a lightweight regeneration function used in the auto-retry loop.
+    It focuses specifically on fixing the error without re-running the full
+    4-stage discovery pipeline.
+    
+    Args:
+        original_request: User's natural language query
+        failed_sql: SQL that failed execution
+        error_message: Error traceback from database
+        schema_context: Schema descriptions used in original generation
+        attempt_number: Current retry attempt (2-5)
+        
+    Returns:
+        Regenerated SQL query as string
+    """
+    llm_service = get_llm_service()
+    
+    # Build a focused prompt for error correction
+    prompt = f"""You are a T-SQL expert fixing a query that failed execution.
+
+ORIGINAL USER REQUEST:
+{original_request}
+
+FAILED SQL QUERY:
+{failed_sql}
+
+EXECUTION ERROR:
+{error_message}
+
+DATABASE SCHEMA CONTEXT:
+{schema_context}
+
+ATTEMPT NUMBER: {attempt_number} of 5
+
+INSTRUCTIONS:
+1. Carefully analyze the error message to identify the root cause
+2. Maintain the original intent and logic of the query
+3. Fix ONLY the specific issue causing the error
+4. Follow T-SQL best practices:
+   - Use proper table aliases to avoid ambiguous columns
+   - Use CAST() for type conversions when needed
+   - Qualify all column names with table aliases
+   - Use square brackets for reserved words
+   - Ensure all referenced tables and columns exist in the schema
+
+COMMON ERROR PATTERNS:
+- "Invalid object name" → Check table name spelling and schema
+- "Invalid column name" → Verify column exists in schema
+- "Ambiguous column name" → Add table alias qualifiers
+- "Type mismatch" → Use CAST() or CONVERT()
+- "Syntax error" → Check T-SQL syntax (JOIN conditions, WHERE clause, etc.)
+
+OUTPUT:
+Return ONLY the corrected SQL query, with no additional text, markdown, or explanation.
+"""
+    
+    try:
+        # Call LLM with low temperature for consistency
+        fixed_sql = llm_service.chat(prompt, temperature=0.1)
+        
+        # Clean up any LLM artifacts (markdown blocks, etc.)
+        fixed_sql = fixed_sql.strip()
+        
+        # Remove markdown code blocks
+        fixed_sql = re.sub(r'^```sql\s*\n?', '', fixed_sql, flags=re.IGNORECASE)
+        fixed_sql = re.sub(r'^```\s*\n?', '', fixed_sql)
+        fixed_sql = re.sub(r'\n?```$', '', fixed_sql)
+        
+        # Remove common prefixes
+        if fixed_sql.lower().startswith('sql:'):
+            fixed_sql = fixed_sql[4:].strip()
+        
+        logging.info(f"Regenerated SQL on attempt {attempt_number}")
+        return fixed_sql
+        
+    except Exception as e:
+        logging.error(f"Error regenerating SQL: {str(e)}")
+        # Return original SQL as fallback
+        return failed_sql
     
