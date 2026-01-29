@@ -27,11 +27,14 @@ const ResultsWrapper = ({ children }: { children: React.ReactNode }) => (
  * Convert a ChartRecommendation (from backend) to ChartMetadata (for ResultChart)
  */
 function recommendationToMetadata(rec: ChartRecommendation): ChartMetadata {
+    // Determine if this is a stacked chart type
+    const isStacked = rec.chart_type === 'stackedBar' || rec.chart_type === 'stackedColumn';
+    
     return {
-        type: rec.chart_type === 'kpi' ? 'none' : rec.chart_type as ChartMetadata['type'],
+        type: rec.chart_type as ChartMetadata['type'],
         x_axis: rec.x_axis || null,
         y_axes: rec.y_axis || [],
-        is_stacked: false,
+        is_stacked: isStacked,
     };
 }
 
@@ -60,7 +63,7 @@ const ExecutionResultViewer: React.FC<{ results: ExecutePythonResult[]; recommen
 
     // Convert recommendation to chart metadata if available
     const chartMetadataFromRecommendation = useMemo(() => {
-        if (!recommendation || recommendation.chart_type === 'none' || recommendation.chart_type === 'kpi') {
+        if (!recommendation || recommendation.chart_type === 'none') {
             return undefined;
         }
         return recommendationToMetadata(recommendation);
@@ -326,12 +329,12 @@ export const SQLResultDisplay: React.FC<SQLResultDisplayProps> = ({
     if (chartOnly && queryType === 'python_code' && executionResult && executionResult.results && executionResult.results.length > 0) {
         // Use the same normalization logic as ExecutionResultViewer
         const rec = executionResult.recommendation;
-        const supportedChartTypes = ['bar', 'line', 'pie', 'scatter', 'kpi'];
+        const supportedChartTypes = ['bar', 'line', 'pie', 'scatter', 'column', 'stackedBar', 'stackedColumn', 'clusteredColumn', 'area', 'radar', 'treemap', 'funnel'];
         const requestedType = rec?.chart_type;
         const isSupported = requestedType && supportedChartTypes.includes(requestedType);
         // Only use chartMetadata if the requested type is supported and matches the recommendation exactly
         let chartMetadata = null;
-        if (rec && isSupported && requestedType !== 'none' && requestedType !== 'kpi') {
+        if (rec && isSupported && requestedType !== 'none') {
             const meta = recommendationToMetadata(rec);
             // Only use if the type matches exactly what was requested
             if (meta.type === requestedType) {

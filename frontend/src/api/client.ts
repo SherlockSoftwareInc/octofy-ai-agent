@@ -90,7 +90,7 @@ export interface SearchObject {
 }
 
 
-export type ChartTypeOption = 'bar' | 'line' | 'pie' | 'scatter' | 'kpi' | 'none';
+export type ChartTypeOption = 'bar' | 'line' | 'pie' | 'scatter' | 'column' | 'stackedBar' | 'stackedColumn' | 'clusteredColumn' | 'area' | 'radar' | 'treemap' | 'funnel' | 'none';
 
 export interface ChartRecommendation {
     chart_type: ChartTypeOption;
@@ -119,7 +119,7 @@ export interface StructuredTableData {
 }
 
 export interface ChartMetadata {
-    type: 'bar' | 'stacked-bar' | 'line' | 'pie' | 'scatter' | 'kpi' | 'none';
+    type: 'bar' | 'line' | 'pie' | 'scatter' | 'column' | 'stackedBar' | 'stackedColumn' | 'clusteredColumn' | 'area' | 'radar' | 'treemap' | 'funnel' | 'none';
     x_axis: string | null;
     y_axes: string[];
     is_stacked: boolean;

@@ -34,6 +34,9 @@ class DiscoveryResponse(BaseModel):
     reasoning: str
     context: DiscoveryContext
 
+# Define chart types as a reusable type alias for consistency
+ChartTypeLiteral = Literal['bar', 'line', 'pie', 'scatter', 'column', 'stackedBar', 'stackedColumn', 'clusteredColumn', 'area', 'radar', 'treemap', 'funnel', 'none']
+
 class GenerateSQLRequest(BaseModel):
     query: str
     context: Optional[DiscoveryContext] = None # Can be passed from frontend if they modified the discovery result
@@ -42,7 +45,7 @@ class GenerateSQLRequest(BaseModel):
     forceGeneral: bool = False # If True, skip classification and go straight to general LLM chat
     queryMode: Literal["generate", "search"] = "generate"  # "generate" for SQL generation, "search" for object search
     table_override: Optional[List[str]] = None # Explicit schema.table list from user selection
-    chart_type_override: Optional[Literal['bar', 'line', 'pie', 'scatter', 'kpi', 'none']] = None  # User-specified chart type
+    chart_type_override: Optional[ChartTypeLiteral] = None  # User-specified chart type
 
 class SearchObject(BaseModel):
     schema_name: str = Field(..., alias="schema")
@@ -68,11 +71,11 @@ class AgentStatus(BaseModel):
 class ExecutePythonRequest(BaseModel):
     code: str
     context: Optional[Dict[str, Any]] = None
-    chart_type_override: Optional[Literal['bar', 'line', 'pie', 'scatter', 'kpi', 'none']] = None  # User-specified chart type
+    chart_type_override: Optional[ChartTypeLiteral] = None  # User-specified chart type
 
 
 class ChartRecommendation(BaseModel):
-    chart_type: Literal['bar', 'line', 'pie', 'scatter', 'kpi', 'none']
+    chart_type: ChartTypeLiteral
     x_axis: Optional[str] = None
     y_axis: Optional[List[str]] = None
     title: Optional[str] = None

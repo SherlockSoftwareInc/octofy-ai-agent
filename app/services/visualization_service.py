@@ -322,13 +322,80 @@ Return valid JSON ONLY. No markdown, no explanations outside the JSON.
                 # Fallback: use first two columns
                 x_axis = columns[0]
                 y_axis = [columns[1]]
-                
-        elif chart_type == 'kpi':
-            # KPI: single value
-            if numeric_cols:
-                y_axis = [numeric_cols[0]]
+        
+        elif chart_type == 'treemap':
+            # Treemap: categorical label, single numeric value (like pie)
+            if categorical_cols:
+                x_axis = categorical_cols[0]
             elif columns:
-                y_axis = [columns[0]]
+                x_axis = columns[0]
+            y_axis = numeric_cols[:1] if numeric_cols else []
+            
+            if x_axis and not y_axis and len(columns) > 1:
+                remaining = [c for c in columns if c != x_axis]
+                y_axis = remaining[:1]
+        
+        elif chart_type == 'area':
+            # Area charts: similar to line charts
+            if datetime_cols:
+                x_axis = datetime_cols[0]
+            elif categorical_cols:
+                x_axis = categorical_cols[0]
+            elif columns:
+                x_axis = columns[0]
+            y_axis = numeric_cols[:3] if numeric_cols else []
+            
+            if x_axis and not y_axis:
+                remaining = [c for c in columns if c != x_axis]
+                y_axis = remaining[:3]
+        
+        elif chart_type == 'radar':
+            # Radar charts: categorical for angle axis, numeric for values
+            if categorical_cols:
+                x_axis = categorical_cols[0]
+            elif columns:
+                x_axis = columns[0]
+            y_axis = numeric_cols[:5] if numeric_cols else []  # Radar works well with multiple series
+            
+            if x_axis and not y_axis:
+                remaining = [c for c in columns if c != x_axis]
+                y_axis = remaining[:5]
+        
+        elif chart_type in ('column', 'stackedColumn', 'clusteredColumn'):
+            # Column variants: same as bar
+            if categorical_cols:
+                x_axis = categorical_cols[0]
+            elif columns:
+                x_axis = columns[0]
+            y_axis = numeric_cols[:3] if numeric_cols else []
+            
+            if x_axis and not y_axis:
+                remaining = [c for c in columns if c != x_axis]
+                y_axis = remaining[:3]
+        
+        elif chart_type == 'stackedBar':
+            # Stacked bar: categorical X, multiple numeric Y
+            if categorical_cols:
+                x_axis = categorical_cols[0]
+            elif columns:
+                x_axis = columns[0]
+            y_axis = numeric_cols[:5] if numeric_cols else []  # Stacked bars can have more series
+            
+            if x_axis and not y_axis:
+                remaining = [c for c in columns if c != x_axis]
+                y_axis = remaining[:5]
+        
+        elif chart_type == 'funnel':
+            # Funnel charts: categorical label (stage), single numeric value
+            if categorical_cols:
+                x_axis = categorical_cols[0]
+            elif columns:
+                x_axis = columns[0]
+            y_axis = numeric_cols[:1] if numeric_cols else []
+            
+            if x_axis and not y_axis and len(columns) > 1:
+                remaining = [c for c in columns if c != x_axis]
+                y_axis = remaining[:1]
         
         # Final fallback if we still couldn't determine axes
         if not x_axis and not y_axis:

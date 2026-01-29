@@ -496,11 +496,15 @@ function App() {
         updateConversation(conversationId, { messages: updatedMessages });
       } catch (error) {
         console.error('Re-visualization failed:', error);
-        // Add user message and error message
+        // Build helpful error message with supported chart types
+        const supportedCharts = ['Bar', 'Line', 'Pie', 'Scatter', 'Column', 'Area', 'Treemap', 'Radar', 'Funnel', 'Stacked Bar', 'Stacked Column', 'Clustered Column'];
+        const requestedChartLabel = chartTypeOverride ? getChartTypeLabel(chartTypeOverride) : 'the requested chart';
+        const errorContent = `Sorry, I couldn't update the visualization to ${requestedChartLabel}. This may be due to incompatible data structure for this chart type.\n\n**Supported chart types:** ${supportedCharts.join(', ')}.\n\nPlease try a different chart type or ensure your data has the required columns.`;
+        
         const errorMessage: ChatMessage = {
           id: generateMessageId(),
           type: 'ai',
-          content: 'Sorry, I couldn\'t update the visualization. Please try again.',
+          content: errorContent,
           timestamp: new Date()
         };
         const updatedMessages = [...chatHistory, userMessage, errorMessage];

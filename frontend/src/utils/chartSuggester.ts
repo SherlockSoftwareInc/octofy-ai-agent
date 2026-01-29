@@ -1,6 +1,6 @@
 
 export interface ChartSuggestion {
-    type: 'line' | 'bar' | 'pie' | 'scatter' | 'none';
+    type: 'line' | 'bar' | 'pie' | 'scatter' | 'column' | 'stackedBar' | 'stackedColumn' | 'clusteredColumn' | 'area' | 'radar' | 'treemap' | 'funnel' | 'none';
     xAxisKey?: string;
     seriesKeys?: string[];
     reason?: string;

@@ -9,6 +9,17 @@ import {
     Cell,
     ScatterChart,
     Scatter,
+    AreaChart,
+    Area,
+    RadarChart,
+    Radar,
+    PolarGrid,
+    PolarAngleAxis,
+    PolarRadiusAxis,
+    Treemap,
+    FunnelChart,
+    Funnel,
+    LabelList,
     XAxis,
     YAxis,
     CartesianGrid,
@@ -45,7 +56,7 @@ const formatCompact = (value: number) =>
 
 export const ResultChart: React.FC<ResultChartProps> = ({ data, metadata }) => {
     // Basic validation
-    if (!metadata || metadata.type === 'none' || metadata.type === 'kpi') {
+    if (!metadata || metadata.type === 'none') {
         return null;
     }
 
@@ -91,7 +102,7 @@ export const ResultChart: React.FC<ResultChartProps> = ({ data, metadata }) => {
         }
 
         // For bar charts, aggregate to Top 10 + "Others" if more than 15 categories
-        if ((metadata.type === 'bar' || metadata.type === 'stacked-bar') && data.length > 15 && metadata.x_axis) {
+        if ((metadata.type === 'bar' || metadata.type === 'stackedBar' || metadata.type === 'column' || metadata.type === 'stackedColumn') && data.length > 15 && metadata.x_axis) {
             const xAxisKey = metadata.x_axis;
             const sortMetric = metadata.y_axes[0];
 
@@ -315,18 +326,203 @@ export const ResultChart: React.FC<ResultChartProps> = ({ data, metadata }) => {
         );
     };
 
+    // --- Render Area Chart ---
+    const renderAreaChart = () => (
+        <AreaChart
+            data={processedData}
+            margin={{ top: 20, right: 30, left: 20, bottom: rotateLabels ? 60 : 20 }}
+        >
+            <CartesianGrid strokeDasharray="3 3" stroke="#334155" opacity={0.3} />
+            <XAxis
+                dataKey={metadata.x_axis!}
+                stroke="#94a3b8"
+                fontSize={12}
+                tickLine={false}
+                axisLine={{ stroke: '#475569' }}
+                angle={rotateLabels ? -45 : 0}
+                textAnchor={rotateLabels ? "end" : "middle"}
+                height={rotateLabels ? 70 : 30}
+            />
+            <YAxis
+                stroke="#94a3b8"
+                fontSize={12}
+                tickLine={false}
+                axisLine={false}
+                tickFormatter={formatCompact}
+            />
+            <Tooltip {...TOOLTIP_STYLE} formatter={formatNumber} />
+            <Legend wrapperStyle={{ paddingTop: '10px' }} />
+            {metadata.y_axes.map((col, index) => (
+                <Area
+                    key={col}
+                    type="monotone"
+                    dataKey={col}
+                    name={col}
+                    stroke={COLORS[index % COLORS.length]}
+                    fill={COLORS[index % COLORS.length]}
+                    fillOpacity={0.3}
+                    animationDuration={1500}
+                />
+            ))}
+        </AreaChart>
+    );
+
+    // --- Render Radar Chart ---
+    const renderRadarChart = () => (
+        <RadarChart data={processedData} outerRadius={120}>
+            <PolarGrid stroke="#334155" />
+            <PolarAngleAxis dataKey={metadata.x_axis!} stroke="#94a3b8" fontSize={12} />
+            <PolarRadiusAxis stroke="#94a3b8" fontSize={10} />
+            <Tooltip {...TOOLTIP_STYLE} formatter={formatNumber} />
+            <Legend wrapperStyle={{ paddingTop: '10px' }} />
+            {metadata.y_axes.map((col, index) => (
+                <Radar
+                    key={col}
+                    name={col}
+                    dataKey={col}
+                    stroke={COLORS[index % COLORS.length]}
+                    fill={COLORS[index % COLORS.length]}
+                    fillOpacity={0.3}
+                    animationDuration={1500}
+                />
+            ))}
+        </RadarChart>
+    );
+
+    // --- Render Treemap ---
+    const renderTreemap = () => {
+        const xKey = metadata.x_axis!;
+        const yKey = metadata.y_axes[0];
+        
+        // Transform data for Treemap (needs 'name', 'size' or hierarchical structure)
+        const treemapData = processedData.map((item, idx) => ({
+            name: String(item[xKey] || `Item ${idx + 1}`),
+            size: typeof item[yKey] === 'number' ? item[yKey] : 0,
+            fill: COLORS[idx % COLORS.length]
+        }));
+
+        return (
+            <Treemap
+                width={600}
+                height={300}
+                data={treemapData}
+                dataKey="size"
+                aspectRatio={4 / 3}
+                stroke="#1e293b"
+                animationDuration={1500}
+                content={({ x, y, width, height, name, value, fill }: any) => {
+                    if (width < 30 || height < 20) return <g />;
+                    return (
+                        <g>
+                            <rect
+                                x={x}
+                                y={y}
+                                width={width}
+                                height={height}
+                                fill={fill}
+                                stroke="#1e293b"
+                                strokeWidth={2}
+                                rx={4}
+                            />
+                            {width > 50 && height > 30 && (
+                                <>
+                                    <text
+                                        x={x + width / 2}
+                                        y={y + height / 2 - 6}
+                                        textAnchor="middle"
+                                        fill="#fff"
+                                        fontSize={11}
+                                        fontWeight={500}
+                                    >
+                                        {String(name).length > 12 ? `${String(name).slice(0, 12)}...` : name}
+                                    </text>
+                                    <text
+                                        x={x + width / 2}
+                                        y={y + height / 2 + 10}
+                                        textAnchor="middle"
+                                        fill="#e2e8f0"
+                                        fontSize={10}
+                                    >
+                                        {formatNumber(value)}
+                                    </text>
+                                </>
+                            )}
+                        </g>
+                    );
+                }}
+            />
+        );
+    };
+
+    // --- Render Funnel Chart ---
+    const renderFunnelChart = () => {
+        const xKey = metadata.x_axis!;
+        const yKey = metadata.y_axes[0];
+        
+        // Transform data for Funnel
+        const funnelData = processedData
+            .map((item, idx) => ({
+                name: String(item[xKey] || `Stage ${idx + 1}`),
+                value: typeof item[yKey] === 'number' ? item[yKey] : 0,
+                fill: COLORS[idx % COLORS.length]
+            }))
+            .sort((a, b) => b.value - a.value); // Sort descending for funnel shape
+
+        return (
+            <FunnelChart>
+                <Tooltip
+                    contentStyle={{ backgroundColor: '#0f172a', borderColor: '#1e293b', color: '#f1f5f9' }}
+                    formatter={(value) => typeof value === 'number' ? value.toLocaleString() : value}
+                />
+                <Funnel
+                    dataKey="value"
+                    data={funnelData}
+                    isAnimationActive
+                >
+                    <LabelList
+                        position="right"
+                        fill="#e2e8f0"
+                        stroke="none"
+                        dataKey="name"
+                        fontSize={12}
+                    />
+                    <LabelList
+                        position="center"
+                        fill="#fff"
+                        stroke="none"
+                        dataKey="value"
+                        fontSize={11}
+                        formatter={(value) => typeof value === 'number' ? value.toLocaleString() : String(value)}
+                    />
+                </Funnel>
+            </FunnelChart>
+        );
+    };
+
     // --- Select Chart Type ---
     const renderChart = () => {
         switch (metadata.type) {
             case 'bar':
-            case 'stacked-bar':
+            case 'stackedBar':
                 return renderBarChart();
+            case 'column':
+            case 'stackedColumn':
+            case 'clusteredColumn':
+                return renderBarChart(); // Column is vertical bar
             case 'line':
                 return renderLineChart();
+            case 'area':
+                return renderAreaChart();
             case 'pie':
                 return renderPieChart();
             case 'scatter':
                 return renderScatterChart();
+            case 'radar':
+                return renderRadarChart();
+            case 'treemap':
+                return renderTreemap();
+            case 'funnel':
+                return renderFunnelChart();
             default:
                 return null;
         }
@@ -335,10 +531,17 @@ export const ResultChart: React.FC<ResultChartProps> = ({ data, metadata }) => {
     // Chart type labels for display
     const chartTypeLabels: Record<string, string> = {
         'bar': 'Bar Chart',
-        'stacked-bar': 'Stacked Bar Chart',
+        'stackedBar': 'Stacked Bar Chart',
+        'column': 'Column Chart',
+        'stackedColumn': 'Stacked Column Chart',
+        'clusteredColumn': 'Clustered Column Chart',
         'line': 'Line Chart',
+        'area': 'Area Chart',
         'pie': 'Pie Chart',
         'scatter': 'Scatter Plot',
+        'radar': 'Radar Chart',
+        'treemap': 'Treemap',
+        'funnel': 'Funnel Chart',
     };
 
     return (
