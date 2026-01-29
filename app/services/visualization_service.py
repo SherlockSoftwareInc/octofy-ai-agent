@@ -247,6 +247,25 @@ Return valid JSON ONLY. No markdown, no explanations outside the JSON.
         categorical_cols = df.select_dtypes(include=['object', 'category']).columns.tolist()
         datetime_cols = df.select_dtypes(include=['datetime64']).columns.tolist()
         
+        # If no numeric columns found, try to identify columns that might be numeric
+        # (sometimes numeric values are stored as strings after serialization)
+        if not numeric_cols and categorical_cols:
+            potential_numeric = []
+            for col in categorical_cols:
+                try:
+                    # Try to convert to numeric - if most values convert, treat as numeric
+                    converted = pd.to_numeric(df[col], errors='coerce')
+                    non_null_ratio = converted.notna().sum() / len(converted) if len(converted) > 0 else 0
+                    if non_null_ratio > 0.8:  # 80% of values can be converted
+                        potential_numeric.append(col)
+                except:
+                    pass
+            
+            if potential_numeric:
+                numeric_cols = potential_numeric
+                # Remove these from categorical since they're actually numeric
+                categorical_cols = [c for c in categorical_cols if c not in potential_numeric]
+        
         x_axis = None
         y_axis = []
         
@@ -260,6 +279,11 @@ Return valid JSON ONLY. No markdown, no explanations outside the JSON.
                 x_axis = columns[0]
             y_axis = numeric_cols[:3] if numeric_cols else []
             
+            # Fallback: if we have x_axis but no y_axis, use remaining columns
+            if x_axis and not y_axis:
+                remaining = [c for c in columns if c != x_axis]
+                y_axis = remaining[:3]
+            
         elif chart_type == 'bar':
             # Bar charts: categorical X, numeric Y
             if categorical_cols:
@@ -267,6 +291,11 @@ Return valid JSON ONLY. No markdown, no explanations outside the JSON.
             elif columns:
                 x_axis = columns[0]
             y_axis = numeric_cols[:3] if numeric_cols else []
+            
+            # Fallback: if we have x_axis but no y_axis, use remaining columns
+            if x_axis and not y_axis:
+                remaining = [c for c in columns if c != x_axis]
+                y_axis = remaining[:3]
             
         elif chart_type == 'pie':
             # Pie charts: categorical label, single numeric value
@@ -276,6 +305,11 @@ Return valid JSON ONLY. No markdown, no explanations outside the JSON.
                 x_axis = columns[0]
             y_axis = numeric_cols[:1] if numeric_cols else []
             
+            # Fallback: use second column if available
+            if x_axis and not y_axis and len(columns) > 1:
+                remaining = [c for c in columns if c != x_axis]
+                y_axis = remaining[:1]
+            
         elif chart_type == 'scatter':
             # Scatter: two numeric columns
             if len(numeric_cols) >= 2:
@@ -284,19 +318,29 @@ Return valid JSON ONLY. No markdown, no explanations outside the JSON.
             elif len(numeric_cols) == 1 and columns:
                 x_axis = columns[0]
                 y_axis = numeric_cols
+            elif len(columns) >= 2:
+                # Fallback: use first two columns
+                x_axis = columns[0]
+                y_axis = [columns[1]]
                 
         elif chart_type == 'kpi':
             # KPI: single value
             if numeric_cols:
                 y_axis = [numeric_cols[0]]
+            elif columns:
+                y_axis = [columns[0]]
         
-        # Fallback if we couldn't determine axes
+        # Final fallback if we still couldn't determine axes
         if not x_axis and not y_axis:
             if len(columns) >= 2:
                 x_axis = columns[0]
                 y_axis = [columns[1]]
             elif len(columns) == 1:
                 y_axis = [columns[0]]
+        
+        # Ensure y_axis is never None when we have columns to work with
+        if not y_axis and x_axis and len(columns) > 1:
+            y_axis = [c for c in columns if c != x_axis][:3]
         
         return ChartRecommendation(
             chart_type=chart_type,  # type: ignore

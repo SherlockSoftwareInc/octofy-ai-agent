@@ -258,7 +258,7 @@ export const ResultChart: React.FC<ResultChartProps> = ({ data, metadata }) => {
                     innerRadius={60}
                     paddingAngle={2}
                     animationDuration={1500}
-                    label={({ name, percent }) => `${name}: ${percent ? (percent * 100).toFixed(0) : 0}%`}
+                    label={({ name, percent }) => `${name}: ${percent !== undefined ? (percent * 100).toFixed(0) : '0'}%`}
                     labelLine={{ stroke: '#64748b', strokeWidth: 1 }}
                 >
                     {processedData.map((_, index) => (
