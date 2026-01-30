@@ -1,0 +1,35 @@
+# Table: [dbo].[BaseProductsFedarated]
+
+**Data Source:** Auto-generated  
+**Schema:** dbo  
+**Type:** Table  
+**Era:** Unknown  
+**Record Count:** Unknown  
+**Update Frequency:** Unknown
+
+## Description
+
+# **Table:** `[dbo].[BaseProductsFedarated]`
+> Contains core product information that is synchronized across multiple systems or sources within the specialty foods sales database.
+---
+### **Columns:**
+| Ord | Name | Data Type | Description |
+|:---:|:---:|:---:|:---|
+| 1 | `ProductID` | INTEGER | Primary key, Unique identifier for each product. |
+| 2 | `ProductName` | NVARCHAR(40) | Name of the product. |
+---
+
+
+## Columns
+
+## Common Queries
+
+(Requires manual documentation)
+
+## Related Tables
+
+(Requires manual documentation)
+
+## Data Quality Notes
+
+(Requires manual documentation)

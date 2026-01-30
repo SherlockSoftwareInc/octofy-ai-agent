@@ -46,6 +46,7 @@ class GenerateSQLRequest(BaseModel):
     queryMode: Literal["generate", "search"] = "generate"  # "generate" for SQL generation, "search" for object search
     table_override: Optional[List[str]] = None # Explicit schema.table list from user selection
     chart_type_override: Optional[ChartTypeLiteral] = None  # User-specified chart type
+    user_selected_tables: Optional[List[str]] = None  # User's checkbox selections from threshold prompt
 
 class SearchObject(BaseModel):
     schema_name: str = Field(..., alias="schema")
@@ -378,3 +379,65 @@ class ApproveContributionResponse(BaseModel):
     success: bool
     message: str
     knowledge_base_id: Optional[str] = None  # ID in the knowledge base after approval
+
+
+# --- Skills-Based Data Discovery Models ---
+
+class DataSource(BaseModel):
+    """Parsed from _data-source.md"""
+    name: str
+    type: str  # "SQL Server", "Excel", "JSON API", etc.
+    description: str
+    keywords: List[str] = []
+    status: str = "Active"  # "Active", "Archive", "Deprecated"
+    connection_info: Optional[Dict[str, Any]] = None
+    data_groups: List[str] = []  # Paths to group files
+    file_path: Optional[str] = None  # Path to the _data-source.md file
+
+class DataGroup(BaseModel):
+    """Parsed from _data-group.md"""
+    name: str
+    data_source: str
+    description: str
+    keywords: List[str] = []
+    tables: List[str] = []  # Paths to table .md files
+    schema_notes: Optional[str] = None
+    category: Optional[str] = None
+    file_path: Optional[str] = None  # Path to the _data-group.md file
+
+class RankedTable(BaseModel):
+    """Discovery result with scoring"""
+    schema_name: str
+    table_name: str
+    score: int = 0
+    matched_by: List[str] = []  # ["skills", "value_index", "knowledge_base"]
+    data_source: Optional[str] = None
+    data_group: Optional[str] = None
+    file_path: Optional[str] = None  # Path to table .md file
+
+class ThresholdDecision(BaseModel):
+    """Smart threshold analysis result"""
+    auto_proceed: bool
+    total_tables: int
+    cross_schema: bool = False
+    cross_database: bool = False
+    trigger_reason: Optional[str] = None
+
+class SelectionPrompt(BaseModel):
+    """User selection UI data"""
+    recommended: List[RankedTable] = []  # LLM confidence > 80%
+    ambiguous_groups: List[Dict[str, Any]] = []  # Requires user choice
+    additional_options: List[Dict[str, Any]] = []  # Extra possibilities
+
+class SkillsDiscoveryResult(BaseModel):
+    """Result from skills navigation"""
+    matched_groups: List[DataGroup] = []
+    candidate_tables: List[RankedTable] = []
+    keywords_used: List[str] = []
+
+class ThreeProngedResult(BaseModel):
+    """Combined result from three-pronged discovery"""
+    skills_tables: List[RankedTable] = []
+    value_tables: List[RankedTable] = []
+    knowledge_base_tables: List[RankedTable] = []
+    merged_candidates: List[RankedTable] = []
