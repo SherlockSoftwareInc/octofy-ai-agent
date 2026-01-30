@@ -363,55 +363,7 @@ function App() {
       hasResults: !!result.results
     });
 
-    // Then fetch summary in the background (non-blocking)
-    if (result && result.success && result.results && result.results.length > 0) {
-      try {
-        const firstResult = result.results[0];
-
-        // Resolve context from args or stale history
-        let userRequest = contextInfo?.sourceQuery;
-        let chartType = contextInfo?.chartTypeOverride;
-
-        if (!userRequest) {
-          const msg = chatHistory.find(m => m.id === messageId);
-          if (msg) {
-            userRequest = msg.sourceQuery || msg.content;
-            chartType = chartType || msg.chartTypeOverride;
-          }
-        }
-
-        // If we still don't have userRequest, we might be in a race condition where we can't summarize yet
-        if (!userRequest) return;
-
-        // Only send a preview of data (avoid huge payloads)
-        let previewData = firstResult.data;
-        if (Array.isArray(previewData) && previewData.length > 20) {
-          previewData = previewData.slice(0, 20);
-        }
-
-        // Add timeout to prevent hanging
-        const timeoutPromise = new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new Error('Summary timeout')), 15000)
-        );
-
-        const summaryPromise = api.summarizeResults(userRequest, previewData, chartType);
-        const summaryResult = await Promise.race([summaryPromise, timeoutPromise]);
-
-        // Update with summary after it arrives
-        setConversations(prev => prev.map(conv => {
-          if (conv.id !== activeConversationId) return conv;
-          return {
-            ...conv,
-            messages: conv.messages.map(msg =>
-              msg.id === messageId ? { ...msg, pythonSummary: summaryResult.summary } : msg
-            )
-          };
-        }));
-      } catch (e) {
-        console.error('Summary fetch failed:', e);
-        // Silently fail - summary is optional
-      }
-    }
+    // Note: AI Summary is now on-demand via UI buttons in SQLResultDisplay component
   };
 
   const handleSQLExecutionComplete = async (
@@ -464,61 +416,7 @@ function App() {
       hasResults: !!result.results
     });
 
-    // Then fetch summary in the background (non-blocking)
-    if (result && result.success && result.results && result.results.length > 0) {
-      try {
-        const firstResult = result.results[0];
-
-        // Resolve context from args or stale history
-        let userRequest = contextInfo?.sourceQuery;
-        let chartType = contextInfo?.chartTypeOverride;
-
-        if (!userRequest) {
-          const msg = chatHistory.find(m => m.id === messageId);
-          if (msg) {
-            userRequest = msg.sourceQuery || msg.content;
-            chartType = chartType || msg.chartTypeOverride;
-          }
-        }
-
-        if (!userRequest) return;
-
-        // Only send a preview of data (avoid huge payloads)
-        let previewData = firstResult.data;
-        if (Array.isArray(previewData)) {
-          // If it's structured table data format
-          previewData = previewData.slice(0, 20);
-        } else if (previewData && typeof previewData === 'object' && 'data' in previewData) {
-          // If it's {columns: [], data: []} format
-          const dataArray = (previewData as any).data;
-          if (Array.isArray(dataArray) && dataArray.length > 20) {
-            previewData = { ...(previewData as any), data: dataArray.slice(0, 20) };
-          }
-        }
-
-        // Add timeout to prevent hanging
-        const timeoutPromise = new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new Error('Summary timeout')), 15000)
-        );
-
-        const summaryPromise = api.summarizeResults(userRequest, previewData, chartType);
-        const summaryResult = await Promise.race([summaryPromise, timeoutPromise]);
-
-        // Update with summary after it arrives
-        setConversations(prev => prev.map(conv => {
-          if (conv.id !== activeConversationId) return conv;
-          return {
-            ...conv,
-            messages: conv.messages.map(msg =>
-              msg.id === messageId ? { ...msg, sqlSummary: summaryResult.summary } : msg
-            )
-          };
-        }));
-      } catch (e) {
-        console.error('SQL summary fetch failed:', e);
-        // Silently fail - summary is optional
-      }
-    }
+    // Note: AI Summary is now on-demand via UI buttons in SQLResultDisplay component
   };
 
   const handleRefinementClick = async (suggestion: string) => {
