@@ -1,0 +1,583 @@
+"""
+Skills Service - Handles parsing and discovery of data sources from filesystem-based skill files
+"""
+
+import os
+import re
+from pathlib import Path
+from typing import List, Dict, Optional, Tuple
+from collections import defaultdict
+
+from app.models.schemas import (
+    DataSource, DataGroup, TableSchema, ColumnInfo, RankedTable, SkillsDiscoveryResult
+)
+
+
+class SkillsService:
+    """Service for managing skills-based data source discovery"""
+    
+    def __init__(self, skills_path: str = "skills/data-sources"):
+        """
+        Initialize the skills service
+        
+        Args:
+            skills_path: Path to the skills directory (default: skills/data-sources)
+        """
+        self.skills_path = Path(skills_path)
+        self._data_sources_cache: Optional[List[DataSource]] = None
+        self._data_groups_cache: Optional[Dict[str, DataGroup]] = None
+        
+    def load_data_sources_index(self) -> List[DataSource]:
+        """
+        Parse _index.md and return all data sources
+        
+        Returns:
+            List of DataSource objects
+        """
+        if self._data_sources_cache is not None:
+            return self._data_sources_cache
+            
+        index_path = self.skills_path / "_index.md"
+        if not index_path.exists():
+            return []
+            
+        data_sources = []
+        content = index_path.read_text(encoding='utf-8')
+        
+        # Parse markdown sections for each data source
+        # Pattern: ### DataSourceName followed by metadata
+        sections = re.split(r'\n### ', content)
+        
+        for section in sections[1:]:  # Skip first section (header)
+            lines = section.strip().split('\n')
+            name = lines[0].strip()
+            
+            # Extract metadata
+            type_match = re.search(r'\*\*Type:\*\*\s*(.+)', section)
+            status_match = re.search(r'\*\*Status:\*\*\s*(.+)', section)
+            desc_match = re.search(r'\*\*Description:\*\*\s*(.+)', section)
+            keywords_match = re.search(r'\*\*Keywords:\*\*\s*(.+)', section)
+            skill_file_match = re.search(r'\*\*Skill File:\*\*\s*\[(.+?)\]\((.+?)\)', section)
+            
+            keywords = []
+            if keywords_match:
+                keywords_str = keywords_match.group(1)
+                keywords = [k.strip() for k in keywords_str.split(',')]
+            
+            skill_file_path = None
+            if skill_file_match:
+                skill_file_path = skill_file_match.group(2)
+            
+            data_source = DataSource(
+                name=name,
+                type=type_match.group(1).strip() if type_match else "Unknown",
+                description=desc_match.group(1).strip() if desc_match else "",
+                keywords=keywords,
+                status=status_match.group(1).strip() if status_match else "Unknown",
+                file_path=str(self.skills_path / skill_file_path) if skill_file_path else None
+            )
+            
+            data_sources.append(data_source)
+        
+        self._data_sources_cache = data_sources
+        return data_sources
+    
+    def load_all_data_groups(self) -> Dict[str, DataGroup]:
+        """
+        Load all _data-group.md files from the skills directory
+        
+        Returns:
+            Dictionary mapping file path to DataGroup objects
+        """
+        if self._data_groups_cache is not None:
+            return self._data_groups_cache
+            
+        data_groups = {}
+        
+        # Recursively find all _*-group.md files
+        for group_file in self.skills_path.rglob("_*-group.md"):
+            group = self._parse_data_group_file(group_file)
+            if group:
+                data_groups[str(group_file)] = group
+        
+        self._data_groups_cache = data_groups
+        return data_groups
+    
+    def _parse_data_group_file(self, file_path: Path) -> Optional[DataGroup]:
+        """
+        Parse a single _data-group.md file
+        
+        Args:
+            file_path: Path to the _data-group.md file
+            
+        Returns:
+            DataGroup object or None if parsing fails
+        """
+        if not file_path.exists():
+            return None
+            
+        content = file_path.read_text(encoding='utf-8')
+        
+        # Extract metadata
+        name_match = re.search(r'^#\s+(.+?)(?:\s+Group)?$', content, re.MULTILINE)
+        data_source_match = re.search(r'\*\*Data Source:\*\*\s*(.+)', content)
+        category_match = re.search(r'\*\*Category:\*\*\s*(.+)', content)
+        keywords_match = re.search(r'\*\*Keywords:\*\*\s*(.+)', content)
+        desc_section = re.search(r'## Description\s*\n(.*?)(?=\n##|\Z)', content, re.DOTALL)
+        schema_notes_section = re.search(r'## Schema (?:Migration )?Notes\s*\n(.*?)(?=\n##|\Z)', content, re.DOTALL)
+        
+        # Extract table references
+        # Pattern: **[TableName](../schemas/schema-name/file.md)** or **[TableName](../schemas/dbo/file.md)**
+        table_matches = re.findall(r'\*\*\[(.+?)\]\((.+?\.md)\)\*\*', content)
+        
+        keywords = []
+        if keywords_match:
+            keywords_str = keywords_match.group(1)
+            # Split by comma and clean up
+            keywords = [k.strip() for k in keywords_str.split(',')]
+        
+        tables = []
+        for table_name, table_path in table_matches:
+            # Convert relative path to absolute
+            # table_path is relative to the data-group file (e.g., "../schemas/dbo/dbo.Table.md")
+            abs_path = (file_path.parent / table_path).resolve()
+            tables.append(str(abs_path))
+        
+        return DataGroup(
+            name=name_match.group(1).strip() if name_match else file_path.stem.replace('_', ' ').replace('-group', ''),
+            data_source=data_source_match.group(1).strip() if data_source_match else "Unknown",
+            description=desc_section.group(1).strip() if desc_section else "",
+            keywords=keywords,
+            tables=tables,
+            schema_notes=schema_notes_section.group(1).strip() if schema_notes_section else None,
+            category=category_match.group(1).strip() if category_match else None,
+            file_path=str(file_path)
+        )
+    
+    def search_data_groups_by_keywords(self, query: str, extract_keywords: bool = True) -> SkillsDiscoveryResult:
+        """
+        Keyword match against all _data-group.md files
+        
+        Args:
+            query: User's natural language query
+            extract_keywords: If True, extract keywords from query; otherwise use query as-is
+            
+        Returns:
+            SkillsDiscoveryResult with matched groups and candidate tables
+        """
+        # Load all data groups
+        all_groups = self.load_all_data_groups()
+        
+        # Extract keywords from query
+        if extract_keywords:
+            query_keywords = self._extract_keywords(query)
+        else:
+            query_keywords = [query.lower()]
+        
+        # Score each data group
+        group_scores = {}
+        for file_path, group in all_groups.items():
+            score = self._score_group(group, query_keywords, query.lower())
+            if score > 0:
+                group_scores[file_path] = score
+        
+        # Sort groups by score
+        sorted_groups = sorted(group_scores.items(), key=lambda x: x[1], reverse=True)
+        
+        # Get top matched groups
+        matched_groups = []
+        candidate_tables = []
+        
+        for file_path, score in sorted_groups[:10]:  # Top 10 groups
+            group = all_groups[file_path]
+            matched_groups.append(group)
+            
+            # Add tables from this group as candidates
+            for table_path in group.tables:
+                # Extract schema and table name from path
+                table_name = Path(table_path).stem  # e.g., "dbo.Customers" from "dbo.Customers.md"
+                schema_name, table = self._parse_table_name(table_name)
+                
+                candidate_tables.append(RankedTable(
+                    schema_name=schema_name,
+                    table_name=table,
+                    score=score,
+                    matched_by=["skills"],
+                    data_source=group.data_source,
+                    data_group=group.name,
+                    file_path=table_path
+                ))
+        
+        return SkillsDiscoveryResult(
+            matched_groups=matched_groups,
+            candidate_tables=candidate_tables,
+            keywords_used=query_keywords
+        )
+    
+    def _extract_keywords(self, query: str) -> List[str]:
+        """
+        Extract meaningful keywords from user query
+        
+        Args:
+            query: User's natural language query
+            
+        Returns:
+            List of keywords
+        """
+        # Convert to lowercase
+        query_lower = query.lower()
+        
+        # Remove common stop words
+        stop_words = {'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 
+                     'of', 'with', 'by', 'from', 'up', 'about', 'into', 'through', 'during',
+                     'show', 'me', 'get', 'find', 'list', 'all', 'what', 'which', 'who', 'where',
+                     'when', 'how', 'is', 'are', 'was', 'were', 'be', 'been', 'being', 'have',
+                     'has', 'had', 'do', 'does', 'did', 'will', 'would', 'could', 'should',
+                     'i', 'want', 'need', 'data', 'information', 'records'}
+        
+        # Extract words (alphanumeric sequences)
+        words = re.findall(r'\b[a-z0-9]+\b', query_lower)
+        
+        # Filter stop words and keep meaningful keywords
+        keywords = [w for w in words if w not in stop_words and len(w) > 2]
+        
+        return keywords
+    
+    def _score_group(self, group: DataGroup, query_keywords: List[str], query_full: str) -> int:
+        """
+        Score a data group based on keyword matching
+        
+        Args:
+            group: DataGroup to score
+            query_keywords: Extracted keywords from query
+            query_full: Full query string (lowercase)
+            
+        Returns:
+            Score (higher is better)
+        """
+        score = 0
+        
+        # Combine all searchable text from the group
+        searchable_text = " ".join([
+            group.name.lower(),
+            group.description.lower(),
+            " ".join(group.keywords),
+            group.data_source.lower(),
+            group.category.lower() if group.category else "",
+            group.schema_notes.lower() if group.schema_notes else ""
+        ])
+        
+        # Score based on keyword matches
+        for keyword in query_keywords:
+            # Exact word match in keywords list (highest priority)
+            if keyword in [k.lower() for k in group.keywords]:
+                score += 10
+            # Substring match in name (high priority)
+            elif keyword in group.name.lower():
+                score += 8
+            # Substring match in description
+            elif keyword in group.description.lower():
+                score += 5
+            # Substring match anywhere in searchable text
+            elif keyword in searchable_text:
+                score += 2
+        
+        # Bonus for multiple keyword matches (indicates relevance)
+        matched_keywords = sum(1 for k in query_keywords if k in searchable_text)
+        if matched_keywords > 1:
+            score += matched_keywords * 2
+        
+        # Phrase matching bonus (if full query appears in description)
+        if len(query_full) > 10 and query_full in searchable_text:
+            score += 15
+        
+        return score
+    
+    def _parse_table_name(self, full_name: str) -> Tuple[str, str]:
+        """
+        Parse schema.table format
+        
+        Args:
+            full_name: Table name in format "schema.table" or "table"
+            
+        Returns:
+            Tuple of (schema_name, table_name)
+        """
+        if '.' in full_name:
+            parts = full_name.split('.')
+            return parts[0], parts[1]
+        return "dbo", full_name
+    
+    def load_table_schemas(self, table_paths: List[str]) -> List[TableSchema]:
+        """
+        Read individual table .md files and parse into TableSchema objects
+        
+        Args:
+            table_paths: List of file paths to table .md files OR table names (schema.table format)
+            
+        Returns:
+            List of TableSchema objects
+        """
+        schemas = []
+        
+        for path_or_name in table_paths:
+            # Check if it's a table name (schema.table) or a file path
+            if '/' in path_or_name or '\\' in path_or_name or path_or_name.endswith('.md'):
+                # It's a file path
+                schema = self._parse_table_schema_file(Path(path_or_name))
+            else:
+                # It's a table name - find the file
+                schema = self._find_and_parse_table(path_or_name)
+            
+            if schema:
+                schemas.append(schema)
+        
+        return schemas
+    
+    def _find_and_parse_table(self, table_name: str) -> Optional[TableSchema]:
+        """
+        Find and parse a table by name (schema.table format)
+        
+        Args:
+            table_name: Table name in format "schema.table" or just "table"
+            
+        Returns:
+            TableSchema object or None if not found
+        """
+        # Parse schema.table format
+        if '.' in table_name:
+            parts = table_name.replace('[', '').replace(']', '').split('.')
+            schema_name = parts[0]
+            table = parts[1]
+        else:
+            schema_name = 'dbo'
+            table = table_name.replace('[', '').replace(']', '')
+        
+        # Search for the table file
+        # Pattern: skills/data-sources/{data-source}/schemas/{schema}/{schema}.{table}.md
+        matches = list(self.skills_path.rglob(f"schemas/{schema_name}/{schema_name}.{table}.md"))
+        
+        if matches:
+            return self._parse_table_schema_file(matches[0])
+        
+        return None
+    
+    def _parse_table_schema_file(self, file_path: Path) -> Optional[TableSchema]:
+        """
+        Parse a single table schema .md file
+        
+        Args:
+            file_path: Path to the table .md file
+            
+        Returns:
+            TableSchema object or None if parsing fails
+        """
+        if not file_path.exists():
+            return None
+            
+        content = file_path.read_text(encoding='utf-8')
+        
+        # Extract table name from first line: # Table: [schema].[table]
+        table_match = re.search(r'^#\s+Table:\s+\[?(\w+)\]?\.\[?(\w+)\]?', content, re.MULTILINE)
+        if not table_match:
+            # Fallback to filename
+            table_name = file_path.stem
+            schema_name, table = self._parse_table_name(table_name)
+        else:
+            schema_name = table_match.group(1)
+            table = table_match.group(2)
+        
+        # Extract metadata
+        type_match = re.search(r'\*\*Type:\*\*\s*(\w+)', content)
+        
+        # Extract description (everything between first heading and ## Columns)
+        desc_match = re.search(r'^#[^#].*?\n\n(.*?)(?=\n##|\Z)', content, re.DOTALL)
+        
+        # Extract columns section
+        columns_section = re.search(r'## Columns\s*\n(.*?)(?=\n##|\Z)', content, re.DOTALL)
+        
+        columns = []
+        if columns_section and columns_section.group(1).strip():
+            # Try parsing from ## Columns section
+            columns = self._parse_columns_section(columns_section.group(1))
+        
+        # If no columns found, try parsing from markdown table in description
+        if not columns:
+            table_match = re.search(r'\|\s*Ord\s*\|\s*Name\s*\|\s*Data Type\s*\|\s*Description\s*\|.*?\n\|:?-+:?\|.*?\n((?:\|.*?\n)+)', content, re.DOTALL)
+            if table_match:
+                columns = self._parse_columns_from_table(table_match.group(1))
+        
+        # Build full description with metadata
+        full_description = self._build_full_description(content, desc_match)
+        
+        return TableSchema(
+            schema_name=schema_name,
+            table_name=table,
+            table_type=type_match.group(1).lower() if type_match else "table",
+            description=full_description,
+            columns=columns
+        )
+    
+    def _parse_columns_section(self, columns_text: str) -> List[ColumnInfo]:
+        """
+        Parse the columns section of a table schema markdown
+        
+        Args:
+            columns_text: Text content of the ## Columns section
+            
+        Returns:
+            List of ColumnInfo objects
+        """
+        columns = []
+        
+        # Try format 1: ### ColumnName (DataType) - Description
+        # Pattern: ### ColumnName (DataType) - [Optional] Primary Key / Foreign Key
+        # Followed by description paragraph
+        column_blocks = re.split(r'\n### ', columns_text)
+        
+        if len(column_blocks) > 1:  # Found ### format
+            for block in column_blocks:
+                if not block.strip():
+                    continue
+                    
+                lines = block.strip().split('\n')
+                header = lines[0]
+                
+                # Parse header: ColumnName (DataType) - Optional tags
+                header_match = re.match(r'(.+?)\s*\((.+?)\)(?:\s*-\s*(.+))?', header)
+                if not header_match:
+                    continue
+                
+                column_name = header_match.group(1).strip()
+                data_type = header_match.group(2).strip()
+                tags = header_match.group(3).strip() if header_match.group(3) else ""
+                
+                # Description is remaining lines
+                description_lines = [line.strip() for line in lines[1:] if line.strip()]
+                description = " ".join(description_lines)
+                
+                # Add tags to description if present
+                if tags:
+                    description = f"{tags}. {description}" if description else tags
+                
+                columns.append(ColumnInfo(
+                    name=column_name,
+                    data_type=data_type,
+                    description=description
+                ))
+        
+        return columns
+    
+    def _parse_columns_from_table(self, table_text: str) -> List[ColumnInfo]:
+        """
+        Parse columns from markdown table format
+        
+        Format:
+        | Ord | Name | Data Type | Description |
+        | 1 | `ColumnName` | TYPE | Description text |
+        
+        Args:
+            table_text: Markdown table rows
+            
+        Returns:
+            List of ColumnInfo objects
+        """
+        columns = []
+        
+        for line in table_text.strip().split('\n'):
+            if not line.strip() or not line.startswith('|'):
+                continue
+            
+            # Split by | and clean up
+            parts = [p.strip() for p in line.split('|')]
+            # Filter out empty parts
+            parts = [p for p in parts if p]
+            
+            if len(parts) < 4:
+                continue
+            
+            # parts[0] = Ord, parts[1] = Name, parts[2] = Data Type, parts[3] = Description
+            column_name = parts[1].strip('`').strip()
+            data_type = parts[2].strip()
+            description = parts[3].strip()
+            
+            if column_name and data_type:
+                columns.append(ColumnInfo(
+                    name=column_name,
+                    data_type=data_type,
+                    description=description
+                ))
+        
+        return columns
+    
+    def _build_full_description(self, content: str, desc_match: Optional[re.Match]) -> str:
+        """
+        Build full table description including metadata
+        
+        Args:
+            content: Full markdown content
+            desc_match: Regex match object for description section
+            
+        Returns:
+            Formatted description string
+        """
+        parts = []
+        
+        # Extract metadata fields
+        metadata_fields = {
+            'Data Source': r'\*\*Data Source:\*\*\s*(.+)',
+            'Schema': r'\*\*Schema:\*\*\s*(.+)',
+            'Type': r'\*\*Type:\*\*\s*(.+)',
+            'Era': r'\*\*Era:\*\*\s*(.+)',
+            'Record Count': r'\*\*Record Count:\*\*\s*(.+)',
+            'Update Frequency': r'\*\*Update Frequency:\*\*\s*(.+)'
+        }
+        
+        metadata_lines = []
+        for field, pattern in metadata_fields.items():
+            match = re.search(pattern, content)
+            if match:
+                metadata_lines.append(f"**{field}:** {match.group(1).strip()}")
+        
+        if metadata_lines:
+            parts.append("\n".join(metadata_lines))
+        
+        # Add main description
+        if desc_match:
+            # Extract description section (skip metadata lines)
+            desc_text = desc_match.group(1).strip()
+            # Remove metadata lines from description
+            desc_lines = [line for line in desc_text.split('\n') 
+                         if not line.strip().startswith('**') or ':' not in line]
+            if desc_lines:
+                parts.append("\n".join(desc_lines).strip())
+        
+        return "\n\n".join(parts)
+    
+    def get_data_group_metadata(self, group_path: str) -> Optional[DataGroup]:
+        """
+        Parse _data-group.md file for keywords, description, table list
+        
+        Args:
+            group_path: Path to _data-group.md file
+            
+        Returns:
+            DataGroup object or None
+        """
+        return self._parse_data_group_file(Path(group_path))
+    
+    def clear_cache(self):
+        """Clear cached data sources and groups"""
+        self._data_sources_cache = None
+        self._data_groups_cache = None
+
+
+# Singleton instance
+_skills_service: Optional[SkillsService] = None
+
+def get_skills_service() -> SkillsService:
+    """Get or create the skills service singleton"""
+    global _skills_service
+    if _skills_service is None:
+        _skills_service = SkillsService()
+    return _skills_service

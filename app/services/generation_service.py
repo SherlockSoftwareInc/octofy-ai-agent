@@ -4,7 +4,11 @@ import logging
 from typing import Optional, Tuple, List, Dict, Any, Generator, Union
 from datetime import datetime
 from app.services.llm_service import get_llm_service
-from app.services.discovery_service import perform_discovery, DiscoveryRequest
+from app.services.discovery_service import (
+    perform_discovery, DiscoveryRequest,
+    perform_three_pronged_discovery, check_smart_threshold,
+    generate_user_selection_prompt, hydrate_discovery_context_from_skills
+)
 from app.services.validation_service import validate_sql_with_db
 from app.services.vector_store import get_vector_store
 from app.services.settings_service import get_settings_for_display
