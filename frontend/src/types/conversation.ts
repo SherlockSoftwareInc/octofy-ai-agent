@@ -113,9 +113,16 @@ export interface ChatMessage {
    */
   sqlSummary?: string;
   /**
-   * Workflow analysis context (profiling, insights, refinements)
+   * Workflow analysis context (profiling, insights, refinements) - DEPRECATED for SQL queries with multiple result sets
+   * Use resultSetAnalysisCache instead for multi-result SQL queries
    */
   analysisContext?: AnalysisContext;
+  /**
+   * Per-result-set analysis cache for SQL queries with multiple result sets
+   * Key: result set index (0, 1, 2, etc.)
+   * Value: Analysis context for that specific result set
+   */
+  resultSetAnalysisCache?: Record<number, AnalysisContext>;
 }
 
 export interface Conversation {

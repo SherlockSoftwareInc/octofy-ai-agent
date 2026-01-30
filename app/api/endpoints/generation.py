@@ -174,7 +174,7 @@ async def execute_python_endpoint(request: ExecutePythonRequest, api_key: str = 
             result = execute_python_code(
                 current_code, 
                 exec_context,
-                enable_profiling=True,  # Always enable profiling for workflow analysis
+                enable_profiling=request.enable_profiling or False,
                 user_query=user_query
             )
             
@@ -313,7 +313,7 @@ async def execute_sql_endpoint(request: ExecuteSQLRequest, api_key: str = Depend
                 current_sql,
                 timeout_seconds=request.timeout_seconds or 60,
                 max_rows=request.max_rows or 10000,
-                enable_profiling=True,
+                enable_profiling=request.enable_profiling or False,
                 user_query=user_query
             )
             

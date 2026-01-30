@@ -73,6 +73,7 @@ class ExecutePythonRequest(BaseModel):
     code: str
     context: Optional[Dict[str, Any]] = None
     chart_type_override: Optional[ChartTypeLiteral] = None  # User-specified chart type
+    enable_profiling: Optional[bool] = False  # Enable data profiling and insights generation
 
 
 class ExecuteSQLRequest(BaseModel):
@@ -81,6 +82,7 @@ class ExecuteSQLRequest(BaseModel):
     chart_type_override: Optional[ChartTypeLiteral] = None  # User-specified chart type preference
     timeout_seconds: Optional[int] = 60  # Configurable timeout for query execution (default: 60 seconds)
     max_rows: Optional[int] = 10000  # Row limit for results to prevent memory exhaustion
+    enable_profiling: Optional[bool] = False  # Enable data profiling and insights generation
 
 
 class ChartRecommendation(BaseModel):
