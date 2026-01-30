@@ -71,13 +71,8 @@ const ExecutionResultViewer: React.FC<{ results: ExecutePythonResult[]; recommen
         });
     }, [results]);
 
-    // Convert recommendation to chart metadata if available
-    const chartMetadataFromRecommendation = useMemo(() => {
-        if (!recommendation || recommendation.chart_type === 'none') {
-            return undefined;
-        }
-        return recommendationToMetadata(recommendation);
-    }, [recommendation]);
+    // Note: Global recommendation is deprecated for multi-result support
+    // Each result should have its own recommendation attached
 
     return (
         <div className="space-y-6 w-full max-w-full">
@@ -85,9 +80,16 @@ const ExecutionResultViewer: React.FC<{ results: ExecutePythonResult[]; recommen
                 const title = res.name;
 
                 // Determine which chart metadata to use:
-                // 1. Prefer recommendation from backend (supports override)
-                // 2. Fall back to result-level chart_metadata
-                // 3. Fall back to viz_config based chart_metadata
+                // 1. Prefer result-specific recommendation (for multi-query support)
+                // 2. Fall back to global recommendation (backward compatibility)
+                // 3. Fall back to result-level chart_metadata
+                // 4. Fall back to viz_config based chart_metadata
+                const resultRecommendation = (res as any).recommendation;
+                const effectiveRecommendation = resultRecommendation || (idx === 0 ? recommendation : null);
+                const chartMetadataFromRecommendation = effectiveRecommendation && effectiveRecommendation.chart_type !== 'none'
+                    ? recommendationToMetadata(effectiveRecommendation)
+                    : undefined;
+                
                 const effectiveMetadata = chartMetadataFromRecommendation || res.chart_metadata;
                 const shouldShowChart = effectiveMetadata && effectiveMetadata.type !== 'none';
                 const vizConfigBlocksChart = res.viz_config &&
@@ -102,9 +104,9 @@ const ExecutionResultViewer: React.FC<{ results: ExecutePythonResult[]; recommen
                                     EXECUTION RESULT ({title.toUpperCase()})
                                 </h3>
                             </div>
-                            {recommendation && (
+                            {effectiveRecommendation && (
                                 <div className="text-xs text-slate-500">
-                                    {recommendation.title}
+                                    {effectiveRecommendation.title}
                                 </div>
                             )}
                         </div>
@@ -118,21 +120,6 @@ const ExecutionResultViewer: React.FC<{ results: ExecutePythonResult[]; recommen
                                 />
                             </div>
                         </ResultsWrapper>
-
-                        {/* LLM Summary Section */}
-                        {idx === 0 && pythonSummary && (
-                            <div className="mt-3 p-3 bg-slate-800/40 border border-indigo-700/30 rounded-lg">
-                                <div className="text-xs text-indigo-300 font-semibold mb-1">AI Summary</div>
-                                <div className="text-sm text-indigo-100">
-                                    <ReactMarkdown
-                                        remarkPlugins={[remarkGfm]}
-                                        components={markdownComponents}
-                                    >
-                                        {pythonSummary}
-                                    </ReactMarkdown>
-                                </div>
-                            </div>
-                        )}
 
                         {/* Chart Section */}
                         {vizConfigBlocksChart ? (
@@ -153,10 +140,25 @@ const ExecutionResultViewer: React.FC<{ results: ExecutePythonResult[]; recommen
                             </ResultsWrapper>
                         ) : null}
 
+                        {/* LLM Summary Section */}
+                        {idx === 0 && pythonSummary && (
+                            <div className="mt-3 p-3 bg-slate-800/40 border border-indigo-700/30 rounded-lg">
+                                <div className="text-xs text-indigo-300 font-semibold mb-1">AI Summary</div>
+                                <div className="text-sm text-indigo-100">
+                                    <ReactMarkdown
+                                        remarkPlugins={[remarkGfm]}
+                                        components={markdownComponents}
+                                    >
+                                        {pythonSummary}
+                                    </ReactMarkdown>
+                                </div>
+                            </div>
+                        )}
+
                         {/* Show recommendation explanation if available */}
-                        {recommendation?.explanation && (
+                        {effectiveRecommendation?.explanation && (
                             <div className="mt-2 text-xs text-slate-500 italic">
-                                {recommendation.explanation}
+                                {effectiveRecommendation.explanation}
                             </div>
                         )}
                     </div>

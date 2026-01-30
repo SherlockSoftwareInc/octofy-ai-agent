@@ -346,36 +346,48 @@ async def execute_sql_endpoint(request: ExecuteSQLRequest, api_key: str = Depend
             
             attempt += 1
         
-        # Generate visualization recommendation
-        recommendation = None
+        # Generate visualization recommendations for ALL result sets
+        recommendations = []
         if result["success"] and result.get("results"):
             # Use VisualizationService for chart recommendation
             dataframes = [r for r in result["results"] if r["type"] == "sql_result"]
             
             if dataframes:
-                target_df_data = None
+                viz_service = VisualizationService()
                 
-                # Use first result set
-                target_df_data = dataframes[0]["data"]
-                
-                try:
-                    import pandas as pd
+                # Generate recommendation for EACH result set
+                for idx, df_result in enumerate(dataframes):
+                    target_df_data = df_result["data"]
                     
-                    if isinstance(target_df_data, dict) and "data" in target_df_data:
-                        rows = target_df_data.get("data", [])
-                        columns = target_df_data.get("columns")
-                        df = pd.DataFrame(rows)
-                        if columns:
-                            df = df[[col for col in columns if col in df.columns]]
-                    else:
-                        df = pd.DataFrame(target_df_data)
-                    
-                    viz_service = VisualizationService()
-                    recommendation = viz_service.get_chart_recommendation(
-                        df, user_query or current_sql, request.chart_type_override
-                    )
-                except Exception as viz_err:
-                    logger.error(f"Visualization recommendation failed: {viz_err}")
+                    try:
+                        import pandas as pd
+                        
+                        if isinstance(target_df_data, dict) and "data" in target_df_data:
+                            rows = target_df_data.get("data", [])
+                            columns = target_df_data.get("columns")
+                            df = pd.DataFrame(rows)
+                            if columns:
+                                df = df[[col for col in columns if col in df.columns]]
+                        else:
+                            df = pd.DataFrame(target_df_data)
+                        
+                        recommendation = viz_service.get_chart_recommendation(
+                            df, user_query or current_sql, request.chart_type_override
+                        )
+                        recommendations.append(recommendation)
+                    except Exception as viz_err:
+                        logger.error(f"Visualization recommendation failed for result set {idx}: {viz_err}")
+                        recommendations.append(None)
+        
+        # Use first recommendation for backward compatibility with single-result queries
+        # But attach all recommendations to result sets
+        recommendation = recommendations[0] if recommendations else None
+        
+        # Attach recommendations to each result set
+        if result.get("results") and recommendations:
+            for idx, result_item in enumerate(result["results"]):
+                if idx < len(recommendations) and recommendations[idx]:
+                    result_item["recommendation"] = recommendations[idx].model_dump()
         
         # Build response
         return ExecuteSQLResponse(

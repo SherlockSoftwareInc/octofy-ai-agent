@@ -2,13 +2,14 @@
 Discovery Service - Enhanced with Skills-Based Discovery
 
 Implements three-pronged discovery:
-1. Skills Navigation (Primary) - Keyword-based data group matching
-2. Value Index Search - Entity-to-table mapping
-3. Knowledge Base Search - Similar query pattern matching
+1. Knowledge Base Search (Priority) - Exact match detection
+2. Skills Navigation - Keyword-based data group matching
+3. Value Index Search - Entity-to-table mapping (fallback merge)
 """
 
-from typing import List, Dict, Optional, Set
+from typing import List, Dict, Optional, Set, Any
 from collections import defaultdict
+import logging
 
 from app.models.schemas import (
     DiscoveryRequest, DiscoveryResponse, DiscoveryContext,
@@ -18,6 +19,11 @@ from app.models.schemas import (
 from app.services.vector_store import get_vector_store
 from app.services.skills_service import get_skills_service
 from app.services.llm_service import LLMServiceBase
+
+# Configuration Constants
+KNOWLEDGE_BASE_EXACT_MATCH_THRESHOLD = 0.1  # L2 distance threshold for exact match
+SKILLS_HIGH_SCORE_THRESHOLD = 15  # Minimum score to consider skills match as high-confidence
+USER_SELECTION_TOP_K = 20  # Number of top candidates to present to user
 
 
 def perform_discovery(request: DiscoveryRequest) -> DiscoveryResponse:
@@ -170,33 +176,238 @@ def perform_knowledge_base_search(query: str, llm_service: Optional[LLMServiceBa
     return ranked_tables
 
 
+def extract_tables_from_match(matched_query: Dict[str, Any], llm_service: Optional[LLMServiceBase] = None) -> List[RankedTable]:
+    """
+    Extract table names from a matched SQL query and return as RankedTable objects
+    
+    Args:
+        matched_query: Dict with 'sql_query' key containing the SQL
+        llm_service: LLM service for table extraction
+        
+    Returns:
+        List of RankedTable objects extracted from the SQL
+    """
+    ranked_tables = []
+    sql_query = matched_query.get('sql_query', '')
+    
+    if not sql_query or not llm_service:
+        return ranked_tables
+    
+    # Use LLM to extract table names from SQL
+    tables = llm_service.extract_tables_from_sql([sql_query])
+    
+    for table_name in tables:
+        # Parse schema.table format
+        if '.' in table_name:
+            parts = table_name.replace('[', '').replace(']', '').split('.')
+            schema_name = parts[0] if len(parts) > 1 else 'dbo'
+            table = parts[1] if len(parts) > 1 else parts[0]
+        else:
+            schema_name = 'dbo'
+            table = table_name.replace('[', '').replace(']', '')
+        
+        ranked_tables.append(RankedTable(
+            schema_name=schema_name,
+            table_name=table,
+            score=100,  # Exact match gets highest score
+            matched_by=['knowledge_base_exact_match'],
+            data_source=None,
+            data_group=None
+        ))
+    
+    return ranked_tables
+
+
+def check_knowledge_base_exact_match(
+    query: str, 
+    llm_service: Optional[LLMServiceBase] = None,
+    top_k: int = 3
+) -> Optional[Dict[str, Any]]:
+    """
+    Stage 1: Check knowledge base for exact query match
+    
+    Strategy:
+    1. Search knowledge base for similar queries
+    2. Check if top result score meets threshold (L2 distance < 0.1)
+    3. If threshold met, ask LLM to validate if SQL can be reused
+    4. Return match with SQL, question, tables, and score if validated
+    
+    Args:
+        query: User's natural language query
+        llm_service: LLM service for validation and table extraction
+        top_k: Number of similar queries to retrieve
+        
+    Returns:
+        Dict with keys: question, sql_query, tables, score
+        None if no exact match found
+    """
+    if not llm_service:
+        return None
+    
+    vector_store = get_vector_store()
+    
+    # Search knowledge base for similar queries
+    raw_few_shots = vector_store.search_fewshots(query, top_k=top_k, knowledge_type="sql_query")
+    
+    if not raw_few_shots:
+        logging.info(f"[Knowledge Base] No similar queries found for: {query}")
+        return None
+    
+    # Check top result
+    top_result = raw_few_shots[0]
+    score = top_result.get('score', float('inf'))
+    
+    logging.info(f"[Knowledge Base] Top result score: {score}")
+    
+    # Check score threshold (L2 distance - lower is better)
+    if score > KNOWLEDGE_BASE_EXACT_MATCH_THRESHOLD:
+        logging.info(f"[Knowledge Base] Score {score} exceeds threshold {KNOWLEDGE_BASE_EXACT_MATCH_THRESHOLD}")
+        return None
+    
+    # Extract query details
+    if isinstance(top_result, dict):
+        entity = top_result.get('entity', top_result)
+        question = entity.get('question', '')
+        sql_query = entity.get('sql_query', '')
+        
+        if not sql_query:
+            return None
+        
+        # Ask LLM to validate if this SQL can answer the user's query
+        validation_prompt = f"""You are a SQL expert. Compare these two questions:
+
+EXISTING QUESTION: {question}
+EXISTING SQL: {sql_query}
+
+USER'S NEW QUESTION: {query}
+
+Can the EXISTING SQL query directly answer the USER'S NEW QUESTION without any modifications?
+Consider:
+- Are the data requirements the same?
+- Are the filters/conditions compatible?
+- Does it return the information the user is asking for?
+
+Respond with only: YES or NO"""
+
+        try:
+            llm_response = llm_service.chat(validation_prompt, temperature=0).strip().upper()
+            
+            if 'YES' in llm_response:
+                logging.info(f"[Knowledge Base] EXACT MATCH FOUND! LLM validated SQL can be reused")
+                
+                # Extract tables from SQL
+                tables = llm_service.extract_tables_from_sql([sql_query])
+                
+                return {
+                    'question': question,
+                    'sql_query': sql_query,
+                    'tables': tables,
+                    'score': score
+                }
+            else:
+                logging.info(f"[Knowledge Base] LLM validation failed: {llm_response}")
+                return None
+                
+        except Exception as e:
+            logging.error(f"[Knowledge Base] LLM validation error: {e}")
+            return None
+    
+    return None
+
+
 def perform_three_pronged_discovery(query: str, llm_service: Optional[LLMServiceBase] = None) -> ThreeProngedResult:
     """
-    Stage 2: Orchestrate three-pronged discovery (parallel)
+    NEW STRATEGY: Sequential discovery with early exit optimization
+    
+    Flow:
+    1. Knowledge Base Search (Primary) - Check for exact match first
+       - If found: Return immediately with SQL reference
+    2. Skills-Based Discovery - Keyword matching
+       - If high scores (≥15): Present top 20 to user
+    3. Value Index Fallback - Only if skills scores are low
+       - Merge with low-score skills results
+       - Present top 20 merged results to user
     
     Args:
         query: User's natural language query
         llm_service: LLM service for validation and extraction
         
     Returns:
-        ThreeProngedResult with merged candidates from all sources
+        ThreeProngedResult with discovery results and user selection requirements
     """
-    # Run all three discovery methods
-    skills_result = perform_skills_based_discovery(query, llm_service)
-    value_tables = perform_value_index_search(query)
-    kb_tables = perform_knowledge_base_search(query, llm_service)
+    logging.info(f"[Discovery] Starting three-pronged discovery for: {query}")
     
-    # Skills tables come from the SkillsDiscoveryResult
+    # ========================================
+    # STAGE 1: Knowledge Base Exact Match
+    # ========================================
+    exact_match = check_knowledge_base_exact_match(query, llm_service)
+    
+    if exact_match:
+        logging.info(f"[Discovery] EXACT MATCH FOUND in knowledge base!")
+        logging.info(f"[Discovery] Matched question: {exact_match['question']}")
+        
+        # Extract tables from the matched SQL
+        tables = extract_tables_from_match(exact_match, llm_service)
+        
+        return ThreeProngedResult(
+            exact_match_found=True,
+            exact_match_query=exact_match,
+            merged_candidates=tables,
+            knowledge_base_tables=tables,
+            requires_user_selection=False  # No selection needed - exact match found
+        )
+    
+    logging.info(f"[Discovery] No exact match found, proceeding to skills-based discovery")
+    
+    # ========================================
+    # STAGE 2: Skills-Based Discovery
+    # ========================================
+    skills_result = perform_skills_based_discovery(query, llm_service)
     skills_tables = skills_result.candidate_tables
     
-    # Merge and deduplicate
-    merged = rerank_candidates(skills_tables, value_tables, kb_tables)
+    logging.info(f"[Discovery] Skills found {len(skills_tables)} candidate tables")
+    
+    # Check for high-confidence matches
+    high_score_tables = [t for t in skills_tables if t.score >= SKILLS_HIGH_SCORE_THRESHOLD]
+    
+    if high_score_tables:
+        logging.info(f"[Discovery] Found {len(high_score_tables)} high-score matches (≥{SKILLS_HIGH_SCORE_THRESHOLD})")
+        
+        # Sort by score and take top K
+        top_candidates = sorted(high_score_tables, key=lambda x: x.score, reverse=True)[:USER_SELECTION_TOP_K]
+        
+        logging.info(f"[Discovery] Presenting top {len(top_candidates)} candidates to user for selection")
+        
+        return ThreeProngedResult(
+            skills_tables=skills_tables,
+            requires_user_selection=True,
+            selection_candidates=top_candidates,
+            merged_candidates=[]  # Will be populated after user selection
+        )
+    
+    logging.info(f"[Discovery] No high-score skills matches, falling back to value index merge")
+    
+    # ========================================
+    # STAGE 3: Value Index Fallback + Merge
+    # ========================================
+    value_tables = perform_value_index_search(query)
+    
+    logging.info(f"[Discovery] Value index found {len(value_tables)} candidate tables")
+    
+    # Merge low-score skills results with value index
+    merged = rerank_candidates(skills_tables, value_tables, [])
+    
+    # Sort by score and take top K
+    top_merged = sorted(merged, key=lambda x: x.score, reverse=True)[:USER_SELECTION_TOP_K]
+    
+    logging.info(f"[Discovery] Merged results: {len(merged)} total, presenting top {len(top_merged)} to user")
     
     return ThreeProngedResult(
         skills_tables=skills_tables,
         value_tables=value_tables,
-        knowledge_base_tables=kb_tables,
-        merged_candidates=merged
+        requires_user_selection=True,
+        selection_candidates=top_merged,
+        merged_candidates=[]  # Will be populated after user selection
     )
 
 
