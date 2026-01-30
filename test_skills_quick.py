@@ -72,37 +72,66 @@ def test_table_loading():
         print(f"    Description preview: {schema.description[:100] if schema.description else 'N/A'}...")
 
 def test_three_pronged_discovery():
-    """Test full three-pronged discovery"""
+    """Test full three-pronged discovery with new strategy"""
     print("\n" + "=" * 60)
-    print("TEST 4: Three-Pronged Discovery")
+    print("TEST 4: Three-Pronged Discovery (NEW STRATEGY)")
     print("=" * 60)
     
     try:
         llm = get_llm_service()
         
-        query = "Show me customers who ordered products in 1997"
-        print(f"\n[QUERY] '{query}'")
+        # Test Case 1: Query that might have exact knowledge base match
+        test_cases = [
+            "Show me customers who ordered products in 1997",
+            "List all products and their categories",
+            "What are the total sales by region?"
+        ]
         
-        print("[INFO] Running three-pronged discovery...")
-        result = perform_three_pronged_discovery(query, llm)
-        
-        print(f"\n[RESULTS]")
-        print(f"  Skills tables: {len(result.skills_tables)}")
-        print(f"  Value index tables: {len(result.value_tables)}")
-        print(f"  Knowledge base tables: {len(result.knowledge_base_tables)}")
-        print(f"  Merged candidates: {len(result.merged_candidates)}")
-        
-        print("\n[TOP CANDIDATES]")
-        for i, table in enumerate(result.merged_candidates[:5], 1):
-            print(f"  {i}. {table.schema_name}.{table.table_name} (score: {table.score})")
-        
-        # Test threshold
-        print("\n[THRESHOLD CHECK]")
-        decision = check_smart_threshold(result.merged_candidates)
-        print(f"  Auto-proceed: {decision.auto_proceed}")
-        print(f"  Total tables: {decision.total_tables}")
-        if not decision.auto_proceed:
-            print(f"  Reason: {decision.trigger_reason}")
+        for query in test_cases:
+            print(f"\n{'='*60}")
+            print(f"[QUERY] '{query}'")
+            print(f"{'='*60}")
+            
+            print("[INFO] Running three-pronged discovery with new strategy...")
+            result = perform_three_pronged_discovery(query, llm)
+            
+            # Check for exact match
+            if result.exact_match_found:
+                print("\n[EXACT MATCH FOUND]")
+                print(f"  Original Question: {result.exact_match_query.get('question', 'N/A')}")
+                print(f"  Match Score: {result.exact_match_query.get('score', 'N/A')}")
+                print(f"  SQL Preview: {result.exact_match_query.get('sql_query', 'N/A')[:100]}...")
+                print(f"  Tables: {result.exact_match_query.get('tables', [])}")
+                print(f"  Merged Candidates: {len(result.merged_candidates)}")
+                for i, table in enumerate(result.merged_candidates[:5], 1):
+                    print(f"    {i}. {table.schema_name}.{table.table_name} (score: {table.score})")
+            else:
+                print("\n[NO EXACT MATCH - PROCEEDING TO SKILLS/VALUE DISCOVERY]")
+                
+            # Check if user selection is required
+            if result.requires_user_selection:
+                print(f"\n[USER SELECTION REQUIRED]")
+                print(f"  Total selection candidates: {len(result.selection_candidates)}")
+                print(f"  Skills tables found: {len(result.skills_tables)}")
+                print(f"  Value index tables found: {len(result.value_tables)}")
+                
+                print("\n  Top candidates for user selection:")
+                for i, table in enumerate(result.selection_candidates[:10], 1):
+                    matched_by = ', '.join(table.matched_by) if table.matched_by else 'unknown'
+                    print(f"    {i}. {table.schema_name}.{table.table_name}")
+                    print(f"       Score: {table.score}, Matched by: [{matched_by}]")
+            else:
+                print(f"\n[AUTO-PROCEED - No user selection needed]")
+                print(f"  Merged candidates: {len(result.merged_candidates)}")
+            
+            print(f"\n[SUMMARY]")
+            print(f"  - Exact match found: {result.exact_match_found}")
+            print(f"  - Requires user selection: {result.requires_user_selection}")
+            print(f"  - Skills tables: {len(result.skills_tables)}")
+            print(f"  - Value tables: {len(result.value_tables)}")
+            print(f"  - Knowledge base tables: {len(result.knowledge_base_tables)}")
+            print(f"  - Merged candidates: {len(result.merged_candidates)}")
+            print(f"  - Selection candidates: {len(result.selection_candidates)}")
         
     except Exception as e:
         print(f"[ERROR] Three-pronged discovery failed: {e}")

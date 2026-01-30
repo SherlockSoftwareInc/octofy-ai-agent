@@ -441,3 +441,8 @@ class ThreeProngedResult(BaseModel):
     value_tables: List[RankedTable] = []
     knowledge_base_tables: List[RankedTable] = []
     merged_candidates: List[RankedTable] = []
+    # New fields for enhanced discovery flow
+    exact_match_found: bool = False
+    exact_match_query: Optional[Dict[str, Any]] = None  # Contains: question, sql, tables, score
+    requires_user_selection: bool = False
+    selection_candidates: List[RankedTable] = []  # Top N candidates for user to choose from
