@@ -53,6 +53,7 @@ milvus_data/
 .flaskenv
 secrets.json
 myenv/
+config/agent_settings.json
 
 ### --- Docker --- ###
 # Ignore local data persistence for Docker containers
