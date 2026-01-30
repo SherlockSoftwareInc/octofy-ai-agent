@@ -14,7 +14,7 @@ import type { ToastType } from './components/Toast';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { Sidebar } from './components/Sidebar/Sidebar';
 import { ObjectTypeLabel } from './components/ObjectTypeLabel';
-import type { Conversation, ChatMessage, AnalysisContext } from './types/conversation';
+import type { Conversation, ChatMessage } from './types/conversation';
 import { InsightsPanel } from './components/InsightsPanel';
 import { RefinementSuggestions } from './components/RefinementSuggestions';
 import { DataProfileCard } from './components/DataProfileCard';
@@ -333,22 +333,22 @@ function App() {
           return { ...conv, messages: updatedMessages };
         }
 
-        // Calculate analysis context
-        let analysisContext: AnalysisContext | undefined;
-        if (result.data_profile || result.insights) {
-          analysisContext = {
-            data_profile: result.data_profile,
-            insights: result.insights || [],
-            refinement_history: msgToUpdate.analysisContext?.refinement_history || [],
-            suggested_refinements: result.suggested_refinements || []
-          };
-        }
+        // Calculate analysis context - DISABLED: Now on-demand via UI buttons
+        // let analysisContext: AnalysisContext | undefined;
+        // if (result.data_profile || result.insights) {
+        //   analysisContext = {
+        //     data_profile: result.data_profile,
+        //     insights: result.insights || [],
+        //     refinement_history: msgToUpdate.analysisContext?.refinement_history || [],
+        //     suggested_refinements: result.suggested_refinements || []
+        //   };
+        // }
 
         const updatedMessages = messages.map(msg =>
           msg.id === messageId ? {
             ...msg,
             executionResult: result,
-            analysisContext: analysisContext
+            // analysisContext: analysisContext  // Removed: now populated on-demand
           } : msg
         );
 
@@ -435,22 +435,22 @@ function App() {
           return { ...conv, messages: updatedMessages };
         }
 
-        // Calculate analysis context
-        let analysisContext: AnalysisContext | undefined;
-        if (result.data_profile || result.insights) {
-          analysisContext = {
-            data_profile: result.data_profile,
-            insights: result.insights || [],
-            refinement_history: msgToUpdate.analysisContext?.refinement_history || [],
-            suggested_refinements: []
-          };
-        }
+        // Calculate analysis context - DISABLED: Now on-demand via UI buttons
+        // let analysisContext: AnalysisContext | undefined;
+        // if (result.data_profile || result.insights) {
+        //   analysisContext = {
+        //     data_profile: result.data_profile,
+        //     insights: result.insights || [],
+        //     refinement_history: msgToUpdate.analysisContext?.refinement_history || [],
+        //     suggested_refinements: []
+        //   };
+        // }
 
         const updatedMessages = messages.map(msg =>
           msg.id === messageId ? {
             ...msg,
             sqlExecutionResult: result,
-            analysisContext: analysisContext
+            // analysisContext: analysisContext  // Removed: now populated on-demand
           } : msg
         );
 
@@ -691,22 +691,22 @@ function App() {
           chartTypeOverride: chartTypeOverride
         };
 
-        // Prepare initial analysis context if available in the result
+        // Prepare initial analysis context if available in the result - DISABLED: Now on-demand
         // This avoids flickering before handleExecutionComplete runs
-        if (result.data_profile || result.insights) {
-          aiMessage.analysisContext = {
-            data_profile: result.data_profile,
-            insights: result.insights || [],
-            refinement_history: lastCodeExecutionMessage.analysisContext?.refinement_history || [],
-            suggested_refinements: result.suggested_refinements || []
-          };
-        }
+        // if (result.data_profile || result.insights) {
+        //   aiMessage.analysisContext = {
+        //     data_profile: result.data_profile,
+        //     insights: result.insights || [],
+        //     refinement_history: lastCodeExecutionMessage.analysisContext?.refinement_history || [],
+        //     suggested_refinements: result.suggested_refinements || []
+        //   };
+        // }
 
         // Add both user message and new AI message to the chat
         const updatedMessages = [...chatHistory, userMessage, aiMessage];
         updateConversation(conversationId, { messages: updatedMessages });
 
-        // Fetch summary and analysis context for new visualization (non-blocking)
+        // Fetch summary for new visualization (non-blocking) - analysis is now on-demand
         await handleExecutionComplete(aiMessage.id, result, {
           sourceQuery: lastCodeExecutionMessage.sourceQuery || lastCodeExecutionMessage.content,
           chartTypeOverride: chartTypeOverride
@@ -774,21 +774,21 @@ function App() {
           chartTypeOverride: chartTypeOverride
         };
 
-        // Prepare initial analysis context if available in the result
-        if (result.data_profile || result.insights) {
-          aiMessage.analysisContext = {
-            data_profile: result.data_profile,
-            insights: result.insights || [],
-            refinement_history: lastSQLMessage.analysisContext?.refinement_history || [],
-            suggested_refinements: []
-          };
-        }
+        // Prepare initial analysis context if available in the result - DISABLED: Now on-demand
+        // if (result.data_profile || result.insights) {
+        //   aiMessage.analysisContext = {
+        //     data_profile: result.data_profile,
+        //     insights: result.insights || [],
+        //     refinement_history: lastSQLMessage.analysisContext?.refinement_history || [],
+        //     suggested_refinements: []
+        //   };
+        // }
 
         // Add both user message and new AI message to the chat
         const updatedMessages = [...chatHistory, userMessage, aiMessage];
         updateConversation(conversationId, { messages: updatedMessages });
 
-        // Fetch summary for new visualization (non-blocking)
+        // Fetch summary for new visualization (non-blocking) - analysis is now on-demand
         await handleSQLExecutionComplete(aiMessage.id, result, {
           sourceQuery: lastSQLMessage.sourceQuery || lastSQLMessage.content,
           chartTypeOverride: chartTypeOverride
@@ -856,21 +856,21 @@ function App() {
           chartTypeOverride: chartTypeOverride
         };
 
-        // Prepare initial analysis context if available in the result
-        if (result.data_profile || result.insights) {
-          aiMessage.analysisContext = {
-            data_profile: result.data_profile,
-            insights: result.insights || [],
-            refinement_history: [],
-            suggested_refinements: []
-          };
-        }
+        // Prepare initial analysis context if available in the result - DISABLED: Now on-demand
+        // if (result.data_profile || result.insights) {
+        //   aiMessage.analysisContext = {
+        //     data_profile: result.data_profile,
+        //     insights: result.insights || [],
+        //     refinement_history: [],
+        //     suggested_refinements: []
+        //   };
+        // }
 
         // Add both user message and new AI message to the chat
         const updatedMessages = [...chatHistory, userMessage, aiMessage];
         updateConversation(conversationId, { messages: updatedMessages });
 
-        // Fetch summary for visualization (non-blocking)
+        // Fetch summary for visualization (non-blocking) - analysis is now on-demand
         await handleSQLExecutionComplete(aiMessage.id, result, {
           sourceQuery: lastGeneratedSQLMessage.sourceQuery || lastGeneratedSQLMessage.content,
           chartTypeOverride: chartTypeOverride

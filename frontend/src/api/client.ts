@@ -453,22 +453,24 @@ export const api = {
         return finalResult;
     },
 
-    executePython: async (code: string, context?: any, chartTypeOverride?: ChartTypeOption): Promise<ExecutePythonResponse> => {
+    executePython: async (code: string, context?: any, chartTypeOverride?: ChartTypeOption, enableProfiling: boolean = false): Promise<ExecutePythonResponse> => {
         const response = await axios.post(`${API_BASE_URL}/execute-python`, { 
             code, 
             context,
-            chart_type_override: chartTypeOverride 
+            chart_type_override: chartTypeOverride,
+            enable_profiling: enableProfiling
         });
         return response.data;
     },
 
-    executeSQL: async (sql: string, context?: any, chartTypeOverride?: ChartTypeOption, timeoutSeconds?: number, maxRows?: number): Promise<ExecuteSQLResponse> => {
+    executeSQL: async (sql: string, context?: any, chartTypeOverride?: ChartTypeOption, timeoutSeconds?: number, maxRows?: number, enableProfiling: boolean = false): Promise<ExecuteSQLResponse> => {
         const response = await axios.post(`${API_BASE_URL}/execute-sql`, { 
             sql, 
             context,
             chart_type_override: chartTypeOverride,
             timeout_seconds: timeoutSeconds,
-            max_rows: maxRows
+            max_rows: maxRows,
+            enable_profiling: enableProfiling
         });
         return response.data;
     },
