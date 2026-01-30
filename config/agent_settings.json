@@ -11,14 +11,14 @@
       "shipping"
     ],
     "db_type": "mssql",
-    "server": "localhost",
+    "server": "host.docker.internal",
     "database_name": "northwind",
-    "connection_string_encrypted": "gAAAAABpem6i77epXpRvLuWhShtIvhG4NLW5FJm5Mrxp1wnqyDmSvPFUjKKd3KTXSA4-ubbPMpGngAkDj7hMkPA4AD4g6Vh322dL5wO5-UBG5aSusH3H2VhxYqVgGqd6rOsHdwOE7hb8P-7E3y-hp8w5v6kmkbPjcXELPW6JRI3AJ_Tyz5lWvjMp7ScK3TbOVCpnzgfzqBtEd-RboLea03A6GoqqUhk6ZGBJCwGOLbqxhItoEI7zafA_0jWQM9rVg7Y9mxmIYA6z6ZTTPTqeTg8OzKKIj3AfbQ==",
+    "connection_string_encrypted": "gAAAAABpe-xEQC_gasUxUFz6XgWA_qCkC5LJzRDUIkLwlHye_7N8X3eQiqVc9wvyZr1MIgmstmMHOvAsq3bktMJcNIH6c_V3O2jOpzHKX-cJthLI-_czFTdO6hOF2SXHj6-XxpbobNck7oCbXtXesY1yo35WMgVaYbD4T0EcjY9yTMIw8nupMpTeEfxBYnnpC6l17FTPk7mBJ2Q28waC2EBAWpulHUWrAvj9rL8FMYi6A4-FcsYQNNtnKbJ2GDEMmIBV3frruhxxKJOjzawuZ_0xs8ErX3eUwQ==",
     "driver": "ODBC Driver 17 for SQL Server",
     "auth_type": "sql",
     "username": "sql_agent",
     "trust_server_certificate": true,
-    "python_connection_string_encrypted": "gAAAAABpem6iZY8dDbSOFq9JzpbNx2E29c7VqmXXp8JsIOCHIivucEePLoAIiUK7FFIZYThIa9WIuvFIwp8fb-rwyjWznPC5hHtwsRop0YFtBHnr4ANlL-15_tt_ZrSUMPFvMHbpgj97m1vxGlj-eAqC8UdtPQl_Xc6Z1ZqL1dZwuL4Y7Uw5aBwDiEhj0QNlppIra4qLwE3tCKJRv4vQM9cp-WJC0C2h7iUTKTm6FSe8et0Xy7E4TgiKsi2p_YjFIbKFcV0wFd89"
+    "python_connection_string_encrypted": "gAAAAABpe-xESfVqsTE2jjnRI2DILNufLHNea8_ygsWVPL8tWXRiB6eVjNqFdKFqinMytr6hrRj5vgeImXYOLzZpVrvT6SYbwzx9qIsNCLCXoXt16BQqGW8V1wmHN_ulkFCyY7FJckiobEe4Iz9-emTDIDLbSlInQVUPLamVXx1uMXc5HWVhAc0orVfCsq58moDtc6MS8b0bg1Vgg88u32tHjIYU5zRkZOfF19HbWFmUVXTC2FtNIM_LI1PDuYLkXGauYXeVLMMvog6cv-EdgGaitNOkLKy4TQ=="
   },
   "llm_config": {
     "llm_model": "deepseek-chat",
