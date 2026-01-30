@@ -1,9 +1,12 @@
 import React, { useMemo, useState } from 'react';
-import { Copy, Check, Loader2, Gift, Play, CheckCircle } from 'lucide-react';
+import { Copy, Check, Loader2, Gift, Play, CheckCircle, Sparkles, BarChart3 } from 'lucide-react';
 import { Toast } from '../Toast';
 import type { ToastType } from '../Toast';
 import { api, type FewShotItem, type ExecutePythonResponse, type ExecuteSQLResponse, type ExecutePythonResult, type StructuredTableData, type ChartRecommendation, type ChartMetadata, type ChartTypeOption } from '../../api/client';
 import { DataTable } from '../DataTable/DataTable';
+import { InsightsPanel } from '../InsightsPanel';
+import { DataProfileCard } from '../DataProfileCard';
+import type { AnalysisContext } from '../../types/conversation';
 
 
 
@@ -211,6 +214,13 @@ export const SQLResultDisplay: React.FC<SQLResultDisplayProps> = ({
     const [isSaving, setIsSaving] = useState(false);
     const [isRunning, setIsRunning] = useState(false);
     const [isSQLRunning, setIsSQLRunning] = useState(false);
+    const [analysisData, setAnalysisData] = useState<AnalysisContext | null>(null);
+    const [aiSummaryLoading, setAISummaryLoading] = useState(false);
+    const [datasetAnalysisLoading, setDatasetAnalysisLoading] = useState(false);
+    const [dataProfileLoading, setDataProfileLoading] = useState(false);
+    const [showAISummary, setShowAISummary] = useState(false);
+    const [showFullAnalysis, setShowFullAnalysis] = useState(false);
+    const [showDataProfile, setShowDataProfile] = useState(false);
 
 
 
@@ -326,10 +336,12 @@ export const SQLResultDisplay: React.FC<SQLResultDisplayProps> = ({
         setIsRunning(true);
         try {
             // Pass chart type override and source query to the execution API
+            // enable_profiling is FALSE by default (on-demand only)
             const result = await api.executePython(
                 sql,
                 sourceQuestion ? { user_query: sourceQuestion } : undefined,
-                chartTypeOverride
+                chartTypeOverride,
+                false // explicitly disable automatic profiling
             );
 
             // Call parent callback to persist the result
@@ -356,13 +368,17 @@ export const SQLResultDisplay: React.FC<SQLResultDisplayProps> = ({
         if (!sql) return;
         setIsSQLRunning(true);
         try {
+            // enable_profiling is FALSE by default (on-demand only)
             const result = await api.executeSQL(
                 sql,
                 sourceQuestion ? {
                     user_query: sourceQuestion,
                     schema_context: 'Generated from SQL generation pipeline'
                 } : undefined,
-                chartTypeOverride
+                chartTypeOverride,
+                undefined, // timeout
+                undefined, // max rows
+                false // explicitly disable automatic profiling
             );
 
             // Call parent callback to persist the result
@@ -622,11 +638,165 @@ export const SQLResultDisplay: React.FC<SQLResultDisplayProps> = ({
                                 </div>
                             )}
                             {executionResult.results && executionResult.results.length > 0 && (
-                                <ExecutionResultViewer
-                                    results={executionResult.results}
-                                    recommendation={executionResult.recommendation}
-                                    pythonSummary={pythonSummary}
-                                />
+                                <>
+                                    <ExecutionResultViewer
+                                        results={executionResult.results}
+                                        recommendation={executionResult.recommendation}
+                                        pythonSummary={pythonSummary}
+                                    />
+                                    {/* On-Demand Analysis Buttons */}
+                                    <div className="flex items-center gap-2 mt-4 mb-2">
+                                        <button
+                                            onClick={async () => {
+                                                if (showAISummary && analysisData?.insights && analysisData.insights.length > 0) return;
+                                                setAISummaryLoading(true);
+                                                try {
+                                                    // Use summarizeResults API for AI insights only
+                                                    const summaryResult = await api.summarizeResults(
+                                                        sourceQuestion || allUserMessages.join(' '),
+                                                        executionResult?.output || executionResult?.results,
+                                                        chartTypeOverride
+                                                    );
+                                                    // Convert summary to insights format
+                                                    const insights = summaryResult.summary ? [
+                                                        {
+                                                            insight_type: 'recommendation' as const,
+                                                            title: 'AI Summary',
+                                                            description: summaryResult.summary,
+                                                            severity: 'info' as const,
+                                                            related_columns: [],
+                                                            confidence: 1.0
+                                                        }
+                                                    ] : [];
+                                                    setAnalysisData({
+                                                        data_profile: undefined,
+                                                        insights: insights,
+                                                        refinement_history: [],
+                                                        suggested_refinements: []
+                                                    });
+                                                    setShowAISummary(true);
+                                                    setShowFullAnalysis(false);
+                                                    setShowDataProfile(false);
+                                                } catch (err) {
+                                                    console.error('Failed to fetch AI summary:', err);
+                                                    setToast({ message: 'Failed to generate AI summary', type: 'error' });
+                                                } finally {
+                                                    setAISummaryLoading(false);
+                                                }
+                                            }}
+                                            disabled={aiSummaryLoading || (showAISummary && analysisData?.insights && analysisData.insights.length > 0) || false}
+                                            className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md transition-all duration-200 ${
+                                                (showAISummary && analysisData?.insights && analysisData.insights.length > 0)
+                                                    ? 'bg-green-600/20 text-green-300 border border-green-500/30 cursor-default'
+                                                    : aiSummaryLoading
+                                                    ? 'bg-blue-600/20 text-blue-300 border border-blue-500/30 cursor-wait'
+                                                    : 'bg-blue-600/20 text-blue-300 border border-blue-500/30 hover:bg-blue-500/30 cursor-pointer'
+                                            } disabled:opacity-70`}
+                                            title={(showAISummary && analysisData?.insights && analysisData.insights.length > 0) ? 'AI Summary generated' : aiSummaryLoading ? 'Generating AI insights...' : 'Generate AI-powered insights about patterns and trends'}
+                                        >
+                                            {aiSummaryLoading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Sparkles className="w-3.5 h-3.5" />}
+                                            <span>{(showAISummary && analysisData?.insights && analysisData.insights.length > 0) ? 'AI Summary ✓' : 'AI Summary'}</span>
+                                        </button>
+                                        <button
+                                            onClick={async () => {
+                                                if (showFullAnalysis && analysisData?.insights && analysisData?.data_profile) return;
+                                                setDatasetAnalysisLoading(true);
+                                                try {
+                                                    const result = await api.executePython(
+                                                        sql,
+                                                        sourceQuestion ? { user_query: sourceQuestion } : undefined,
+                                                        chartTypeOverride,
+                                                        true // enable profiling for on-demand
+                                                    );
+                                                    if (result.success && (result.data_profile || result.insights)) {
+                                                        setAnalysisData({
+                                                            data_profile: result.data_profile,
+                                                            insights: result.insights || [],
+                                                            refinement_history: [],
+                                                            suggested_refinements: result.suggested_refinements || []
+                                                        });
+                                                        setShowFullAnalysis(true);
+                                                        setShowAISummary(false);
+                                                        setShowDataProfile(false);
+                                                    }
+                                                } catch (err) {
+                                                    console.error('Failed to fetch dataset analysis:', err);
+                                                    setToast({ message: 'Failed to generate dataset analysis', type: 'error' });
+                                                } finally {
+                                                    setDatasetAnalysisLoading(false);
+                                                }
+                                            }}
+                                            disabled={datasetAnalysisLoading || (showFullAnalysis && !!analysisData?.insights && !!analysisData?.data_profile)}
+                                            className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md transition-all duration-200 ${
+                                                (showFullAnalysis && analysisData?.insights && analysisData?.data_profile)
+                                                    ? 'bg-green-600/20 text-green-300 border border-green-500/30 cursor-default'
+                                                    : datasetAnalysisLoading
+                                                    ? 'bg-indigo-600/20 text-indigo-300 border border-indigo-500/30 cursor-wait'
+                                                    : 'bg-indigo-600/20 text-indigo-300 border border-indigo-500/30 hover:bg-indigo-500/30 cursor-pointer'
+                                            } disabled:opacity-70`}
+                                            title={(showFullAnalysis && analysisData?.insights && analysisData?.data_profile) ? 'Data set analysis generated' : datasetAnalysisLoading ? 'Analyzing dataset...' : 'Generate complete dataset analysis with insights and profiling'}
+                                        >
+                                            {datasetAnalysisLoading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <BarChart3 className="w-3.5 h-3.5" />}
+                                            <span>{(showFullAnalysis && analysisData?.insights && analysisData?.data_profile) ? 'Data set analysis ✓' : 'Data set analysis'}</span>
+                                        </button>
+                                        <button
+                                            onClick={async () => {
+                                                if (showDataProfile && analysisData?.data_profile) return;
+                                                setDataProfileLoading(true);
+                                                try {
+                                                    const result = await api.executePython(
+                                                        sql,
+                                                        sourceQuestion ? { user_query: sourceQuestion } : undefined,
+                                                        chartTypeOverride,
+                                                        true // enable profiling for on-demand
+                                                    );
+                                                    if (result.success && (result.data_profile || result.insights)) {
+                                                        setAnalysisData({
+                                                            data_profile: result.data_profile,
+                                                            insights: result.insights || [],
+                                                            refinement_history: [],
+                                                            suggested_refinements: result.suggested_refinements || []
+                                                        });
+                                                        setShowDataProfile(true);
+                                                        setShowAISummary(false);
+                                                        setShowFullAnalysis(false);
+                                                    }
+                                                } catch (err) {
+                                                    console.error('Failed to fetch data profile:', err);
+                                                    setToast({ message: 'Failed to generate data profile', type: 'error' });
+                                                } finally {
+                                                    setDataProfileLoading(false);
+                                                }
+                                            }}
+                                            disabled={dataProfileLoading || (showDataProfile && !!analysisData?.data_profile)}
+                                            className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md transition-all duration-200 ${
+                                                (showDataProfile && analysisData?.data_profile)
+                                                    ? 'bg-green-600/20 text-green-300 border border-green-500/30 cursor-default'
+                                                    : dataProfileLoading
+                                                    ? 'bg-purple-600/20 text-purple-300 border border-purple-500/30 cursor-wait'
+                                                    : 'bg-purple-600/20 text-purple-300 border border-purple-500/30 hover:bg-purple-500/30 cursor-pointer'
+                                            } disabled:opacity-70`}
+                                            title={(showDataProfile && analysisData?.data_profile) ? 'Data Profile generated' : dataProfileLoading ? 'Analyzing dataset...' : 'Show statistical profiling and data distribution'}
+                                        >
+                                            {dataProfileLoading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <BarChart3 className="w-3.5 h-3.5" />}
+                                            <span>{(showDataProfile && analysisData?.data_profile) ? 'Data Profile ✓' : 'Data Profile'}</span>
+                                        </button>
+                                    </div>
+                                    {/* Analysis Results */}
+                                    {analysisData && (
+                                        <div className="mt-4 space-y-3">
+                                            {showAISummary && analysisData.insights && analysisData.insights.length > 0 && (
+                                                <InsightsPanel insights={analysisData.insights} />
+                                            )}
+                                            {showFullAnalysis && analysisData.insights && analysisData.insights.length > 0 && (
+                                                <InsightsPanel insights={analysisData.insights} />
+                                            )}
+                                            {showDataProfile && analysisData.data_profile && (
+                                                <DataProfileCard profile={analysisData.data_profile} />
+                                            )}
+                                        </div>
+                                    )}
+                                </>
                             )}
                         </div>
                     </div>
@@ -662,11 +832,175 @@ export const SQLResultDisplay: React.FC<SQLResultDisplayProps> = ({
                             )}
 
                             {sqlExecutionResult.results && sqlExecutionResult.results.length > 0 && (
-                                <ExecutionResultViewer
-                                    results={sqlExecutionResult.results}
-                                    recommendation={sqlExecutionResult.recommendation}
-                                    pythonSummary={sqlSummary}
-                                />
+                                <>
+                                    <ExecutionResultViewer
+                                        results={sqlExecutionResult.results}
+                                        recommendation={sqlExecutionResult.recommendation}
+                                        pythonSummary={sqlSummary}
+                                    />
+                                    {/* On-Demand Analysis Buttons */}
+                                    <div className="flex items-center gap-2 mt-4 mb-2">
+                                        <button
+                                            onClick={async () => {
+                                                if (showAISummary && analysisData?.insights && analysisData.insights.length > 0) return;
+                                                setAISummaryLoading(true);
+                                                try {
+                                                    // Use summarizeResults API for AI insights only
+                                                    const summaryResult = await api.summarizeResults(
+                                                        sourceQuestion || allUserMessages.join(' '),
+                                                        sqlExecutionResult?.output || sqlExecutionResult?.results,
+                                                        chartTypeOverride
+                                                    );
+                                                    // Convert summary to insights format
+                                                    const insights = summaryResult.summary ? [
+                                                        {
+                                                            insight_type: 'recommendation' as const,
+                                                            title: 'AI Summary',
+                                                            description: summaryResult.summary,
+                                                            severity: 'info' as const,
+                                                            related_columns: [],
+                                                            confidence: 1.0
+                                                        }
+                                                    ] : [];
+                                                    setAnalysisData({
+                                                        data_profile: undefined,
+                                                        insights: insights,
+                                                        refinement_history: [],
+                                                        suggested_refinements: []
+                                                    });
+                                                    setShowAISummary(true);
+                                                    setShowFullAnalysis(false);
+                                                    setShowDataProfile(false);
+                                                } catch (err) {
+                                                    console.error('Failed to fetch AI summary:', err);
+                                                    setToast({ message: 'Failed to generate AI summary', type: 'error' });
+                                                } finally {
+                                                    setAISummaryLoading(false);
+                                                }
+                                            }}
+                                            disabled={aiSummaryLoading || (showAISummary && analysisData?.insights && analysisData.insights.length > 0) || false}
+                                            className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md transition-all duration-200 ${
+                                                (showAISummary && analysisData?.insights && analysisData.insights.length > 0)
+                                                    ? 'bg-green-600/20 text-green-300 border border-green-500/30 cursor-default'
+                                                    : aiSummaryLoading
+                                                    ? 'bg-blue-600/20 text-blue-300 border border-blue-500/30 cursor-wait'
+                                                    : 'bg-blue-600/20 text-blue-300 border border-blue-500/30 hover:bg-blue-500/30 cursor-pointer'
+                                            } disabled:opacity-70`}
+                                            title={(showAISummary && analysisData?.insights && analysisData.insights.length > 0) ? 'AI Summary generated' : aiSummaryLoading ? 'Generating AI insights...' : 'Generate AI-powered insights about patterns and trends'}
+                                        >
+                                            {aiSummaryLoading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Sparkles className="w-3.5 h-3.5" />}
+                                            <span>{(showAISummary && analysisData?.insights && analysisData.insights.length > 0) ? 'AI Summary ✓' : 'AI Summary'}</span>
+                                        </button>
+                                        <button
+                                            onClick={async () => {
+                                                if (showFullAnalysis && analysisData?.insights && analysisData?.data_profile) return;
+                                                setDatasetAnalysisLoading(true);
+                                                try {
+                                                    const result = await api.executeSQL(
+                                                        sql,
+                                                        sourceQuestion ? {
+                                                            user_query: sourceQuestion,
+                                                            schema_context: 'Generated from SQL generation pipeline'
+                                                        } : undefined,
+                                                        chartTypeOverride,
+                                                        undefined,
+                                                        undefined,
+                                                        true // enable profiling for on-demand
+                                                    );
+                                                    if (result.success && (result.data_profile || result.insights)) {
+                                                        setAnalysisData({
+                                                            data_profile: result.data_profile,
+                                                            insights: result.insights || [],
+                                                            refinement_history: [],
+                                                            suggested_refinements: []
+                                                        });
+                                                        setShowFullAnalysis(true);
+                                                        setShowAISummary(false);
+                                                        setShowDataProfile(false);
+                                                    }
+                                                } catch (err) {
+                                                    console.error('Failed to fetch dataset analysis:', err);
+                                                    setToast({ message: 'Failed to generate dataset analysis', type: 'error' });
+                                                } finally {
+                                                    setDatasetAnalysisLoading(false);
+                                                }
+                                            }}
+                                            disabled={datasetAnalysisLoading || (showFullAnalysis && !!analysisData?.insights && !!analysisData?.data_profile)}
+                                            className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md transition-all duration-200 ${
+                                                (showFullAnalysis && analysisData?.insights && analysisData?.data_profile)
+                                                    ? 'bg-green-600/20 text-green-300 border border-green-500/30 cursor-default'
+                                                    : datasetAnalysisLoading
+                                                    ? 'bg-indigo-600/20 text-indigo-300 border border-indigo-500/30 cursor-wait'
+                                                    : 'bg-indigo-600/20 text-indigo-300 border border-indigo-500/30 hover:bg-indigo-500/30 cursor-pointer'
+                                            } disabled:opacity-70`}
+                                            title={(showFullAnalysis && analysisData?.insights && analysisData?.data_profile) ? 'Data set analysis generated' : datasetAnalysisLoading ? 'Analyzing dataset...' : 'Generate complete dataset analysis with insights and profiling'}
+                                        >
+                                            {datasetAnalysisLoading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <BarChart3 className="w-3.5 h-3.5" />}
+                                            <span>{(showFullAnalysis && analysisData?.insights && analysisData?.data_profile) ? 'Data set analysis ✓' : 'Data set analysis'}</span>
+                                        </button>
+                                        <button
+                                            onClick={async () => {
+                                                if (showDataProfile && analysisData?.data_profile) return;
+                                                setDataProfileLoading(true);
+                                                try {
+                                                    const result = await api.executeSQL(
+                                                        sql,
+                                                        sourceQuestion ? {
+                                                            user_query: sourceQuestion,
+                                                            schema_context: 'Generated from SQL generation pipeline'
+                                                        } : undefined,
+                                                        chartTypeOverride,
+                                                        undefined,
+                                                        undefined,
+                                                        true // enable profiling for on-demand
+                                                    );
+                                                    if (result.success && (result.data_profile || result.insights)) {
+                                                        setAnalysisData({
+                                                            data_profile: result.data_profile,
+                                                            insights: result.insights || [],
+                                                            refinement_history: [],
+                                                            suggested_refinements: []
+                                                        });
+                                                        setShowDataProfile(true);
+                                                        setShowAISummary(false);
+                                                        setShowFullAnalysis(false);
+                                                    }
+                                                } catch (err) {
+                                                    console.error('Failed to fetch data profile:', err);
+                                                    setToast({ message: 'Failed to generate data profile', type: 'error' });
+                                                } finally {
+                                                    setDataProfileLoading(false);
+                                                }
+                                            }}
+                                            disabled={dataProfileLoading || (showDataProfile && !!analysisData?.data_profile)}
+                                            className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md transition-all duration-200 ${
+                                                (showDataProfile && analysisData?.data_profile)
+                                                    ? 'bg-green-600/20 text-green-300 border border-green-500/30 cursor-default'
+                                                    : dataProfileLoading
+                                                    ? 'bg-purple-600/20 text-purple-300 border border-purple-500/30 cursor-wait'
+                                                    : 'bg-purple-600/20 text-purple-300 border border-purple-500/30 hover:bg-purple-500/30 cursor-pointer'
+                                            } disabled:opacity-70`}
+                                            title={(showDataProfile && analysisData?.data_profile) ? 'Data Profile generated' : dataProfileLoading ? 'Analyzing dataset...' : 'Show statistical profiling and data distribution'}
+                                        >
+                                            {dataProfileLoading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <BarChart3 className="w-3.5 h-3.5" />}
+                                            <span>{(showDataProfile && analysisData?.data_profile) ? 'Data Profile ✓' : 'Data Profile'}</span>
+                                        </button>
+                                    </div>
+                                    {/* Analysis Results */}
+                                    {analysisData && (
+                                        <div className="mt-4 space-y-3">
+                                            {showAISummary && analysisData.insights && analysisData.insights.length > 0 && (
+                                                <InsightsPanel insights={analysisData.insights} />
+                                            )}
+                                            {showFullAnalysis && analysisData.insights && analysisData.insights.length > 0 && (
+                                                <InsightsPanel insights={analysisData.insights} />
+                                            )}
+                                            {showDataProfile && analysisData.data_profile && (
+                                                <DataProfileCard profile={analysisData.data_profile} />
+                                            )}
+                                        </div>
+                                    )}
+                                </>
                             )}
                         </div>
                     </div>
