@@ -248,13 +248,41 @@ def execute_python_code(
                 # Only generate chart_metadata if data is chartable
                 if category in ["2d_data", "3d_data"]:
                     try:
-                        num_cols = df_head.select_dtypes(include=['number']).columns.tolist()
-                        cat_cols = df_head.select_dtypes(include=['object', 'category', 'string']).columns.tolist()
+                        # Use consistent column classification logic (same as visualization_service.py)
+                        datetime_cols = []
+                        numeric_cols = []
+                        categorical_cols = []
                         
-                        if len(cat_cols) >= 1 and len(num_cols) >= 1:
+                        for col in df_head.columns:
+                            # Check datetime first
+                            if pd.api.types.is_datetime64_any_dtype(df_head[col]):
+                                datetime_cols.append(col)
+                            # Check numeric
+                            elif pd.api.types.is_numeric_dtype(df_head[col]):
+                                numeric_cols.append(col)
+                            else:
+                                categorical_cols.append(col)
+                        
+                        # Check if string columns might be dates
+                        for col in categorical_cols[:]:
+                            try:
+                                sample = df_head[col].dropna().head(10)
+                                if len(sample) > 0:
+                                    pd.to_datetime(sample)
+                                    datetime_cols.append(col)
+                                    categorical_cols.remove(col)
+                            except:
+                                pass
+                        
+                        # Bar chart: categorical X, numeric Y
+                        if len(categorical_cols) >= 1 and len(numeric_cols) >= 1:
                             chart_metadata["type"] = "bar"
-                            chart_metadata["x_axis"] = cat_cols[0]
-                            chart_metadata["y_axes"] = num_cols
+                            chart_metadata["x_axis"] = categorical_cols[0]
+                            chart_metadata["y_axes"] = numeric_cols[:3]
+                        elif len(datetime_cols) >= 1 and len(numeric_cols) >= 1:
+                            chart_metadata["type"] = "line"
+                            chart_metadata["x_axis"] = datetime_cols[0]
+                            chart_metadata["y_axes"] = numeric_cols[:3]
                     except Exception as chart_err:
                         logger.warning(f"Failed to generate chart metadata: {chart_err}")
 
@@ -316,12 +344,39 @@ def execute_python_code(
                     
                     if category in ["2d_data", "3d_data"]:
                         try:
-                            num_cols = df_head.select_dtypes(include=['number']).columns.tolist()
-                            cat_cols = df_head.select_dtypes(include=['object', 'category', 'string']).columns.tolist()
-                            if len(cat_cols) >= 1 and len(num_cols) >= 1:
+                            # Use consistent column classification logic (same as visualization_service.py)
+                            datetime_cols = []
+                            numeric_cols = []
+                            categorical_cols = []
+                            
+                            for col in df_head.columns:
+                                if pd.api.types.is_datetime64_any_dtype(df_head[col]):
+                                    datetime_cols.append(col)
+                                elif pd.api.types.is_numeric_dtype(df_head[col]):
+                                    numeric_cols.append(col)
+                                else:
+                                    categorical_cols.append(col)
+                            
+                            # Check if string columns might be dates
+                            for col in categorical_cols[:]:
+                                try:
+                                    sample = df_head[col].dropna().head(10)
+                                    if len(sample) > 0:
+                                        pd.to_datetime(sample)
+                                        datetime_cols.append(col)
+                                        categorical_cols.remove(col)
+                                except:
+                                    pass
+                            
+                            # Bar chart: categorical X, numeric Y
+                            if len(categorical_cols) >= 1 and len(numeric_cols) >= 1:
                                 chart_metadata["type"] = "bar"
-                                chart_metadata["x_axis"] = cat_cols[0]
-                                chart_metadata["y_axes"] = num_cols
+                                chart_metadata["x_axis"] = categorical_cols[0]
+                                chart_metadata["y_axes"] = numeric_cols[:3]
+                            elif len(datetime_cols) >= 1 and len(numeric_cols) >= 1:
+                                chart_metadata["type"] = "line"
+                                chart_metadata["x_axis"] = datetime_cols[0]
+                                chart_metadata["y_axes"] = numeric_cols[:3]
                         except Exception:
                             pass
 

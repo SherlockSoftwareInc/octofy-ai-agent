@@ -52,7 +52,6 @@ class VisualizationService:
             response_text = self.llm_service.chat(prompt, temperature=0.1)
             
             # 4. Parse Response
-            # 4. Parse Response
             recommendation = self._parse_llm_response(response_text)
             
             # 5. Validate Recommendation
@@ -61,6 +60,9 @@ class VisualizationService:
                      logger.warning("LLM recommended columns that do not exist in the DataFrame. Falling back to None.")
                      # We could try to heuristics here, but for now just fail gracefully to avoid "empty chart"
                      return None
+                
+                # 6. Fix axis assignment to ensure consistent conventions
+                recommendation = self._fix_axis_assignment(df, recommendation)
 
             return recommendation
 
@@ -68,6 +70,65 @@ class VisualizationService:
             logger.error(f"Error getting chart recommendation: {e}")
             logger.error(traceback.format_exc())
             return None
+    
+    def _fix_axis_assignment(self, df: pd.DataFrame, rec: ChartRecommendation) -> ChartRecommendation:
+        """
+        Ensures axis assignment follows consistent conventions:
+        - Bar/Column/Stacked charts: categorical X, numeric Y
+        - Line/Area: datetime/categorical X, numeric Y
+        - Scatter: numeric X, numeric Y
+        - Pie/Treemap/Funnel: categorical X, numeric Y
+        """
+        chart_type = rec.chart_type
+        
+        # Chart types that need categorical X, numeric Y
+        categorical_x_charts = ['bar', 'column', 'stackedBar', 'stackedColumn', 'clusteredColumn', 'pie', 'treemap', 'funnel']
+        
+        if chart_type not in categorical_x_charts:
+            return rec  # Don't modify line, scatter, area, radar, etc.
+        
+        # Classify columns
+        numeric_cols = []
+        categorical_cols = []
+        
+        for col in df.columns:
+            if pd.api.types.is_numeric_dtype(df[col]):
+                numeric_cols.append(col)
+            else:
+                categorical_cols.append(col)
+        
+        # Check if x_axis is numeric when it should be categorical
+        x_is_numeric = rec.x_axis in numeric_cols
+        y_has_categorical = any(y in categorical_cols for y in (rec.y_axis or []))
+        
+        # If x_axis is numeric and y_axis has categorical, swap them
+        if x_is_numeric and y_has_categorical:
+            logger.info(f"Fixing axis assignment: swapping x_axis ({rec.x_axis}) with categorical y_axis")
+            # Find the first categorical column in y_axis
+            categorical_y = next((y for y in rec.y_axis if y in categorical_cols), None)
+            if categorical_y:
+                old_x = rec.x_axis
+                rec.x_axis = categorical_y
+                # Replace the categorical in y_axis with the old numeric x
+                rec.y_axis = [old_x if y == categorical_y else y for y in rec.y_axis]
+        
+        # If x_axis is numeric and there are categorical columns available, use categorical for X
+        elif x_is_numeric and categorical_cols:
+            logger.info(f"Fixing axis assignment: x_axis ({rec.x_axis}) is numeric, using categorical column instead")
+            old_x = rec.x_axis
+            rec.x_axis = categorical_cols[0]
+            # Make sure old_x is in y_axis if it's numeric
+            if old_x not in (rec.y_axis or []):
+                rec.y_axis = [old_x] + (rec.y_axis or [])
+        
+        # If y_axis has no numeric columns but there are numeric columns available
+        if rec.y_axis:
+            y_numerics = [y for y in rec.y_axis if y in numeric_cols]
+            if not y_numerics and numeric_cols:
+                logger.info(f"Fixing axis assignment: y_axis has no numeric columns, using available numeric columns")
+                rec.y_axis = [n for n in numeric_cols if n != rec.x_axis][:3]
+        
+        return rec
 
     def _profile_data(self, df: pd.DataFrame) -> Dict[str, Any]:
         """
@@ -130,10 +191,12 @@ User Question: "{user_query}"
    - 'funnel': Funnel chart for sequential stage analysis (e.g., conversion rates).
    - 'none': If no visualization is appropriate (e.g. text/table data only).
 
-3. Determine the X-Axis and Y-Axis columns.
-   - Bar/Line: X is usually categorical/time, Y is numeric.
-   - Scatter: X and Y are numeric.
-   - Pie: X is label, Y is value.
+3. Determine the X-Axis and Y-Axis columns using these STRICT conventions:
+   - **Bar/Column/StackedBar/StackedColumn/ClusteredColumn**: X-axis MUST be the categorical/label column, Y-axis MUST be the numeric value column(s).
+   - **Line/Area**: X-axis is time/date column (preferred) or categorical, Y-axis is numeric.
+   - **Scatter**: Both X and Y are numeric columns.
+   - **Pie/Treemap/Funnel**: X is the label/category column, Y is the single numeric value column.
+   - **AXIS RULE**: For bar-type charts, ALWAYS put the category/label column (e.g., ProductName, Country, Status) on X-axis and the numeric measure (e.g., TotalSales, Count, Revenue) on Y-axis.
    - **STRICT CONSTRAINT**: You MUST use columns EXACTLY as listed in "DATA PROFILE - Columns". Do NOT invent columns (e.g., if 'country' is not in the list, do not use it). If the desired column is missing, choose the best alternative or return "none".
 
 4. Provide a Chart Title that summarizes the insight.
@@ -237,7 +300,7 @@ Return valid JSON ONLY. No markdown, no explanations outside the JSON.
     ) -> Optional[ChartRecommendation]:
         """
         Build a chart recommendation using explicit chart type override.
-        Attempts to intelligently select x/y axes based on data types.
+        Uses intelligent column classification and cardinality analysis for axis mapping.
         
         Args:
             df: DataFrame to visualize
@@ -249,10 +312,29 @@ Return valid JSON ONLY. No markdown, no explanations outside the JSON.
         """
         columns = list(df.columns)
         
-        # Separate numeric and categorical columns
-        numeric_cols = df.select_dtypes(include=['number']).columns.tolist()
-        categorical_cols = df.select_dtypes(include=['object', 'category']).columns.tolist()
-        datetime_cols = df.select_dtypes(include=['datetime64']).columns.tolist()
+        # === 1. Classify Columns (improved detection) ===
+        datetime_cols = []
+        numeric_cols = []
+        categorical_cols = []
+        
+        for col in df.columns:
+            # Detect Datetime
+            if pd.api.types.is_datetime64_any_dtype(df[col]):
+                datetime_cols.append(col)
+            # Detect Numeric
+            elif pd.api.types.is_numeric_dtype(df[col]):
+                numeric_cols.append(col)
+            # Detect Categorical (check if strings might be dates first)
+            else:
+                try:
+                    sample = df[col].dropna().iloc[0] if len(df[col].dropna()) > 0 else None
+                    if sample is not None:
+                        pd.to_datetime(sample)
+                        datetime_cols.append(col)
+                    else:
+                        categorical_cols.append(col)
+                except (ValueError, TypeError, IndexError):
+                    categorical_cols.append(col)
         
         # If no numeric columns found, try to identify columns that might be numeric
         # (sometimes numeric values are stored as strings after serialization)
@@ -260,7 +342,6 @@ Return valid JSON ONLY. No markdown, no explanations outside the JSON.
             potential_numeric = []
             for col in categorical_cols:
                 try:
-                    # Try to convert to numeric - if most values convert, treat as numeric
                     converted = pd.to_numeric(df[col], errors='coerce')
                     non_null_ratio = converted.notna().sum() / len(converted) if len(converted) > 0 else 0
                     if non_null_ratio > 0.8:  # 80% of values can be converted
@@ -270,14 +351,16 @@ Return valid JSON ONLY. No markdown, no explanations outside the JSON.
             
             if potential_numeric:
                 numeric_cols = potential_numeric
-                # Remove these from categorical since they're actually numeric
                 categorical_cols = [c for c in categorical_cols if c not in potential_numeric]
         
         x_axis = None
         y_axis = []
+        explanation = f"User requested {chart_type} chart visualization"
+        
+        # === 2. Chart Type Specific Axis Mapping ===
         
         if chart_type == 'line':
-            # Line charts: prefer datetime/categorical for X, numeric for Y
+            # Line charts: prefer datetime for X, numeric for Y (time series)
             if datetime_cols:
                 x_axis = datetime_cols[0]
             elif categorical_cols:
@@ -286,33 +369,88 @@ Return valid JSON ONLY. No markdown, no explanations outside the JSON.
                 x_axis = columns[0]
             y_axis = numeric_cols[:3] if numeric_cols else []
             
-            # Fallback: if we have x_axis but no y_axis, use remaining columns
             if x_axis and not y_axis:
                 remaining = [c for c in columns if c != x_axis]
                 y_axis = remaining[:3]
             
+            if datetime_cols and numeric_cols:
+                explanation = "Time-based data detected. Line chart shows trends over time."
+            
         elif chart_type == 'bar':
-            # Bar charts: categorical X, numeric Y
+            # Bar charts: categorical on X-axis, numeric on Y-axis
             if categorical_cols:
                 x_axis = categorical_cols[0]
             elif columns:
                 x_axis = columns[0]
             y_axis = numeric_cols[:3] if numeric_cols else []
             
-            # Fallback: if we have x_axis but no y_axis, use remaining columns
             if x_axis and not y_axis:
                 remaining = [c for c in columns if c != x_axis]
                 y_axis = remaining[:3]
+            
+            if categorical_cols:
+                cardinality = df[categorical_cols[0]].nunique()
+                explanation = f"Bar chart with {cardinality} categories for comparison."
+            
+        elif chart_type == 'column':
+            # Vertical column charts: categorical on X-axis, numeric on Y-axis
+            if categorical_cols:
+                x_axis = categorical_cols[0]
+            elif columns:
+                x_axis = columns[0]
+            y_axis = numeric_cols[:3] if numeric_cols else []
+            
+            if x_axis and not y_axis:
+                remaining = [c for c in columns if c != x_axis]
+                y_axis = remaining[:3]
+            
+            explanation = "Vertical column chart for categorical comparison."
+            
+        elif chart_type in ('stackedColumn', 'clusteredColumn'):
+            # Stacked/Clustered columns: categorical X, multiple numeric Y
+            if categorical_cols:
+                x_axis = categorical_cols[0]
+            elif columns:
+                x_axis = columns[0]
+            y_axis = numeric_cols[:5] if numeric_cols else []
+            
+            if x_axis and not y_axis:
+                remaining = [c for c in columns if c != x_axis]
+                y_axis = remaining[:5]
+            
+            chart_label = "Stacked" if chart_type == 'stackedColumn' else "Clustered"
+            explanation = f"{chart_label} column chart for multi-series comparison."
+            
+        elif chart_type == 'stackedBar':
+            # Stacked bar: categorical on X-axis, multiple numeric on Y-axis
+            if categorical_cols:
+                x_axis = categorical_cols[0]
+            elif columns:
+                x_axis = columns[0]
+            y_axis = numeric_cols[:5] if numeric_cols else []
+            
+            if x_axis and not y_axis:
+                remaining = [c for c in columns if c != x_axis]
+                y_axis = remaining[:5]
+            
+            if len(numeric_cols) > 1:
+                explanation = f"Stacked bar chart with {len(numeric_cols)} numeric series."
+            else:
+                explanation = "Stacked bar chart for multi-series comparison."
             
         elif chart_type == 'pie':
             # Pie charts: categorical label, single numeric value
             if categorical_cols:
                 x_axis = categorical_cols[0]
+                cardinality = df[categorical_cols[0]].nunique()
+                if cardinality > 10:
+                    explanation = f"Pie chart with {cardinality} slices. Consider using bar chart for better readability."
+                else:
+                    explanation = "Pie chart showing part-to-whole relationship."
             elif columns:
                 x_axis = columns[0]
             y_axis = numeric_cols[:1] if numeric_cols else []
             
-            # Fallback: use second column if available
             if x_axis and not y_axis and len(columns) > 1:
                 remaining = [c for c in columns if c != x_axis]
                 y_axis = remaining[:1]
@@ -322,11 +460,11 @@ Return valid JSON ONLY. No markdown, no explanations outside the JSON.
             if len(numeric_cols) >= 2:
                 x_axis = numeric_cols[0]
                 y_axis = [numeric_cols[1]]
+                explanation = "Scatter plot for correlation analysis between two numeric variables."
             elif len(numeric_cols) == 1 and columns:
                 x_axis = columns[0]
                 y_axis = numeric_cols
             elif len(columns) >= 2:
-                # Fallback: use first two columns
                 x_axis = columns[0]
                 y_axis = [columns[1]]
         
@@ -341,9 +479,11 @@ Return valid JSON ONLY. No markdown, no explanations outside the JSON.
             if x_axis and not y_axis and len(columns) > 1:
                 remaining = [c for c in columns if c != x_axis]
                 y_axis = remaining[:1]
+            
+            explanation = "Treemap showing hierarchical part-to-whole relationship."
         
         elif chart_type == 'area':
-            # Area charts: similar to line charts
+            # Area charts: similar to line charts (time series)
             if datetime_cols:
                 x_axis = datetime_cols[0]
             elif categorical_cols:
@@ -355,6 +495,8 @@ Return valid JSON ONLY. No markdown, no explanations outside the JSON.
             if x_axis and not y_axis:
                 remaining = [c for c in columns if c != x_axis]
                 y_axis = remaining[:3]
+            
+            explanation = "Area chart showing cumulative trends."
         
         elif chart_type == 'radar':
             # Radar charts: categorical for angle axis, numeric for values
@@ -362,35 +504,13 @@ Return valid JSON ONLY. No markdown, no explanations outside the JSON.
                 x_axis = categorical_cols[0]
             elif columns:
                 x_axis = columns[0]
-            y_axis = numeric_cols[:5] if numeric_cols else []  # Radar works well with multiple series
+            y_axis = numeric_cols[:5] if numeric_cols else []
             
             if x_axis and not y_axis:
                 remaining = [c for c in columns if c != x_axis]
                 y_axis = remaining[:5]
-        
-        elif chart_type in ('column', 'stackedColumn', 'clusteredColumn'):
-            # Column variants: same as bar
-            if categorical_cols:
-                x_axis = categorical_cols[0]
-            elif columns:
-                x_axis = columns[0]
-            y_axis = numeric_cols[:3] if numeric_cols else []
             
-            if x_axis and not y_axis:
-                remaining = [c for c in columns if c != x_axis]
-                y_axis = remaining[:3]
-        
-        elif chart_type == 'stackedBar':
-            # Stacked bar: categorical X, multiple numeric Y
-            if categorical_cols:
-                x_axis = categorical_cols[0]
-            elif columns:
-                x_axis = columns[0]
-            y_axis = numeric_cols[:5] if numeric_cols else []  # Stacked bars can have more series
-            
-            if x_axis and not y_axis:
-                remaining = [c for c in columns if c != x_axis]
-                y_axis = remaining[:5]
+            explanation = "Radar chart for multivariate data comparison."
         
         elif chart_type == 'funnel':
             # Funnel charts: categorical label (stage), single numeric value
@@ -403,8 +523,10 @@ Return valid JSON ONLY. No markdown, no explanations outside the JSON.
             if x_axis and not y_axis and len(columns) > 1:
                 remaining = [c for c in columns if c != x_axis]
                 y_axis = remaining[:1]
+            
+            explanation = "Funnel chart for sequential stage analysis."
         
-        # Final fallback if we still couldn't determine axes
+        # === 3. Final Fallbacks ===
         if not x_axis and not y_axis:
             if len(columns) >= 2:
                 x_axis = columns[0]
@@ -412,7 +534,6 @@ Return valid JSON ONLY. No markdown, no explanations outside the JSON.
             elif len(columns) == 1:
                 y_axis = [columns[0]]
         
-        # Ensure y_axis is never None when we have columns to work with
         if not y_axis and x_axis and len(columns) > 1:
             y_axis = [c for c in columns if c != x_axis][:3]
         
@@ -420,7 +541,7 @@ Return valid JSON ONLY. No markdown, no explanations outside the JSON.
             chart_type=chart_type,  # type: ignore
             x_axis=x_axis,
             y_axis=y_axis if y_axis else None,
-            title=f"Data Visualization ({chart_type.title()} Chart)",
-            explanation=f"User requested {chart_type} chart visualization",
+            title=f"Data Visualization ({chart_type.replace('stacked', 'Stacked ').replace('clustered', 'Clustered ').title()} Chart)",
+            explanation=explanation,
             colors=None
         )
