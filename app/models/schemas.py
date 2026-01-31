@@ -43,15 +43,17 @@ class GenerateSQLRequest(BaseModel):
     previousSQL: Optional[str] = None # Previous SQL query for reference
     queryHistory: Optional[str] = None # Accumulated query history from conversation
     forceGeneral: bool = False # If True, skip classification and go straight to general LLM chat
-    queryMode: Literal["generate", "search"] = "generate"  # "generate" for SQL generation, "search" for object search
+    queryMode: Literal["generate", "search", "plan"] = "generate"  # "generate" for SQL generation, "search" for object search, "plan" for planning mode
     table_override: Optional[List[str]] = None # Explicit schema.table list from user selection
     chart_type_override: Optional[ChartTypeLiteral] = None  # User-specified chart type
     user_selected_tables: Optional[List[str]] = None  # User's checkbox selections from threshold prompt
+    planning_context: Optional[Dict[str, Any]] = None  # Structured planning state for conversational exploration
 
 class SearchObject(BaseModel):
     schema_name: str = Field(..., alias="schema")
     name: str
     type: Optional[str] = None
+    auto_checked: Optional[bool] = False  # High-confidence flag for essential tables
     model_config = {"populate_by_name": True}
 
 class GenerateSQLResponse(BaseModel):
@@ -73,6 +75,7 @@ class ExecutePythonRequest(BaseModel):
     code: str
     context: Optional[Dict[str, Any]] = None
     chart_type_override: Optional[ChartTypeLiteral] = None  # User-specified chart type
+    enable_profiling: Optional[bool] = False  # Enable data profiling and insights generation
 
 
 class ExecuteSQLRequest(BaseModel):
@@ -81,6 +84,7 @@ class ExecuteSQLRequest(BaseModel):
     chart_type_override: Optional[ChartTypeLiteral] = None  # User-specified chart type preference
     timeout_seconds: Optional[int] = 60  # Configurable timeout for query execution (default: 60 seconds)
     max_rows: Optional[int] = 10000  # Row limit for results to prevent memory exhaustion
+    enable_profiling: Optional[bool] = False  # Enable data profiling and insights generation
 
 
 class ChartRecommendation(BaseModel):
@@ -441,3 +445,8 @@ class ThreeProngedResult(BaseModel):
     value_tables: List[RankedTable] = []
     knowledge_base_tables: List[RankedTable] = []
     merged_candidates: List[RankedTable] = []
+    # New fields for enhanced discovery flow
+    exact_match_found: bool = False
+    exact_match_query: Optional[Dict[str, Any]] = None  # Contains: question, sql, tables, score
+    requires_user_selection: bool = False
+    selection_candidates: List[RankedTable] = []  # Top N candidates for user to choose from

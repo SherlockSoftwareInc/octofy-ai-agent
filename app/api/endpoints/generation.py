@@ -174,7 +174,7 @@ async def execute_python_endpoint(request: ExecutePythonRequest, api_key: str = 
             result = execute_python_code(
                 current_code, 
                 exec_context,
-                enable_profiling=True,  # Always enable profiling for workflow analysis
+                enable_profiling=request.enable_profiling or False,
                 user_query=user_query
             )
             
@@ -313,7 +313,7 @@ async def execute_sql_endpoint(request: ExecuteSQLRequest, api_key: str = Depend
                 current_sql,
                 timeout_seconds=request.timeout_seconds or 60,
                 max_rows=request.max_rows or 10000,
-                enable_profiling=True,
+                enable_profiling=request.enable_profiling or False,
                 user_query=user_query
             )
             
@@ -346,36 +346,48 @@ async def execute_sql_endpoint(request: ExecuteSQLRequest, api_key: str = Depend
             
             attempt += 1
         
-        # Generate visualization recommendation
-        recommendation = None
+        # Generate visualization recommendations for ALL result sets
+        recommendations = []
         if result["success"] and result.get("results"):
             # Use VisualizationService for chart recommendation
             dataframes = [r for r in result["results"] if r["type"] == "sql_result"]
             
             if dataframes:
-                target_df_data = None
+                viz_service = VisualizationService()
                 
-                # Use first result set
-                target_df_data = dataframes[0]["data"]
-                
-                try:
-                    import pandas as pd
+                # Generate recommendation for EACH result set
+                for idx, df_result in enumerate(dataframes):
+                    target_df_data = df_result["data"]
                     
-                    if isinstance(target_df_data, dict) and "data" in target_df_data:
-                        rows = target_df_data.get("data", [])
-                        columns = target_df_data.get("columns")
-                        df = pd.DataFrame(rows)
-                        if columns:
-                            df = df[[col for col in columns if col in df.columns]]
-                    else:
-                        df = pd.DataFrame(target_df_data)
-                    
-                    viz_service = VisualizationService()
-                    recommendation = viz_service.get_chart_recommendation(
-                        df, user_query or current_sql, request.chart_type_override
-                    )
-                except Exception as viz_err:
-                    logger.error(f"Visualization recommendation failed: {viz_err}")
+                    try:
+                        import pandas as pd
+                        
+                        if isinstance(target_df_data, dict) and "data" in target_df_data:
+                            rows = target_df_data.get("data", [])
+                            columns = target_df_data.get("columns")
+                            df = pd.DataFrame(rows)
+                            if columns:
+                                df = df[[col for col in columns if col in df.columns]]
+                        else:
+                            df = pd.DataFrame(target_df_data)
+                        
+                        recommendation = viz_service.get_chart_recommendation(
+                            df, user_query or current_sql, request.chart_type_override
+                        )
+                        recommendations.append(recommendation)
+                    except Exception as viz_err:
+                        logger.error(f"Visualization recommendation failed for result set {idx}: {viz_err}")
+                        recommendations.append(None)
+        
+        # Use first recommendation for backward compatibility with single-result queries
+        # But attach all recommendations to result sets
+        recommendation = recommendations[0] if recommendations else None
+        
+        # Attach recommendations to each result set
+        if result.get("results") and recommendations:
+            for idx, result_item in enumerate(result["results"]):
+                if idx < len(recommendations) and recommendations[idx]:
+                    result_item["recommendation"] = recommendations[idx].model_dump()
         
         # Build response
         return ExecuteSQLResponse(
@@ -405,3 +417,32 @@ async def execute_sql_endpoint(request: ExecuteSQLRequest, api_key: str = Depend
             recommendation=None,
             execution_time=0.0
         )
+
+
+@router.post("/planning-summary")
+async def generate_planning_summary_endpoint(
+    request: dict,
+    api_key: str = Depends(verify_api_key)
+):
+    """
+    Generate a structured summary from planning context.
+    
+    Request body: {"planning_context": {...}}
+    Response: {"summary": "markdown formatted summary"}
+    """
+    try:
+        from app.services.generation_service import generate_planning_summary
+        
+        planning_context = request.get("planning_context")
+        if not planning_context:
+            raise HTTPException(status_code=400, detail="planning_context required")
+        
+        summary = generate_planning_summary(planning_context)
+        
+        return {"summary": summary}
+    
+    except Exception as e:
+        logger.error(f"Error generating planning summary: {e}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=str(e))
+

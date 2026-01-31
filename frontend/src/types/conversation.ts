@@ -96,7 +96,7 @@ export interface ChatMessage {
   timestamp: Date;
   discoveryResult?: DiscoveryResponse;
   sqlResult?: GenerateSQLResponse;
-  queryType?: 'database' | 'general' | 'uncertain' | 'search' | 'r_code' | 'sas_code' | 'python_code';
+  queryType?: 'database' | 'general' | 'uncertain' | 'search' | 'plan' | 'planning_summary' | 'r_code' | 'sas_code' | 'python_code';
   needsClarification?: boolean;
   sourceQuery?: string;
   executionResult?: ExecutePythonResponse;
@@ -113,9 +113,16 @@ export interface ChatMessage {
    */
   sqlSummary?: string;
   /**
-   * Workflow analysis context (profiling, insights, refinements)
+   * Workflow analysis context (profiling, insights, refinements) - DEPRECATED for SQL queries with multiple result sets
+   * Use resultSetAnalysisCache instead for multi-result SQL queries
    */
   analysisContext?: AnalysisContext;
+  /**
+   * Per-result-set analysis cache for SQL queries with multiple result sets
+   * Key: result set index (0, 1, 2, etc.)
+   * Value: Analysis context for that specific result set
+   */
+  resultSetAnalysisCache?: Record<number, AnalysisContext>;
 }
 
 export interface Conversation {
@@ -126,5 +133,7 @@ export interface Conversation {
   lastGeneratedSQL?: string;
   queryHistory?: string;
   selectedObjects?: string[];
+  planningContext?: any;  // Structured planning state for conversational exploration
+  planningSummary?: string;  // Auto-generated summary from planning conversation
 }
 

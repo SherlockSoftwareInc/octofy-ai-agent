@@ -6,6 +6,8 @@
  */
 
 import React from 'react';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import { 
   AlertCircle, 
   TrendingUp, 
@@ -113,9 +115,11 @@ export const InsightsPanel: React.FC<InsightsPanelProps> = ({ insights, classNam
                     )}
                   </div>
                   
-                  <p className="text-sm mt-1 leading-relaxed">
-                    {insight.description}
-                  </p>
+                  <div className="text-sm mt-1 leading-relaxed prose prose-sm max-w-none prose-p:my-1 prose-ul:my-1 prose-ol:my-1 prose-li:my-0">
+                    <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                      {insight.description}
+                    </ReactMarkdown>
+                  </div>
                   
                   {insight.related_columns && insight.related_columns.length > 0 && (
                     <div className="flex flex-wrap gap-1 mt-2">
