@@ -87,6 +87,7 @@ export interface SearchObject {
     schema: string;
     name: string;
     type?: string | null;
+    auto_checked?: boolean;  // High-confidence flag for essential tables
 }
 
 
@@ -206,16 +207,26 @@ export const api = {
         previousSQL?: string,
         queryHistory?: string,
         forceGeneral: boolean = false,
-        queryMode: 'generate' | 'search' = 'generate',
+        queryMode: 'generate' | 'search' | 'plan' = 'generate',
         signal?: AbortSignal,
-        tableOverride?: string[]
+        tableOverride?: string[],
+        planningContext?: any
     ): Promise<GenerateSQLResponse> => {
         const url = `${API_BASE_URL}/generate-sql`;
         const headers = {
             'Content-Type': 'application/json',
             'X-API-Key': getApiKey()
         };
-        const body = JSON.stringify({ query, context, previousSQL, queryHistory, forceGeneral, queryMode, table_override: tableOverride });
+        const body = JSON.stringify({ 
+            query, 
+            context, 
+            previousSQL, 
+            queryHistory, 
+            forceGeneral, 
+            queryMode, 
+            table_override: tableOverride,
+            planning_context: planningContext
+        });
 
         const response = await fetch(url, {
             method: 'POST',
@@ -453,22 +464,24 @@ export const api = {
         return finalResult;
     },
 
-    executePython: async (code: string, context?: any, chartTypeOverride?: ChartTypeOption): Promise<ExecutePythonResponse> => {
+    executePython: async (code: string, context?: any, chartTypeOverride?: ChartTypeOption, enableProfiling: boolean = false): Promise<ExecutePythonResponse> => {
         const response = await axios.post(`${API_BASE_URL}/execute-python`, { 
             code, 
             context,
-            chart_type_override: chartTypeOverride 
+            chart_type_override: chartTypeOverride,
+            enable_profiling: enableProfiling
         });
         return response.data;
     },
 
-    executeSQL: async (sql: string, context?: any, chartTypeOverride?: ChartTypeOption, timeoutSeconds?: number, maxRows?: number): Promise<ExecuteSQLResponse> => {
+    executeSQL: async (sql: string, context?: any, chartTypeOverride?: ChartTypeOption, timeoutSeconds?: number, maxRows?: number, enableProfiling: boolean = false): Promise<ExecuteSQLResponse> => {
         const response = await axios.post(`${API_BASE_URL}/execute-sql`, { 
             sql, 
             context,
             chart_type_override: chartTypeOverride,
             timeout_seconds: timeoutSeconds,
-            max_rows: maxRows
+            max_rows: maxRows,
+            enable_profiling: enableProfiling
         });
         return response.data;
     },
@@ -998,6 +1011,20 @@ export const summarizeResults = async (
         user_request: userRequest,
         result_data: resultData,
         chart_type: chartType || undefined
+    });
+    return response.data;
+};
+
+/**
+ * Generate a planning summary from planning context
+ * @param planningContext The accumulated planning state
+ * @returns {Promise<{summary: string}>}
+ */
+export const generatePlanningSummary = async (
+    planningContext: any
+): Promise<{ summary: string }> => {
+    const response = await axios.post(`${API_BASE_URL}/planning-summary`, {
+        planning_context: planningContext
     });
     return response.data;
 };

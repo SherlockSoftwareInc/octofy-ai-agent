@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
-import { Send, Loader2, Sparkles, LayoutDashboard, User, Bot, Square, Eye, X, CheckCircle } from 'lucide-react';
-import { api } from './api/client';
-import type { GenerateSQLResponse, AgentStatus, ExecutePythonResponse, ExecuteSQLResponse, ChartTypeOption } from './api/client';
+import { Send, Loader2, Sparkles, LayoutDashboard, User, Bot, Square, Eye, X, CheckCircle, FileText, RotateCcw, Edit } from 'lucide-react';
+import { api, generatePlanningSummary } from './api/client';
+import type { GenerateSQLResponse, AgentStatus, ExecutePythonResponse, ExecuteSQLResponse } from './api/client';
 import { SQLResultDisplay } from './components/SQL/SQLResultDisplay';
 import { AdminLayout } from './pages/Admin/AdminLayout';
 import { SchemaManager } from './pages/Admin/SchemaManager';
@@ -14,7 +14,7 @@ import type { ToastType } from './components/Toast';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { Sidebar } from './components/Sidebar/Sidebar';
 import { ObjectTypeLabel } from './components/ObjectTypeLabel';
-import type { Conversation, ChatMessage, AnalysisContext } from './types/conversation';
+import type { Conversation, ChatMessage } from './types/conversation';
 import { InsightsPanel } from './components/InsightsPanel';
 import { RefinementSuggestions } from './components/RefinementSuggestions';
 import { DataProfileCard } from './components/DataProfileCard';
@@ -48,12 +48,14 @@ function App() {
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
   const [query, setQuery] = useState('');
   const [isLoading, setIsLoading] = useState(false);
-  const [queryMode, setQueryMode] = useState<'generate-sql' | 'generate-r' | 'generate-sas' | 'generate-python' | 'search'>('generate-sql');
+  const [queryMode, setQueryMode] = useState<'plan' | 'generate-sql' | 'generate-r' | 'generate-sas' | 'generate-python'>('plan');
   const [toast, setToast] = useState<{ message: string; type: ToastType } | null>(null);
   const [steps, setSteps] = useState<AgentStatus[]>([]);
   const abortControllerRef = useRef<AbortController | null>(null);
   const abortedRef = useRef(false);
   const [selectedObjects, setSelectedObjects] = useState<string[]>([]);
+  const [planningContext, setPlanningContext] = useState<any>(null);
+  const [planningSummary, setPlanningSummary] = useState<string | null>(null);
   const [isSchemaModalOpen, setIsSchemaModalOpen] = useState(false);
   const [schemaPreviewName, setSchemaPreviewName] = useState<string | null>(null);
   const [schemaPreviewMarkdown, setSchemaPreviewMarkdown] = useState('');
@@ -136,8 +138,12 @@ function App() {
   useEffect(() => {
     if (activeConversation) {
       setSelectedObjects(activeConversation.selectedObjects || []);
+      setPlanningContext(activeConversation.planningContext || null);
+      setPlanningSummary(activeConversation.planningSummary || null);
     } else {
       setSelectedObjects([]);
+      setPlanningContext(null);
+      setPlanningSummary(null);
     }
   }, [activeConversationId, activeConversation]);
 
@@ -155,6 +161,50 @@ function App() {
       textareaRef.current.style.height = `${Math.min(textareaRef.current.scrollHeight, 200)}px`;
     }
   }, [query]);
+
+  // Auto-generate planning summary when switching from plan mode to code generation
+  useEffect(() => {
+    const generateSummary = async () => {
+      if (
+        queryMode !== 'plan' &&  // Switched away from plan mode
+        planningContext &&  // Have planning context
+        !planningSummary &&  // Summary not yet generated
+        activeConversationId
+      ) {
+        try {
+          // Call backend to generate summary
+          const summaryResponse = await generatePlanningSummary(planningContext);
+          setPlanningSummary(summaryResponse.summary);
+          
+          // Add summary as AI message
+          const summaryMessage: ChatMessage = {
+            id: generateMessageId(),
+            type: 'ai',
+            content: summaryResponse.summary,
+            timestamp: new Date(),
+            queryType: 'planning_summary',
+            sqlResult: {
+              sql: '',
+              explanation: summaryResponse.summary,
+              query_type: 'planning_summary',
+              objects: []
+            }
+          };
+          
+          const currentMessages = activeConversation?.messages || [];
+          updateConversation(activeConversationId, {
+            messages: [...currentMessages, summaryMessage],
+            planningSummary: summaryResponse.summary
+          });
+          
+        } catch (error) {
+          console.error('Failed to generate planning summary:', error);
+        }
+      }
+    };
+    
+    generateSummary();
+  }, [queryMode, planningContext, planningSummary, activeConversationId]);
 
   // Update a conversation
   const updateConversation = (conversationId: string, updates: Partial<Conversation>) => {
@@ -312,8 +362,7 @@ function App() {
   // Handle execution result updates
   const handleExecutionComplete = async (
     messageId: string,
-    result: ExecutePythonResponse,
-    contextInfo?: { sourceQuery?: string, chartTypeOverride?: ChartTypeOption }
+    result: ExecutePythonResponse
   ) => {
     if (!activeConversationId) return;
     // Use functional update to ensure we work with the latest state
@@ -333,22 +382,22 @@ function App() {
           return { ...conv, messages: updatedMessages };
         }
 
-        // Calculate analysis context
-        let analysisContext: AnalysisContext | undefined;
-        if (result.data_profile || result.insights) {
-          analysisContext = {
-            data_profile: result.data_profile,
-            insights: result.insights || [],
-            refinement_history: msgToUpdate.analysisContext?.refinement_history || [],
-            suggested_refinements: result.suggested_refinements || []
-          };
-        }
+        // Calculate analysis context - DISABLED: Now on-demand via UI buttons
+        // let analysisContext: AnalysisContext | undefined;
+        // if (result.data_profile || result.insights) {
+        //   analysisContext = {
+        //     data_profile: result.data_profile,
+        //     insights: result.insights || [],
+        //     refinement_history: msgToUpdate.analysisContext?.refinement_history || [],
+        //     suggested_refinements: result.suggested_refinements || []
+        //   };
+        // }
 
         const updatedMessages = messages.map(msg =>
           msg.id === messageId ? {
             ...msg,
             executionResult: result,
-            analysisContext: analysisContext
+            // analysisContext: analysisContext  // Removed: now populated on-demand
           } : msg
         );
 
@@ -363,61 +412,12 @@ function App() {
       hasResults: !!result.results
     });
 
-    // Then fetch summary in the background (non-blocking)
-    if (result && result.success && result.results && result.results.length > 0) {
-      try {
-        const firstResult = result.results[0];
-
-        // Resolve context from args or stale history
-        let userRequest = contextInfo?.sourceQuery;
-        let chartType = contextInfo?.chartTypeOverride;
-
-        if (!userRequest) {
-          const msg = chatHistory.find(m => m.id === messageId);
-          if (msg) {
-            userRequest = msg.sourceQuery || msg.content;
-            chartType = chartType || msg.chartTypeOverride;
-          }
-        }
-
-        // If we still don't have userRequest, we might be in a race condition where we can't summarize yet
-        if (!userRequest) return;
-
-        // Only send a preview of data (avoid huge payloads)
-        let previewData = firstResult.data;
-        if (Array.isArray(previewData) && previewData.length > 20) {
-          previewData = previewData.slice(0, 20);
-        }
-
-        // Add timeout to prevent hanging
-        const timeoutPromise = new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new Error('Summary timeout')), 15000)
-        );
-
-        const summaryPromise = api.summarizeResults(userRequest, previewData, chartType);
-        const summaryResult = await Promise.race([summaryPromise, timeoutPromise]);
-
-        // Update with summary after it arrives
-        setConversations(prev => prev.map(conv => {
-          if (conv.id !== activeConversationId) return conv;
-          return {
-            ...conv,
-            messages: conv.messages.map(msg =>
-              msg.id === messageId ? { ...msg, pythonSummary: summaryResult.summary } : msg
-            )
-          };
-        }));
-      } catch (e) {
-        console.error('Summary fetch failed:', e);
-        // Silently fail - summary is optional
-      }
-    }
+    // Note: AI Summary is now on-demand via UI buttons in SQLResultDisplay component
   };
 
   const handleSQLExecutionComplete = async (
     messageId: string,
-    result: ExecuteSQLResponse,
-    contextInfo?: { sourceQuery?: string, chartTypeOverride?: ChartTypeOption }
+    result: ExecuteSQLResponse
   ) => {
     if (!activeConversationId) return;
     // Use functional update to ensure we work with the latest state
@@ -435,22 +435,22 @@ function App() {
           return { ...conv, messages: updatedMessages };
         }
 
-        // Calculate analysis context
-        let analysisContext: AnalysisContext | undefined;
-        if (result.data_profile || result.insights) {
-          analysisContext = {
-            data_profile: result.data_profile,
-            insights: result.insights || [],
-            refinement_history: msgToUpdate.analysisContext?.refinement_history || [],
-            suggested_refinements: []
-          };
-        }
+        // Calculate analysis context - DISABLED: Now on-demand via UI buttons
+        // let analysisContext: AnalysisContext | undefined;
+        // if (result.data_profile || result.insights) {
+        //   analysisContext = {
+        //     data_profile: result.data_profile,
+        //     insights: result.insights || [],
+        //     refinement_history: msgToUpdate.analysisContext?.refinement_history || [],
+        //     suggested_refinements: []
+        //   };
+        // }
 
         const updatedMessages = messages.map(msg =>
           msg.id === messageId ? {
             ...msg,
             sqlExecutionResult: result,
-            analysisContext: analysisContext
+            // analysisContext: analysisContext  // Removed: now populated on-demand
           } : msg
         );
 
@@ -464,61 +464,7 @@ function App() {
       hasResults: !!result.results
     });
 
-    // Then fetch summary in the background (non-blocking)
-    if (result && result.success && result.results && result.results.length > 0) {
-      try {
-        const firstResult = result.results[0];
-
-        // Resolve context from args or stale history
-        let userRequest = contextInfo?.sourceQuery;
-        let chartType = contextInfo?.chartTypeOverride;
-
-        if (!userRequest) {
-          const msg = chatHistory.find(m => m.id === messageId);
-          if (msg) {
-            userRequest = msg.sourceQuery || msg.content;
-            chartType = chartType || msg.chartTypeOverride;
-          }
-        }
-
-        if (!userRequest) return;
-
-        // Only send a preview of data (avoid huge payloads)
-        let previewData = firstResult.data;
-        if (Array.isArray(previewData)) {
-          // If it's structured table data format
-          previewData = previewData.slice(0, 20);
-        } else if (previewData && typeof previewData === 'object' && 'data' in previewData) {
-          // If it's {columns: [], data: []} format
-          const dataArray = (previewData as any).data;
-          if (Array.isArray(dataArray) && dataArray.length > 20) {
-            previewData = { ...(previewData as any), data: dataArray.slice(0, 20) };
-          }
-        }
-
-        // Add timeout to prevent hanging
-        const timeoutPromise = new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new Error('Summary timeout')), 15000)
-        );
-
-        const summaryPromise = api.summarizeResults(userRequest, previewData, chartType);
-        const summaryResult = await Promise.race([summaryPromise, timeoutPromise]);
-
-        // Update with summary after it arrives
-        setConversations(prev => prev.map(conv => {
-          if (conv.id !== activeConversationId) return conv;
-          return {
-            ...conv,
-            messages: conv.messages.map(msg =>
-              msg.id === messageId ? { ...msg, sqlSummary: summaryResult.summary } : msg
-            )
-          };
-        }));
-      } catch (e) {
-        console.error('SQL summary fetch failed:', e);
-        // Silently fail - summary is optional
-      }
-    }
+    // Note: AI Summary is now on-demand via UI buttons in SQLResultDisplay component
   };
 
   const handleRefinementClick = async (suggestion: string) => {
@@ -564,7 +510,22 @@ function App() {
       const nextSelected = prev.includes(objectName)
         ? prev.filter((item) => item !== objectName)
         : [...prev, objectName];
-      updateConversation(activeConversationId, { selectedObjects: nextSelected });
+      
+      // Update planning context if in plan mode
+      if (queryMode === 'plan' && planningContext) {
+        const updatedContext = {
+          ...planningContext,
+          selected_tables: nextSelected
+        };
+        setPlanningContext(updatedContext);
+        updateConversation(activeConversationId, {
+          selectedObjects: nextSelected,
+          planningContext: updatedContext
+        });
+      } else {
+        updateConversation(activeConversationId, { selectedObjects: nextSelected });
+      }
+      
       return nextSelected;
     });
   };
@@ -596,7 +557,8 @@ function App() {
   };
 
   const handleSend = async () => {
-    if (!query.trim()) return;
+    // Allow sending if query has content OR if we have a planning summary in non-plan mode
+    if (!query.trim() && !(planningSummary && queryMode !== 'plan')) return;
 
     // Create new conversation if none exists
     let conversationId = activeConversationId;
@@ -691,26 +653,23 @@ function App() {
           chartTypeOverride: chartTypeOverride
         };
 
-        // Prepare initial analysis context if available in the result
+        // Prepare initial analysis context if available in the result - DISABLED: Now on-demand
         // This avoids flickering before handleExecutionComplete runs
-        if (result.data_profile || result.insights) {
-          aiMessage.analysisContext = {
-            data_profile: result.data_profile,
-            insights: result.insights || [],
-            refinement_history: lastCodeExecutionMessage.analysisContext?.refinement_history || [],
-            suggested_refinements: result.suggested_refinements || []
-          };
-        }
+        // if (result.data_profile || result.insights) {
+        //   aiMessage.analysisContext = {
+        //     data_profile: result.data_profile,
+        //     insights: result.insights || [],
+        //     refinement_history: lastCodeExecutionMessage.analysisContext?.refinement_history || [],
+        //     suggested_refinements: result.suggested_refinements || []
+        //   };
+        // }
 
         // Add both user message and new AI message to the chat
         const updatedMessages = [...chatHistory, userMessage, aiMessage];
         updateConversation(conversationId, { messages: updatedMessages });
 
-        // Fetch summary and analysis context for new visualization (non-blocking)
-        await handleExecutionComplete(aiMessage.id, result, {
-          sourceQuery: lastCodeExecutionMessage.sourceQuery || lastCodeExecutionMessage.content,
-          chartTypeOverride: chartTypeOverride
-        });
+        // Fetch summary for new visualization (non-blocking) - analysis is now on-demand
+        await handleExecutionComplete(aiMessage.id, result);
 
       } catch (error) {
         console.error('Re-visualization failed:', error);
@@ -774,25 +733,22 @@ function App() {
           chartTypeOverride: chartTypeOverride
         };
 
-        // Prepare initial analysis context if available in the result
-        if (result.data_profile || result.insights) {
-          aiMessage.analysisContext = {
-            data_profile: result.data_profile,
-            insights: result.insights || [],
-            refinement_history: lastSQLMessage.analysisContext?.refinement_history || [],
-            suggested_refinements: []
-          };
-        }
+        // Prepare initial analysis context if available in the result - DISABLED: Now on-demand
+        // if (result.data_profile || result.insights) {
+        //   aiMessage.analysisContext = {
+        //     data_profile: result.data_profile,
+        //     insights: result.insights || [],
+        //     refinement_history: lastSQLMessage.analysisContext?.refinement_history || [],
+        //     suggested_refinements: []
+        //   };
+        // }
 
         // Add both user message and new AI message to the chat
         const updatedMessages = [...chatHistory, userMessage, aiMessage];
         updateConversation(conversationId, { messages: updatedMessages });
 
-        // Fetch summary for new visualization (non-blocking)
-        await handleSQLExecutionComplete(aiMessage.id, result, {
-          sourceQuery: lastSQLMessage.sourceQuery || lastSQLMessage.content,
-          chartTypeOverride: chartTypeOverride
-        });
+        // Fetch summary for new visualization (non-blocking) - analysis is now on-demand
+        await handleSQLExecutionComplete(aiMessage.id, result);
 
       } catch (error) {
         console.error('SQL re-visualization failed:', error);
@@ -856,25 +812,22 @@ function App() {
           chartTypeOverride: chartTypeOverride
         };
 
-        // Prepare initial analysis context if available in the result
-        if (result.data_profile || result.insights) {
-          aiMessage.analysisContext = {
-            data_profile: result.data_profile,
-            insights: result.insights || [],
-            refinement_history: [],
-            suggested_refinements: []
-          };
-        }
+        // Prepare initial analysis context if available in the result - DISABLED: Now on-demand
+        // if (result.data_profile || result.insights) {
+        //   aiMessage.analysisContext = {
+        //     data_profile: result.data_profile,
+        //     insights: result.insights || [],
+        //     refinement_history: [],
+        //     suggested_refinements: []
+        //   };
+        // }
 
         // Add both user message and new AI message to the chat
         const updatedMessages = [...chatHistory, userMessage, aiMessage];
         updateConversation(conversationId, { messages: updatedMessages });
 
-        // Fetch summary for visualization (non-blocking)
-        await handleSQLExecutionComplete(aiMessage.id, result, {
-          sourceQuery: lastGeneratedSQLMessage.sourceQuery || lastGeneratedSQLMessage.content,
-          chartTypeOverride: chartTypeOverride
-        });
+        // Fetch summary for visualization (non-blocking) - analysis is now on-demand
+        await handleSQLExecutionComplete(aiMessage.id, result);
 
       } catch (error) {
         console.error('SQL visualization failed:', error);
@@ -904,10 +857,15 @@ function App() {
       }
     }
 
+    // Determine user message content - use auto-generate indicator if no query but planning summary exists
+    const userMessageContent = query.trim() 
+      ? query 
+      : (planningSummary ? '✨ Auto-generate from planning summary' : '');
+
     const userMessage: ChatMessage = {
       id: generateMessageId(),
       type: 'user',
-      content: query,
+      content: userMessageContent,
       timestamp: new Date(),
       chartTypeOverride: chartTypeOverride
     };
@@ -918,7 +876,7 @@ function App() {
 
     // Auto-title on first message
     if (chatHistory.length === 0) {
-      const title = generateInitialTitle(query);
+      const title = generateInitialTitle(query || 'Auto-generated query');
       updateConversation(conversationId, { title });
     }
 
@@ -933,31 +891,105 @@ function App() {
     try {
       let result: GenerateSQLResponse;
       const tableOverride = selectedObjects.length > 0 ? selectedObjects : undefined;
-
-      if (queryMode === 'generate-r') {
-        result = await api.generateRStream(currentQuery, (status) => {
+      
+      // NEW: Handle plan mode
+      if (queryMode === 'plan') {
+        result = await api.generateSQLStream(
+          currentQuery,
+          (status) => setSteps([status]),
+          undefined,
+          undefined,
+          undefined,
+          false,
+          'plan',
+          abortControllerRef.current.signal,
+          undefined,
+          planningContext
+        );
+        
+        // Update planning context from response
+        if (result.context_text) {
+          try {
+            const updatedContext = JSON.parse(result.context_text);
+            setPlanningContext(updatedContext);
+            
+            // Update conversation
+            updateConversation(conversationId, {
+              planningContext: updatedContext
+            });
+          } catch (e) {
+            console.error('Failed to parse planning context:', e);
+          }
+        }
+        
+        // Handle AI response
+        const aiMessage: ChatMessage = {
+          id: generateMessageId(),
+          type: 'ai',
+          content: result.explanation || 'Planning conversation continued.',
+          timestamp: new Date(),
+          sqlResult: result,
+          queryType: 'plan',
+          sourceQuery: currentQuery
+        };
+        
+        updateConversation(conversationId, {
+          messages: [...currentMessages, aiMessage],
+        });
+        
+      } else if (queryMode === 'generate-r') {
+        // Use summary as prompt if available
+        let queryToSend = currentQuery;
+        if (planningSummary && !currentQuery.trim()) {
+          queryToSend = planningSummary;
+        } else if (planningSummary && currentQuery.trim()) {
+          queryToSend = `${planningSummary}\n\nAdditional requirements:\n${currentQuery}`;
+        }
+        
+        result = await api.generateRStream(queryToSend, (status) => {
           setSteps([status]);
         }, undefined, abortControllerRef.current.signal);
         // Ensure query_type is set
         if (!result.query_type) result.query_type = 'r_code';
       } else if (queryMode === 'generate-sas') {
-        result = await api.generateSASStream(currentQuery, (status) => {
+        // Use summary as prompt if available
+        let queryToSend = currentQuery;
+        if (planningSummary && !currentQuery.trim()) {
+          queryToSend = planningSummary;
+        } else if (planningSummary && currentQuery.trim()) {
+          queryToSend = `${planningSummary}\n\nAdditional requirements:\n${currentQuery}`;
+        }
+        
+        result = await api.generateSASStream(queryToSend, (status) => {
           setSteps([status]);
         }, undefined, abortControllerRef.current.signal);
         if (!result.query_type) result.query_type = 'sas_code';
       } else if (queryMode === 'generate-python') {
-        result = await api.generatePythonStream(currentQuery, (status) => {
+        // Use summary as prompt if available
+        let queryToSend = currentQuery;
+        if (planningSummary && !currentQuery.trim()) {
+          queryToSend = planningSummary;
+        } else if (planningSummary && currentQuery.trim()) {
+          queryToSend = `${planningSummary}\n\nAdditional requirements:\n${currentQuery}`;
+        }
+        
+        result = await api.generatePythonStream(queryToSend, (status) => {
           setSteps([status]);
         }, undefined, abortControllerRef.current.signal);
         if (!result.query_type) result.query_type = 'python_code';
       } else {
-        // 'generate-sql' or 'search'
-        // Map 'generate-sql' to 'generate' for the API compatibility
-        const apiMode = queryMode === 'search' ? 'search' : 'generate';
+        // 'generate-sql' mode
+        // Use summary as prompt if available
+        let queryToSend = currentQuery;
+        if (planningSummary && !currentQuery.trim()) {
+          queryToSend = planningSummary;
+        } else if (planningSummary && currentQuery.trim()) {
+          queryToSend = `${planningSummary}\n\nAdditional requirements:\n${currentQuery}`;
+        }
 
         // Pass accumulated query history and previous SQL
         result = await api.generateSQLStream(
-          currentQuery,
+          queryToSend,
           (status) => {
             setSteps([status]);
           },
@@ -965,36 +997,14 @@ function App() {
           lastGeneratedSQL || undefined,
           queryHistory || undefined,
           false,
-          apiMode,
+          'generate',
           abortControllerRef.current.signal,
           tableOverride
         );
       }
 
-      if (result.query_type === 'search') {
-        // For search mode, display the found objects
-        const aiMessage: ChatMessage = {
-          id: generateMessageId(),
-          type: 'ai',
-          content: result.explanation || 'Search completed.',
-          timestamp: new Date(),
-          sqlResult: result,
-          queryType: 'search',
-          sourceQuery: currentQuery
-        };
-
-        const updatedMessages = [...currentMessages, aiMessage];
-        updateConversation(conversationId, {
-          messages: updatedMessages,
-        });
-
-        // Auto-generate title for search conversations too
-        if (updatedMessages.length === 4) {
-          const autoTitle = await generateAutoTitle(updatedMessages, api.generateSQL);
-          if (autoTitle) {
-            updateConversation(conversationId, { title: autoTitle });
-          }
-        }
+      if (result.query_type === 'plan') {
+        // Already handled above - do nothing more
       } else if (result.query_type === 'database' || result.query_type === 'r_code' || result.query_type === 'sas_code' || result.query_type === 'python_code') {
         // For database/R/SAS/Python queries, also get discovery context for display (only for SQL really, but safe to ignore)
         let context = undefined;
@@ -1278,8 +1288,8 @@ function App() {
                                 </p>
                               )}
 
-                              {/* Search Results Grid - Only for search queries */}
-                              {message.queryType === 'search' && message.sqlResult?.explanation && (
+                              {/* Plan Mode and Search Results Grid */}
+                              {(message.queryType === 'plan' || message.queryType === 'search') && message.sqlResult?.explanation && (
                                 <div className="mt-2">
                                   {(() => {
                                     const apiObjects = message.sqlResult.objects;
@@ -1307,7 +1317,8 @@ function App() {
                                           key: `${schema}.${normalizedName}`,
                                           schema,
                                           name: normalizedName,
-                                          type: obj.type ?? null
+                                          type: obj.type ?? null,
+                                          autoChecked: (obj as any).auto_checked || false
                                         };
                                       })
                                       : (() => {
@@ -1320,16 +1331,25 @@ function App() {
                                             key: parsed.key,
                                             schema: match?.[1] ?? parsed.key.split('.')[0],
                                             name: match?.[2] ?? parsed.key.split('.').slice(1).join('.'),
-                                            type: null
+                                            type: null,
+                                            autoChecked: false
                                           };
                                         });
                                       })();
 
                                     if (parsedObjects.length > 0) {
+                                      const themeColor = message.queryType === 'plan' ? 'amber' : 'emerald';
+                                      const hasAutoChecked = parsedObjects.some(obj => obj.autoChecked);
+                                      
                                       return (
                                         <>
-                                          <div className="flex items-center gap-2 mb-3 text-sm font-medium text-emerald-400">
-                                            <div className="w-2 h-2 bg-emerald-500 rounded-full"></div>
+                                          {hasAutoChecked && (
+                                            <div className={`mb-2 text-xs text-${themeColor}-300 italic`}>
+                                              ✨ Essential tables have been pre-selected. You can adjust the selection below.
+                                            </div>
+                                          )}
+                                          <div className={`flex items-center gap-2 mb-3 text-sm font-medium text-${themeColor}-400`}>
+                                            <div className={`w-2 h-2 bg-${themeColor}-500 rounded-full`}></div>
                                             The following {parsedObjects.length} database object{parsedObjects.length !== 1 ? 's' : ''} may store the data you are looking for.
                                           </div>
                                           <div className="space-y-2">
@@ -1342,16 +1362,21 @@ function App() {
                                                   type="checkbox"
                                                   checked={selectedObjects.includes(obj.key)}
                                                   onChange={() => toggleSelectedObject(obj.key)}
-                                                  className="h-4 w-4 rounded border-slate-600 bg-slate-800 text-emerald-500 focus:ring-emerald-500"
+                                                  className={`h-4 w-4 rounded border-slate-600 bg-slate-800 text-${themeColor}-500 focus:ring-${themeColor}-500 ${obj.autoChecked ? `border-${themeColor}-400` : ''}`}
                                                   aria-label={`Select ${obj.key}`}
                                                 />
                                                 <ObjectTypeLabel type={obj.type} />
-                                                <div className="flex items-center gap-2 text-sm text-emerald-200">
+                                                <div className={`flex items-center gap-2 text-sm text-${themeColor}-200`}>
                                                   <span className="font-mono">[{obj.schema}].[{obj.name}]</span>
+                                                  {obj.autoChecked && (
+                                                    <span className={`ml-2 text-xs text-${themeColor}-400`}>
+                                                      (Essential)
+                                                    </span>
+                                                  )}
                                                   <button
                                                     type="button"
                                                     onClick={() => handleViewSchema(obj.key)}
-                                                    className="inline-flex items-center text-slate-400 hover:text-emerald-200 transition-colors"
+                                                    className={`inline-flex items-center text-slate-400 hover:text-${themeColor}-200 transition-colors`}
                                                     aria-label={`View schema for ${obj.key}`}
                                                   >
                                                     <Eye size={14} />
@@ -1377,11 +1402,54 @@ function App() {
                                           <li>Using different keywords or synonyms</li>
                                           <li>Checking for typos in your search terms</li>
                                           <li>Using more general terms (e.g., "customer" instead of "customers")</li>
-                                          <li>Switching to <span className="text-indigo-400 font-medium">Generate Query</span> mode to ask a question</li>
                                         </ul>
                                       </div>
                                     );
                                   })()}
+                                </div>
+                                )}
+
+                              {/* Planning Summary Card */}
+                              {message.queryType === 'planning_summary' && (
+                                <div className="mt-3 rounded-lg border-2 border-amber-500/40 bg-gradient-to-br from-amber-950/30 to-orange-950/20 p-4 shadow-lg">
+                                  <div className="flex items-center gap-2 mb-3 text-amber-300 font-semibold">
+                                    <FileText size={18} />
+                                    <span>Planning Summary</span>
+                                  </div>
+                                  
+                                  <div className="prose prose-sm prose-invert max-w-none text-slate-200">
+                                    <ReactMarkdown>{message.content}</ReactMarkdown>
+                                  </div>
+                                  
+                                  <div className="flex gap-2 mt-4 pt-3 border-t border-amber-500/20">
+                                    <button
+                                      onClick={() => {
+                                        // Clear planning state
+                                        setPlanningContext(null);
+                                        setPlanningSummary(null);
+                                        setSelectedObjects([]);
+                                        if (activeConversationId) {
+                                          updateConversation(activeConversationId, {
+                                            planningContext: null,
+                                            planningSummary: undefined,
+                                            selectedObjects: []
+                                          });
+                                        }
+                                      }}
+                                      className="px-3 py-1.5 text-xs rounded-md bg-slate-700 hover:bg-slate-600 text-slate-200 transition-colors flex items-center gap-1"
+                                    >
+                                      <RotateCcw size={12} />
+                                      Start Over
+                                    </button>
+                                    
+                                    <button
+                                      onClick={() => setQueryMode('plan')}
+                                      className="px-3 py-1.5 text-xs rounded-md bg-amber-600 hover:bg-amber-500 text-white transition-colors flex items-center gap-1"
+                                    >
+                                      <Edit size={12} />
+                                      Back to Plan
+                                    </button>
+                                  </div>
                                 </div>
                               )}
 
@@ -1419,14 +1487,8 @@ function App() {
                                     queryType={message.queryType}
                                     executionResult={message.executionResult}
                                     sqlExecutionResult={message.sqlExecutionResult}
-                                    onExecutionComplete={(result) => handleExecutionComplete(message.id, result, {
-                                      sourceQuery: message.sourceQuery,
-                                      chartTypeOverride: message.chartTypeOverride
-                                    })}
-                                    onSQLExecutionComplete={(result) => handleSQLExecutionComplete(message.id, result, {
-                                      sourceQuery: message.sourceQuery,
-                                      chartTypeOverride: message.chartTypeOverride
-                                    })}
+                                    onExecutionComplete={(result) => handleExecutionComplete(message.id, result)}
+                                    onSQLExecutionComplete={(result) => handleSQLExecutionComplete(message.id, result)}
                                     chartTypeOverride={message.chartTypeOverride}
                                     chartOnly={true}
                                     pythonSummary={message.pythonSummary || ''}
@@ -1446,14 +1508,8 @@ function App() {
                                     queryType={message.queryType}
                                     executionResult={message.executionResult}
                                     sqlExecutionResult={message.sqlExecutionResult}
-                                    onExecutionComplete={(result) => handleExecutionComplete(message.id, result, {
-                                      sourceQuery: message.sourceQuery,
-                                      chartTypeOverride: message.chartTypeOverride
-                                    })}
-                                    onSQLExecutionComplete={(result) => handleSQLExecutionComplete(message.id, result, {
-                                      sourceQuery: message.sourceQuery,
-                                      chartTypeOverride: message.chartTypeOverride
-                                    })}
+                                    onExecutionComplete={(result) => handleExecutionComplete(message.id, result)}
+                                    onSQLExecutionComplete={(result) => handleSQLExecutionComplete(message.id, result)}
                                     chartTypeOverride={message.chartTypeOverride}
                                     chartOnly={true}
                                     pythonSummary={message.pythonSummary || ''}
@@ -1474,14 +1530,8 @@ function App() {
                                         queryType={message.queryType}
                                         executionResult={message.executionResult}
                                         sqlExecutionResult={message.sqlExecutionResult}
-                                        onExecutionComplete={(result) => handleExecutionComplete(message.id, result, {
-                                          sourceQuery: message.sourceQuery,
-                                          chartTypeOverride: message.chartTypeOverride
-                                        })}
-                                        onSQLExecutionComplete={(result) => handleSQLExecutionComplete(message.id, result, {
-                                          sourceQuery: message.sourceQuery,
-                                          chartTypeOverride: message.chartTypeOverride
-                                        })}
+                                        onExecutionComplete={(result) => handleExecutionComplete(message.id, result)}
+                                        onSQLExecutionComplete={(result) => handleSQLExecutionComplete(message.id, result)}
                                         chartTypeOverride={message.chartTypeOverride}
                                         pythonSummary={message.pythonSummary || ''}
                                         sqlSummary={message.sqlSummary || ''}
@@ -1582,6 +1632,25 @@ function App() {
             <div className="w-full">
               {/* Mode Toggle - Radio Buttons */}
               <div className="flex items-center justify-center gap-6 mb-3">
+                {/* 1. Plan Mode - FIRST */}
+                <label className="flex items-center gap-2 cursor-pointer group">
+                  <input
+                    type="radio"
+                    name="queryMode"
+                    value="plan"
+                    checked={queryMode === 'plan'}
+                    onChange={() => {
+                      setQueryMode('plan');
+                      setPlanningSummary(null);
+                    }}
+                    className="w-4 h-4 text-amber-600 bg-slate-800 border-slate-600 focus:ring-amber-500 focus:ring-offset-slate-900"
+                  />
+                  <span className={`text-sm font-medium transition-colors ${queryMode === 'plan' ? 'text-amber-400' : 'text-slate-400 group-hover:text-slate-300'}`}>
+                    📋 Plan
+                  </span>
+                </label>
+                
+                {/* 2. Generate SQL */}
                 <label className="flex items-center gap-2 cursor-pointer group">
                   <input
                     type="radio"
@@ -1595,6 +1664,8 @@ function App() {
                     ✨ Generate SQL
                   </span>
                 </label>
+                
+                {/* 3. Generate R */}
                 <label className="flex items-center gap-2 cursor-pointer group">
                   <input
                     type="radio"
@@ -1608,6 +1679,8 @@ function App() {
                     📈 Generate R
                   </span>
                 </label>
+                
+                {/* 4. Generate SAS */}
                 <label className="flex items-center gap-2 cursor-pointer group">
                   <input
                     type="radio"
@@ -1621,6 +1694,8 @@ function App() {
                     📊 Generate SAS
                   </span>
                 </label>
+                
+                {/* 5. Generate Python */}
                 <label className="flex items-center gap-2 cursor-pointer group">
                   <input
                     type="radio"
@@ -1634,30 +1709,25 @@ function App() {
                     🐍 Generate Python
                   </span>
                 </label>
-                <label className="flex items-center gap-2 cursor-pointer group">
-                  <input
-                    type="radio"
-                    name="queryMode"
-                    value="search"
-                    checked={queryMode === 'search'}
-                    onChange={() => setQueryMode('search')}
-                    className="w-4 h-4 text-emerald-600 bg-slate-800 border-slate-600 focus:ring-emerald-500 focus:ring-offset-slate-900"
-                  />
-                  <span className={`text-sm font-medium transition-colors ${queryMode === 'search' ? 'text-emerald-400' : 'text-slate-400 group-hover:text-slate-300'}`}>
-                    🔍 Search Objects
-                  </span>
-                </label>
               </div>
 
-              {selectedObjects.length > 0 && (
+              {/* Planning summary ready banner */}
+              {queryMode !== 'plan' && planningSummary && (
+                <div className="mb-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-200">
+                  📋 I have your planning summary ready. Click below to generate code, or add additional requirements first.
+                </div>
+              )}
+              
+              {/* Selected objects banner */}
+              {selectedObjects.length > 0 && queryMode !== 'plan' && !planningSummary && (
                 <div className="mb-3 rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-200">
-                  Context locked in. I’ll use these {selectedObjects.length} object{selectedObjects.length !== 1 ? 's' : ''} for the next step. What would you like me to generate?
+                  Context locked in. I'll use these {selectedObjects.length} object{selectedObjects.length !== 1 ? 's' : ''} for the next step. What would you like me to generate?
                 </div>
               )}
 
               <div className="relative group">
-                <div className={`absolute -inset-0.5 bg-gradient-to-r ${queryMode === 'search' ? 'from-emerald-500 to-teal-600' : 'from-indigo-500 to-purple-600'} rounded-xl opacity-30 blur group-hover:opacity-50 transition duration-500`}></div>
-                <div className={`relative flex items-end bg-slate-950 rounded-xl p-1 shadow-2xl ring-1 ring-slate-800 ${queryMode === 'search' ? 'focus-within:ring-emerald-500/50' : 'focus-within:ring-indigo-500/50'} transition-all`}>
+                <div className={`absolute -inset-0.5 bg-gradient-to-r ${queryMode === 'plan' ? 'from-amber-500 to-orange-600' : 'from-indigo-500 to-purple-600'} rounded-xl opacity-30 blur group-hover:opacity-50 transition duration-500`}></div>
+                <div className={`relative flex items-end bg-slate-950 rounded-xl p-1 shadow-2xl ring-1 ring-slate-800 ${queryMode === 'plan' ? 'focus-within:ring-amber-500/50' : 'focus-within:ring-indigo-500/50'} transition-all`}>
                   <textarea
                     ref={textareaRef}
                     value={query}
@@ -1668,17 +1738,31 @@ function App() {
                         handleSend();
                       }
                     }}
-                    placeholder={queryMode === 'search' ? 'Search for tables, columns, or values...' : 'Ask a question about your data (SQL, R, SAS, or Python)...'}
+                    placeholder={
+                      queryMode === 'plan'
+                        ? 'Describe your analysis goal or ask about available data...'
+                        : planningSummary
+                          ? 'Add additional requirements (optional)...'
+                          : 'Ask a question about your data (SQL, R, SAS, or Python)...'
+                    }
                     disabled={isLoading}
                     rows={1}
                     className="flex-1 bg-transparent border-none text-slate-200 placeholder-slate-500 px-4 py-3 focus:outline-none focus:ring-0 text-base resize-none overflow-y-auto min-h-[48px]"
                   />
                   <button
                     onClick={handleSend}
-                    disabled={isLoading || !query.trim()}
-                    className={`p-3 mb-0.5 ${queryMode === 'search' ? 'bg-emerald-600 hover:bg-emerald-500 shadow-emerald-500/20' : 'bg-indigo-600 hover:bg-indigo-500 shadow-indigo-500/20'} text-white rounded-lg transition-all disabled:opacity-50 shadow-lg`}
+                    disabled={isLoading || (queryMode !== 'plan' && !planningSummary && !query.trim())}
+                    className={`p-3 mb-0.5 ${queryMode === 'plan' ? 'bg-amber-600 hover:bg-amber-500 shadow-amber-500/20' : 'bg-indigo-600 hover:bg-indigo-500 shadow-indigo-500/20'} text-white rounded-lg transition-all disabled:opacity-50 shadow-lg`}
                   >
-                    {isLoading ? <Loader2 className="animate-spin" size={20} /> : <Send size={20} />}
+                    {isLoading ? (
+                      <Loader2 className="animate-spin" size={20} />
+                    ) : planningSummary && queryMode !== 'plan' ? (
+                      <span className="flex items-center gap-1 text-sm px-2">
+                        ✨ {query.trim() ? 'Generate' : 'Auto-Generate'}
+                      </span>
+                    ) : (
+                      <Send size={20} />
+                    )}
                   </button>
                 </div>
               </div>
