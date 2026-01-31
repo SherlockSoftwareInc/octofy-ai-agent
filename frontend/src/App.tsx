@@ -1175,7 +1175,7 @@ function App() {
 
   return (
     <ErrorBoundary>
-      <div className="flex h-screen w-screen bg-slate-950 text-slate-200 font-sans selection:bg-indigo-500/30">
+      <div className="flex h-screen w-screen bg-slate-950 text-slate-200 font-sans selection:bg-indigo-500/30 overflow-hidden">
         {/* Sidebar */}
         <Sidebar
           conversations={conversations}
@@ -1187,7 +1187,7 @@ function App() {
         />
 
         {/* Main Chat Area */}
-        <div className="flex flex-col flex-1 h-screen">
+        <div className="flex flex-col flex-1 h-screen min-w-0 overflow-x-auto">
           {/* Header */}
           <header className="border-b border-slate-800 bg-slate-900/50 backdrop-blur-md sticky top-0 z-10">
             <div className="w-full px-6 h-16 flex items-center justify-between">

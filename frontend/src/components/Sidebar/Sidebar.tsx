@@ -178,7 +178,7 @@ export function Sidebar({
   };
 
   return (
-    <div className={`h-full bg-slate-900/50 border-r border-slate-800 flex flex-col transition-all duration-300 ease-in-out overflow-hidden ${isCollapsed ? 'w-16' : 'w-72'
+    <div className={`h-full bg-slate-900/50 border-r border-slate-800 flex flex-col flex-shrink-0 transition-all duration-300 ease-in-out overflow-hidden ${isCollapsed ? 'w-16 min-w-16' : 'w-72 min-w-72'
       }`}>
       {/* Collapse/Expand Toggle Button */}
       <div className="p-4 border-b border-slate-800 flex items-center justify-between">
