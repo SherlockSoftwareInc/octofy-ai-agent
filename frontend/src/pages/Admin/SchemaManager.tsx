@@ -46,6 +46,8 @@ export const SchemaManager: React.FC<SchemaManagerProps> = ({ onUploadStateChang
     const [batchSyncResults, setBatchSyncResults] = useState<BatchSyncResponse | null>(null);
     const [searchQuery, setSearchQuery] = useState('');
     const [currentPage, setCurrentPage] = useState(0);
+    const [inspectingDb, setInspectingDb] = useState(false);
+    const [showDbInspection, setShowDbInspection] = useState(false);
 
     // Prevent page navigation during upload
     useEffect(() => {
@@ -68,11 +70,16 @@ export const SchemaManager: React.FC<SchemaManagerProps> = ({ onUploadStateChang
         }
     }, [uploadStatus.status, onUploadStateChange]);
 
-    const fetchData = async () => {
+    const fetchData = async (includeDbInspection: boolean = false) => {
+        console.time('[FRONTEND] Schema fetch total');
         setLoading(true);
         try {
-            const data = await api.admin.getSchemaStatus();
+            console.time('[FRONTEND] API call');
+            const data = await api.admin.getSchemaStatus(includeDbInspection);
+            console.timeEnd('[FRONTEND] API call');
+            
             if (Array.isArray(data)) {
+                console.log(`[FRONTEND] Received ${data.length} schemas`);
                 setSchemas(data);
             } else {
                 console.warn("Invalid schema data received:", data);
@@ -82,6 +89,7 @@ export const SchemaManager: React.FC<SchemaManagerProps> = ({ onUploadStateChang
             console.error("Failed to fetch schemas", e);
         } finally {
             setLoading(false);
+            console.timeEnd('[FRONTEND] Schema fetch total');
         }
     };
 
@@ -236,14 +244,13 @@ export const SchemaManager: React.FC<SchemaManagerProps> = ({ onUploadStateChang
     const filteredAndPaginatedSchemas = useMemo(() => {
         const PAGE_SIZE = 50;
 
-        // Filter by search query
+        // Filter by search query (table name and schema only - description search removed for simplicity)
         let filtered = schemas;
         if (searchQuery.trim()) {
             const query = searchQuery.toLowerCase();
             filtered = schemas.filter(schema =>
                 schema.table_name.toLowerCase().includes(query) ||
-                schema.schema_name.toLowerCase().includes(query) ||
-                (schema.description && schema.description.toLowerCase().includes(query))
+                schema.schema_name.toLowerCase().includes(query)
             );
         }
 
@@ -303,11 +310,28 @@ export const SchemaManager: React.FC<SchemaManagerProps> = ({ onUploadStateChang
 
         try {
             await api.admin.clearAllSchemas();
-            await fetchData(); // Refresh status
+            await fetchData(false); // Refresh status without DB inspection
             alert('All schemas have been cleared.');
         } catch (error) {
             const errorWithResponse = error as { response?: { data?: { detail?: string } }; message?: string };
             alert(`Failed to clear schemas: ${errorWithResponse.response?.data?.detail || errorWithResponse.message || 'Unknown error'}`);
+        }
+    };
+
+    const handleInspectDatabase = async () => {
+        setInspectingDb(true);
+        try {
+            const data = await api.admin.inspectDatabase();
+            if (Array.isArray(data)) {
+                console.log(`[FRONTEND] Database inspection found ${data.length} objects`);
+                setSchemas(data);
+                setShowDbInspection(true);
+            }
+        } catch (error) {
+            console.error('Failed to inspect database', error);
+            alert('Failed to inspect database');
+        } finally {
+            setInspectingDb(false);
         }
     };
 
@@ -318,6 +342,15 @@ export const SchemaManager: React.FC<SchemaManagerProps> = ({ onUploadStateChang
                     Schema Management
                 </h2>
                 <div className="flex gap-2">
+                    <button
+                        onClick={handleInspectDatabase}
+                        disabled={inspectingDb}
+                        className="flex items-center gap-2 px-4 py-2 bg-amber-600 rounded-lg hover:bg-amber-700 transition disabled:opacity-50"
+                        title="Compare with database to find missing tables"
+                    >
+                        <Search size={18} className={inspectingDb ? "animate-spin" : ""} />
+                        Inspect Database
+                    </button>
                     <button
                         onClick={() => setShowBatchSyncDialog(true)}
                         className="flex items-center gap-2 px-4 py-2 bg-indigo-600 rounded-lg hover:bg-indigo-700 transition"
@@ -335,7 +368,7 @@ export const SchemaManager: React.FC<SchemaManagerProps> = ({ onUploadStateChang
                         Download
                     </button>
                     <button
-                        onClick={fetchData}
+                        onClick={() => fetchData(false)}
                         className="flex items-center gap-2 px-4 py-2 bg-slate-800 rounded-lg hover:bg-slate-700 transition"
                     >
                         <RefreshCw size={18} className={loading ? "animate-spin" : ""} />
@@ -343,6 +376,30 @@ export const SchemaManager: React.FC<SchemaManagerProps> = ({ onUploadStateChang
                     </button>
                 </div>
             </div>
+
+            {/* Database Inspection Info */}
+            {showDbInspection && (
+                <div className="bg-amber-500/10 border border-amber-500/30 rounded-xl p-4 mb-6">
+                    <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-2">
+                            <Search className="text-amber-400" size={18} />
+                            <span className="text-amber-300 font-semibold">Database Inspection Active</span>
+                        </div>
+                        <button
+                            onClick={() => {
+                                setShowDbInspection(false);
+                                fetchData(false);
+                            }}
+                            className="text-amber-300 hover:text-amber-200 text-sm"
+                        >
+                            Hide Missing Tables
+                        </button>
+                    </div>
+                    <p className="text-amber-300/80 text-sm mt-2">
+                        Showing comparison with database. Tables marked as "Missing" exist in the database but are not indexed yet.
+                    </p>
+                </div>
+            )}
 
             {/* Upload Section */}
             <div className="bg-slate-900/50 border border-slate-800 rounded-xl p-6 mb-6">
@@ -456,6 +513,30 @@ export const SchemaManager: React.FC<SchemaManagerProps> = ({ onUploadStateChang
                 </div>
             </div>
 
+            {/* Database Inspection Info */}
+            {showDbInspection && (
+                <div className="bg-amber-500/10 border border-amber-500/30 rounded-xl p-4 mb-6">
+                    <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-2">
+                            <Search className="text-amber-400" size={18} />
+                            <span className="text-amber-300 font-semibold">Database Inspection Active</span>
+                        </div>
+                        <button
+                            onClick={() => {
+                                setShowDbInspection(false);
+                                fetchData(false);
+                            }}
+                            className="text-amber-300 hover:text-amber-200 text-sm"
+                        >
+                            Hide Missing Tables
+                        </button>
+                    </div>
+                    <p className="text-amber-300/80 text-sm mt-2">
+                        Showing comparison with database. Tables marked as "Missing" exist in the database but are not indexed yet.
+                    </p>
+                </div>
+            )}
+
             {/* Info Section */}
             <div className="bg-blue-500/10 border border-blue-500/30 rounded-xl p-4 mb-6">
                 <h4 className="text-blue-300 font-semibold mb-2">📋 Excel Format Guide</h4>
@@ -472,7 +553,7 @@ export const SchemaManager: React.FC<SchemaManagerProps> = ({ onUploadStateChang
                     <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-slate-500" size={18} />
                     <input
                         type="text"
-                        placeholder="Search by table name, schema, or description..."
+                        placeholder="Search by table name or schema..."
                         value={searchQuery}
                         onChange={(e) => {
                             setSearchQuery(e.target.value);

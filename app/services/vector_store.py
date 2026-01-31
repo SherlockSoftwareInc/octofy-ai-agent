@@ -547,7 +547,7 @@ class MilvusVectorStore(VectorStoreBase):
     # --- Admin Implementation ---
     
     def get_all_schemas(self) -> List[TableSchema]:
-        # Milvus query for specific fields
+        # Optimized Milvus query for all schemas
         if not self._connected:
              return []
         if not utility.has_collection(settings.MILVUS_COLLECTION_SCHEMA):
@@ -556,12 +556,12 @@ class MilvusVectorStore(VectorStoreBase):
         collection = Collection(settings.MILVUS_COLLECTION_SCHEMA)
         collection.load()
         
-        # We can't really "get all" efficiently in Milvus without iterator, but for metadata < 10k it's okay
+        # Use empty expr for better performance (no filter scan)
+        # Increase limit to handle larger schema collections
         res = collection.query(
-            expr="id > 0", 
+            expr="",  # Empty expr is faster than "id > 0" or "id >= 0"
             output_fields=["schema_name", "table_name", "table_type", "description"],
-            limit=1000, # Cap reasonable limit
-            consistency_level="Strong"
+            limit=16384  # Milvus max limit for better coverage
         )
         
         schemas = []

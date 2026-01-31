@@ -517,10 +517,6 @@ export const api = {
 
     // Admin API
     admin: {
-        getSchemaStatus: async (): Promise<AdminSchemaStatus[]> => {
-            const response = await axios.get(`${API_BASE_URL}/admin/schema/status`);
-            return response.data;
-        },
         syncTable: async (schema: string, table: string) => {
             await axios.post(`${API_BASE_URL}/admin/schema/sync`, null, { params: { schema, table } });
         },
@@ -568,6 +564,17 @@ export const api = {
         },
         clearAllSchemas: async () => {
             await axios.post(`${API_BASE_URL}/admin/schema/clear`);
+        },
+        getSchemaStatus: async (includeDbInspection: boolean = false): Promise<AdminSchemaStatus[]> => {
+            const params = includeDbInspection ? { include_db_inspection: 'true' } : {};
+            const response = await axios.get(`${API_BASE_URL}/admin/schema/status`, { params });
+            return response.data;
+        },
+        inspectDatabase: async (): Promise<AdminSchemaStatus[]> => {
+            const response = await axios.get(`${API_BASE_URL}/admin/schema/status`, {
+                params: { include_db_inspection: 'true' }
+            });
+            return response.data;
         },
         getSchemaTemplate: async () => {
             const response = await axios.get(`${API_BASE_URL}/admin/schema/template`, {

@@ -23,9 +23,15 @@ _upload_progress = {"current": 0, "total": 0, "status": "idle"}
 # --- Schema Management ---
 
 @router.get("/schema/status", response_model=List[AdminSchemaStatus])
-def get_schemas_status(api_key: str = Depends(verify_api_key)):
+def get_schemas_status(include_db_inspection: bool = False, api_key: str = Depends(verify_api_key)):
+    """Get status of all schemas in database vs vector store
+    
+    Args:
+        include_db_inspection: If True, compare with database to show missing tables.
+                              If False (default), only return indexed schemas for faster loading.
+    """
     try:
-        return get_schema_status()
+        return get_schema_status(include_database_inspection=include_db_inspection)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
