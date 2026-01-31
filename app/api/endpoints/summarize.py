@@ -44,11 +44,21 @@ Here are the results (tabular data):
             prompt += f"\nChart type displayed: {payload.chart_type}"
         prompt += """
 
-Please provide a concise summary of the key findings in bullet point format:
-- Use 3-5 bullet points
-- Each bullet should highlight one key insight from the data
-- Be specific with numbers and percentages where relevant
-- Keep each bullet to 1-2 sentences"""
+Please provide a concise summary following this structure:
+
+**Answer to User's Question:**
+[Directly answer what the user asked in 1-2 sentences with specific data from the results]
+
+**Other Key Findings:**
+- [Additional insight 1]
+- [Additional insight 2]
+- [Additional insight 3]
+
+Guidelines:
+- Prioritize answering the user's specific question first
+- Be specific with numbers and percentages
+- Keep insights concise (1-2 sentences each)
+- Only include 2-3 additional findings beyond the direct answer"""
         
         summary = llm_service.chat(prompt, temperature=0.3)
         return SummarizeResultsResponse(summary=summary)
