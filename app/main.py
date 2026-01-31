@@ -7,8 +7,6 @@ from app.services.ingest_service import create_milvus_collections, ingest_metada
 from app.services.vector_store import get_vector_store
 import logging
 
-print(f"DEBUG: settings_endpoint file: {settings_endpoint.__file__}")
-
 # Setup Logger
 logger = logging.getLogger(__name__)
 

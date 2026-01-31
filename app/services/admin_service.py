@@ -142,65 +142,78 @@ def build_table_markdown_description(
     md += "---\n"
     return md
 
-def get_schema_status() -> List[AdminSchemaStatus]:
+def get_schema_status(include_database_inspection: bool = False) -> List[AdminSchemaStatus]:
     vector_store = get_vector_store()
-    # 1. Get real DB tables and views (Try-Catch for DB Connection issues)
+    
+    # 1. Get indexed tables from Milvus FIRST (fast operation)
+    indexed_schemas = vector_store.get_all_schemas()
+    
+    # Skip database inspection if not requested (performance optimization)
+    if not include_database_inspection:
+        status_list = []
+        for schema_obj in indexed_schemas:
+            status_list.append(AdminSchemaStatus(
+                schema_name=schema_obj.schema_name,
+                table_name=schema_obj.table_name,
+                table_type=schema_obj.table_type or "table",
+                is_indexed=True,
+                description=schema_obj.description,
+                column_count=len(schema_obj.columns)
+            ))
+        return status_list
+    
+    # 2. Get real DB tables and views (Try-Catch for DB Connection issues)
+    # Build a set of what we need to check instead of getting ALL tables
     engine = get_db_engine()
-    db_objects = []  # List of (schema, name, type)
-    inspector = None
+    db_objects_set = set()  # Set of "schema.table" strings
     db_connection_error = False
     
     try:
         inspector = inspect(engine)
         for schema in inspector.get_schema_names():
-            if schema in ['information_schema', 'sys', 'guest', 'sysadmin']: continue
+            if schema in ['information_schema', 'sys', 'guest', 'sysadmin']: 
+                continue
             # Get tables
             for table in inspector.get_table_names(schema=schema):
-                db_objects.append((schema, table, 'table'))
-            # Get views
+                db_objects_set.add(f"{schema}.{table}")
+            # Get views  
             for view in inspector.get_view_names(schema=schema):
-                db_objects.append((schema, view, 'view'))
+                db_objects_set.add(f"{schema}.{view}")
     except Exception as e:
         print(f"Warning: Failed to inspect database: {e}")
         db_connection_error = True
-
-    # 2. Get indexed tables from Milvus
-    indexed_schemas = vector_store.get_all_schemas()
-    indexed_map = {f"{s.schema_name}.{s.table_name}": s for s in indexed_schemas}
     
-    # 3. Merge
-    # 3. Merge - ONLY return indexed items as per user request
+    print(f"[PERF] Database inspection took: {time.time() - t2:.3f}s for {len(db_objects_set)} objects")
+    
+    # 3. Build result list (fast - no DB queries per item)
+    t3 = time.time()
     status_list = []
-    
-    # Create a lookup for DB objects to check if indexed items are live
-    db_obj_lookup = {f"{s}.{t}": t_type for s, t, t_type in db_objects}
     
     # Iterate through ALL indexed schemas
     for schema_obj in indexed_schemas:
         key = f"{schema_obj.schema_name}.{schema_obj.table_name}"
-        is_live = key in db_obj_lookup
+        is_live = key in db_objects_set
         
         # Determine status
         status = "Live" if is_live else ("Indexed (DB Error)" if db_connection_error else "Orphaned")
         
-        # Get up-to-date column count if live
-        col_count = len(schema_obj.columns)
-        if is_live:
-            try:
-                cols = inspector.get_columns(schema_obj.table_name, schema=schema_obj.schema_name)
-                col_count = len(cols)
-            except: pass
+        # Use column count from vector store (already has it from schema_obj)
+        # Don't query database for column count - too expensive!
+        col_count = len(schema_obj.columns) if schema_obj.columns else 0
             
         status_list.append(AdminSchemaStatus(
             schema_name=schema_obj.schema_name,
             table_name=schema_obj.table_name,
-            table_type=schema_obj.table_type or db_obj_lookup.get(key, 'table'),
+            table_type=schema_obj.table_type or 'table',
             is_indexed=True,
             description=schema_obj.description,
             column_count=col_count,
             last_updated=status
         ))
-
+    
+    print(f"[PERF] Building status list took: {time.time() - t3:.3f}s")
+    print(f"[PERF] TOTAL get_schema_status took: {time.time() - start_time:.3f}s")
+    
     return status_list
 
 def sync_specific_table(schema_name: str, table_name: str, custom_description: Optional[str] = None):
