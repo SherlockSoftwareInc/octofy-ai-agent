@@ -116,11 +116,18 @@ User Question: "{user_query}"
 ### INSTRUCTIONS
 1. Analyze the user's intent and the data structure.
 2. Select the most appropriate chart type from this list:
-   - 'bar': Comparisons among categories.
-   - 'line': Trends over time.
-   - 'pie': Part-to-whole (only if < 10 categories).
-   - 'scatter': Relationship between two numerical variables.
-   - 'kpi': Single big number (if result is 1 row/1 col).
+   - 'bar': Horizontal bar chart for comparisons among categories.
+   - 'line': Line chart for trends over time or continuous data.
+   - 'pie': Pie chart for part-to-whole (only if < 10 categories).
+   - 'scatter': Scatter plot for relationship between two numerical variables.
+   - 'column': Vertical column chart for comparisons among categories.
+   - 'area': Area chart for cumulative trends over time.
+   - 'stackedBar': Stacked horizontal bar chart for multi-series comparisons.
+   - 'stackedColumn': Stacked vertical column chart for multi-series comparisons.
+   - 'clusteredColumn': Grouped vertical columns for side-by-side comparisons.
+   - 'treemap': Treemap for hierarchical part-to-whole relationships.
+   - 'radar': Radar/spider chart for multivariate data comparison.
+   - 'funnel': Funnel chart for sequential stage analysis (e.g., conversion rates).
    - 'none': If no visualization is appropriate (e.g. text/table data only).
 
 3. Determine the X-Axis and Y-Axis columns.
@@ -136,7 +143,7 @@ User Question: "{user_query}"
 Return valid JSON ONLY. No markdown, no explanations outside the JSON.
 
 {{
-  "chart_type": "bar" | "line" | "pie" | "scatter" | "kpi" | "none",
+  "chart_type": "bar" | "line" | "pie" | "scatter" | "column" | "area" | "stackedBar" | "stackedColumn" | "clusteredColumn" | "treemap" | "radar" | "funnel" | "none",
   "x_axis": "column_name", 
   "y_axis": ["column_name1", ...],
   "title": "Chart Title",
