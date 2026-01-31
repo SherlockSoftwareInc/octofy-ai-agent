@@ -183,10 +183,7 @@ def get_schema_status(include_database_inspection: bool = False) -> List[AdminSc
         print(f"Warning: Failed to inspect database: {e}")
         db_connection_error = True
     
-    print(f"[PERF] Database inspection took: {time.time() - t2:.3f}s for {len(db_objects_set)} objects")
-    
     # 3. Build result list (fast - no DB queries per item)
-    t3 = time.time()
     status_list = []
     
     # Iterate through ALL indexed schemas
@@ -210,9 +207,6 @@ def get_schema_status(include_database_inspection: bool = False) -> List[AdminSc
             column_count=col_count,
             last_updated=status
         ))
-    
-    print(f"[PERF] Building status list took: {time.time() - t3:.3f}s")
-    print(f"[PERF] TOTAL get_schema_status took: {time.time() - start_time:.3f}s")
     
     return status_list
 
