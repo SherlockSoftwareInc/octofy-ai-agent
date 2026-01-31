@@ -87,6 +87,7 @@ export interface SearchObject {
     schema: string;
     name: string;
     type?: string | null;
+    auto_checked?: boolean;  // High-confidence flag for essential tables
 }
 
 
@@ -206,16 +207,26 @@ export const api = {
         previousSQL?: string,
         queryHistory?: string,
         forceGeneral: boolean = false,
-        queryMode: 'generate' | 'search' = 'generate',
+        queryMode: 'generate' | 'search' | 'plan' = 'generate',
         signal?: AbortSignal,
-        tableOverride?: string[]
+        tableOverride?: string[],
+        planningContext?: any
     ): Promise<GenerateSQLResponse> => {
         const url = `${API_BASE_URL}/generate-sql`;
         const headers = {
             'Content-Type': 'application/json',
             'X-API-Key': getApiKey()
         };
-        const body = JSON.stringify({ query, context, previousSQL, queryHistory, forceGeneral, queryMode, table_override: tableOverride });
+        const body = JSON.stringify({ 
+            query, 
+            context, 
+            previousSQL, 
+            queryHistory, 
+            forceGeneral, 
+            queryMode, 
+            table_override: tableOverride,
+            planning_context: planningContext
+        });
 
         const response = await fetch(url, {
             method: 'POST',
@@ -1000,6 +1011,20 @@ export const summarizeResults = async (
         user_request: userRequest,
         result_data: resultData,
         chart_type: chartType || undefined
+    });
+    return response.data;
+};
+
+/**
+ * Generate a planning summary from planning context
+ * @param planningContext The accumulated planning state
+ * @returns {Promise<{summary: string}>}
+ */
+export const generatePlanningSummary = async (
+    planningContext: any
+): Promise<{ summary: string }> => {
+    const response = await axios.post(`${API_BASE_URL}/planning-summary`, {
+        planning_context: planningContext
     });
     return response.data;
 };

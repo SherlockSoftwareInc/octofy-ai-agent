@@ -412,8 +412,299 @@ def search_data_objects(query: str) -> GenerateSQLResponse:
         )
 
 
+def planning_conversation(query: str, planning_context: Optional[Dict[str, Any]] = None) -> GenerateSQLResponse:
+    """
+    Intelligent planning mode with LLM-driven conversation and smart clarification detection.
+    
+    Strategy:
+    - Ask questions only when information is ambiguous or missing
+    - Auto-check tables with >90% confidence
+    - Guide user efficiently toward complete planning
+    
+    Args:
+        query: User's current message
+        planning_context: Accumulated planning state from previous turns
+            {
+                "goal": str,  # User's stated analysis objective
+                "selected_tables": List[str],  # User-checked tables
+                "suggested_tables": List[Dict],  # AI-suggested tables
+                "requirements": List[Dict],  # Filters, date ranges, business logic
+                "conversation_history": List[Dict],  # Previous Q&A
+                "turn_count": int
+            }
+    
+    Returns:
+        GenerateSQLResponse with:
+            - explanation: AI's conversational response
+            - objects: Suggested tables with auto_checked flag
+            - context_text: Updated planning_context JSON
+            - query_type: "plan"
+    """
+    import json
+    
+    try:
+        llm_service = get_llm_service()
+        vector_store = get_vector_store()
+        
+        # Initialize or load context
+        if not planning_context:
+            planning_context = {
+                "goal": "",
+                "selected_tables": [],
+                "suggested_tables": [],
+                "requirements": [],
+                "conversation_history": [],
+                "turn_count": 0
+            }
+        
+        # Step 1: Use LLM to analyze user intent with smart clarification detection
+        intent_prompt = f"""You are a data analysis planning assistant. Analyze the user's message:
+
+Previous Context: {json.dumps(planning_context, indent=2)}
+User Message: {query}
+
+Determine:
+1. Is the user's goal clear? (yes/no)
+2. Are there ambiguities that MUST be resolved before finding tables? (list them)
+3. Is there enough info to suggest database tables? (yes/no)
+4. What critical questions need answers? (only if truly necessary)
+
+Respond in JSON:
+{{
+    "goal_clear": true/false,
+    "goal_statement": "Clear 1-sentence goal",
+    "critical_ambiguities": ["ambiguity1", "ambiguity2"],
+    "ready_for_search": true/false,
+    "required_questions": [
+        {{"question": "...", "reason": "why this must be asked"}}
+    ],
+    "requirements_extracted": [
+        {{"type": "time_period|filter|metric|grouping", "value": "..."}}
+    ]
+}}
+
+IMPORTANT: Only ask questions if information is genuinely ambiguous or missing critical details.
+If the user said "sales analysis", assume they want revenue unless they specify otherwise.
+Be helpful, not interrogative."""
+
+        try:
+            intent_response = llm_service.chat(intent_prompt)
+            # Clean up response - remove markdown code blocks if present
+            intent_response_clean = intent_response.strip()
+            if intent_response_clean.startswith("```"):
+                intent_response_clean = re.sub(r'^```(?:json)?\s*\n', '', intent_response_clean)
+                intent_response_clean = re.sub(r'\n```\s*$', '', intent_response_clean)
+            intent_data = json.loads(intent_response_clean)
+        except json.JSONDecodeError as e:
+            logging.error(f"Failed to parse intent JSON: {e}. Response: {intent_response}")
+            # Fallback: assume basic intent
+            intent_data = {
+                "goal_clear": True,
+                "goal_statement": query,
+                "critical_ambiguities": [],
+                "ready_for_search": True,
+                "required_questions": [],
+                "requirements_extracted": []
+            }
+        
+        # Step 2: Update planning context
+        if intent_data.get("goal_statement"):
+            planning_context["goal"] = intent_data["goal_statement"]
+        
+        for req in intent_data.get("requirements_extracted", []):
+            planning_context["requirements"].append(req)
+        
+        planning_context["conversation_history"].append({
+            "turn": planning_context["turn_count"],
+            "user": query,
+            "intent": intent_data
+        })
+        planning_context["turn_count"] += 1
+        
+        # Step 3: Perform semantic search if ready
+        suggested_objects = []
+        auto_checked_tables = []
+        
+        if intent_data.get("ready_for_search"):
+            search_query = planning_context.get("goal", "") + " " + query
+            search_result = search_data_objects(search_query)
+            suggested_objects = search_result.objects or []
+            
+            # Step 4: Determine which tables to auto-check (>90% confidence)
+            if suggested_objects and len(suggested_objects) > 0:
+                # Build table descriptions for confidence prompt
+                table_list = [
+                    f"[{obj.schema_name}].[{obj.name}] ({obj.type or 'Table'})"
+                    for obj in suggested_objects
+                ]
+                
+                confidence_prompt = f"""Given this user goal: {planning_context.get("goal", query)}
+
+And these suggested tables: {', '.join(table_list)}
+
+Which tables are ESSENTIAL (>90% confidence needed) for this analysis?
+
+Respond with JSON:
+{{
+    "essential_tables": ["[schema].[table]", ...],
+    "reasoning": {{"[schema].[table]": "why essential"}}
+}}
+
+Be conservative - only mark as essential if absolutely required for the stated goal.
+Maximum 3 essential tables."""
+
+                try:
+                    confidence_response = llm_service.chat(confidence_prompt)
+                    # Clean up response
+                    confidence_response_clean = confidence_response.strip()
+                    if confidence_response_clean.startswith("```"):
+                        confidence_response_clean = re.sub(r'^```(?:json)?\s*\n', '', confidence_response_clean)
+                        confidence_response_clean = re.sub(r'\n```\s*$', '', confidence_response_clean)
+                    confidence_data = json.loads(confidence_response_clean)
+                    auto_checked_tables = confidence_data.get("essential_tables", [])
+                except (json.JSONDecodeError, Exception) as e:
+                    logging.error(f"Failed to parse confidence JSON: {e}")
+                    # Fallback: auto-check top 1 table
+                    if suggested_objects:
+                        auto_checked_tables = [f"[{suggested_objects[0].schema_name}].[{suggested_objects[0].name}]"]
+                
+                # Normalize auto-checked table names and mark objects
+                auto_checked_normalized = []
+                for table_name in auto_checked_tables:
+                    normalized = table_name.strip().replace('[', '').replace(']', '')
+                    auto_checked_normalized.append(normalized)
+                
+                # Mark auto-checked objects
+                for obj in suggested_objects:
+                    obj_key = f"{obj.schema_name}.{obj.name}"
+                    if obj_key in auto_checked_normalized or f"[{obj.schema_name}].[{obj.name}]" in auto_checked_tables:
+                        obj.auto_checked = True
+                
+                # Add to selected tables in context
+                planning_context["selected_tables"] = list(set(
+                    planning_context.get("selected_tables", []) + auto_checked_tables
+                ))
+        
+        # Step 5: Generate conversational response
+        response_prompt = f"""Generate a helpful response for this planning conversation.
+
+Context: {json.dumps(planning_context, indent=2)}
+Intent Analysis: {json.dumps(intent_data, indent=2)}
+Number of Suggested Tables: {len(suggested_objects)}
+Auto-Checked Tables: {json.dumps(auto_checked_tables, indent=2)}
+
+Guidelines:
+1. Acknowledge their input warmly
+2. ONLY ask questions from intent_data["required_questions"] (if any exist)
+3. If tables found, say: "Based on your question about [topic], please review the following tables and select the ones you want to use in the analysis:"
+4. If tables were auto-checked, mention: "I've pre-selected tables that are essential for your analysis, but you can adjust the selection."
+5. Keep it conversational and helpful, not robotic
+6. If planning seems complete (goal clear, tables selected, requirements noted), say: "Your planning is complete! Switch to 'Generate SQL' or another mode when you're ready to create the code."
+
+Format as markdown. Be concise but friendly. Maximum 4 sentences."""
+
+        ai_response = llm_service.chat(response_prompt)
+        
+        return GenerateSQLResponse(
+            sql="",
+            explanation=ai_response,
+            objects=suggested_objects,
+            query_type="plan",
+            context_text=json.dumps(planning_context)
+        )
+        
+    except Exception as e:
+        logging.error(f"Error in planning conversation: {e}")
+        return GenerateSQLResponse(
+            sql="",
+            explanation=f"I encountered an issue during planning. Let's try again: {str(e)}",
+            query_type="plan",
+            context_text=json.dumps(planning_context) if planning_context else "{}"
+        )
+
+
+def generate_planning_summary(planning_context: Dict[str, Any]) -> str:
+    """
+    Generate a structured markdown summary from planning context.
+    
+    Args:
+        planning_context: Accumulated planning state
+    
+    Returns:
+        Formatted summary for display and code generation
+    """
+    import json
+    
+    try:
+        llm_service = get_llm_service()
+        
+        # Extract user's original request from conversation history
+        user_messages = [turn.get("user", "") for turn in planning_context.get("conversation_history", [])]
+        original_request = user_messages[0] if user_messages else planning_context.get("goal", "")
+        
+        prompt = f"""Create a concise summary from this planning conversation for code generation.
+
+**User's Primary Request:** {original_request}
+
+**Full Planning Context:** {json.dumps(planning_context, indent=2)}
+
+CRITICAL: The summary must focus on WHAT THE USER WANTS TO ACHIEVE (their primary analysis request), NOT just list tables.
+
+Format as markdown:
+## Primary Request
+[Restate the user's original analysis question/goal in clear terms - this is the MAIN focus]
+
+## Data Sources
+[List only the selected tables - keep this section minimal]
+• [schema].[table]
+• ...
+
+## Additional Requirements
+[ONLY if user specified filters, date ranges, grouping, metrics, etc.]
+• [requirement]
+
+Guidelines:
+- The "Primary Request" section is THE MOST IMPORTANT - it should clearly state what the user wants to analyze or find out
+- Selected tables are SUPPORTING information, not the main focus
+- Keep total summary under 150 words
+- This summary will be sent directly to code generation, so it must clearly communicate the user's intent"""
+
+        summary = llm_service.chat(prompt)
+        return summary
+        
+    except Exception as e:
+        logging.error(f"Error generating planning summary: {e}")
+        # Fallback: simple summary focusing on user's primary request
+        user_messages = [turn.get("user", "") for turn in planning_context.get("conversation_history", [])]
+        original_request = user_messages[0] if user_messages else planning_context.get("goal", "Analysis goal not specified")
+        
+        tables = planning_context.get("selected_tables", [])
+        requirements = planning_context.get("requirements", [])
+        
+        summary = f"## Primary Request\n{original_request}\n\n"
+        if tables:
+            summary += f"## Data Sources\n"
+            for table in tables:
+                summary += f"• {table}\n"
+            summary += "\n"
+        if requirements:
+            summary += "## Additional Requirements\n"
+            for req in requirements[:5]:  # Limit to 5
+                req_value = req.get("value", str(req))
+                summary += f"• {req_value}\n"
+        
+        return summary
+
+
 def generate_sql_for_request(request: GenerateSQLRequest, previous_sql: Optional[str] = None, query_history: Optional[str] = None) -> Generator[Union[AgentStatus, Dict[str, Any]], None, None]:
-    # Check for search mode first - user explicitly chose to search objects
+    # Check for plan mode first - conversational planning
+    if request.queryMode == "plan":
+        yield AgentStatus(step_id=1, message="Thinking about your data needs...")
+        result = planning_conversation(request.query, request.planning_context)
+        yield {"type": "result", "payload": result}
+        return
+    
+    # Check for search mode - user explicitly chose to search objects
     if request.queryMode == "search":
         yield AgentStatus(step_id=1, message="Searching database objects...")
         result = search_data_objects(request.query)

@@ -96,7 +96,7 @@ export interface ChatMessage {
   timestamp: Date;
   discoveryResult?: DiscoveryResponse;
   sqlResult?: GenerateSQLResponse;
-  queryType?: 'database' | 'general' | 'uncertain' | 'search' | 'r_code' | 'sas_code' | 'python_code';
+  queryType?: 'database' | 'general' | 'uncertain' | 'search' | 'plan' | 'planning_summary' | 'r_code' | 'sas_code' | 'python_code';
   needsClarification?: boolean;
   sourceQuery?: string;
   executionResult?: ExecutePythonResponse;
@@ -133,5 +133,7 @@ export interface Conversation {
   lastGeneratedSQL?: string;
   queryHistory?: string;
   selectedObjects?: string[];
+  planningContext?: any;  // Structured planning state for conversational exploration
+  planningSummary?: string;  // Auto-generated summary from planning conversation
 }
 
