@@ -317,6 +317,7 @@ function App() {
         console.error('Error processing database query:', error);
       } finally {
         setIsLoading(false);
+        setTimeout(() => textareaRef.current?.focus(), 0);
       }
     } else {
       // Re-run as general query with forceGeneral flag
@@ -355,6 +356,7 @@ function App() {
         console.error('Error processing general query:', error);
       } finally {
         setIsLoading(false);
+        setTimeout(() => textareaRef.current?.focus(), 0);
       }
     }
   };
@@ -690,6 +692,7 @@ function App() {
         updateConversation(conversationId, { messages: updatedMessages });
       } finally {
         setIsLoading(false);
+        setTimeout(() => textareaRef.current?.focus(), 0);
       }
       return;
     }
@@ -767,6 +770,7 @@ function App() {
         updateConversation(conversationId, { messages: updatedMessages });
       } finally {
         setIsLoading(false);
+        setTimeout(() => textareaRef.current?.focus(), 0);
       }
       return;
     }
@@ -845,6 +849,7 @@ function App() {
         updateConversation(conversationId, { messages: updatedMessages });
       } finally {
         setIsLoading(false);
+        setTimeout(() => textareaRef.current?.focus(), 0);
       }
       return;
     }
@@ -1138,6 +1143,7 @@ function App() {
     } finally {
       setIsLoading(false);
       abortControllerRef.current = null;
+      setTimeout(() => textareaRef.current?.focus(), 0);
     }
   };
 
