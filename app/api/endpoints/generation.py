@@ -417,3 +417,32 @@ async def execute_sql_endpoint(request: ExecuteSQLRequest, api_key: str = Depend
             recommendation=None,
             execution_time=0.0
         )
+
+
+@router.post("/planning-summary")
+async def generate_planning_summary_endpoint(
+    request: dict,
+    api_key: str = Depends(verify_api_key)
+):
+    """
+    Generate a structured summary from planning context.
+    
+    Request body: {"planning_context": {...}}
+    Response: {"summary": "markdown formatted summary"}
+    """
+    try:
+        from app.services.generation_service import generate_planning_summary
+        
+        planning_context = request.get("planning_context")
+        if not planning_context:
+            raise HTTPException(status_code=400, detail="planning_context required")
+        
+        summary = generate_planning_summary(planning_context)
+        
+        return {"summary": summary}
+    
+    except Exception as e:
+        logger.error(f"Error generating planning summary: {e}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=str(e))
+
