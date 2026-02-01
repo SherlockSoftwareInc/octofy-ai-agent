@@ -1,6 +1,6 @@
 from abc import ABC, abstractmethod
 from typing import List, Dict, Any, Optional
-from app.models.schemas import TableSchema, ColumnInfo
+from app.models.schemas import TableSchema, ColumnInfo, DataObject, ObjectType
 from app.core.config import settings
 from pymilvus import connections, Collection, utility, FieldSchema, CollectionSchema, DataType
 from openai import OpenAI, NotFoundError
@@ -162,6 +162,7 @@ class MilvusVectorStore(VectorStoreBase):
             self._connected = True
             self._ensure_values_collection()
             self._ensure_schema_collection()
+            self._ensure_schema_v2_collection()  # NEW: Multi-source collection
             self._ensure_fewshot_collection()
         except Exception as e:
             print(f"Failed to connect to Milvus: {e}")
@@ -258,6 +259,56 @@ class MilvusVectorStore(VectorStoreBase):
             print(f"Created/updated schema collection: {settings.MILVUS_COLLECTION_SCHEMA}")
         except Exception as e:
             print(f"Failed to ensure schema collection: {e}")
+
+    def _ensure_schema_v2_collection(self):
+        """
+        Ensure the schema_index_v2 collection exists with multi-source support and SP/Function fields.
+        This collection supports: tables, views, stored procedures, and functions across multiple data sources.
+        """
+        try:
+            if utility.has_collection(settings.MILVUS_COLLECTION_SCHEMA_V2):
+                existing = Collection(settings.MILVUS_COLLECTION_SCHEMA_V2)
+                
+                # Check Dimensions
+                fields = {f.name: f for f in existing.schema.fields}
+                if "embedding" in fields:
+                    dim = fields["embedding"].params.get("dim")
+                    if dim and int(dim) != self._embedding_dim:
+                        print(f"WARNING: Dimension mismatch for {settings.MILVUS_COLLECTION_SCHEMA_V2}. Expected {self._embedding_dim}, found {dim}. Recreating collection.")
+                        utility.drop_collection(settings.MILVUS_COLLECTION_SCHEMA_V2)
+                    else:
+                        # Check required fields for v2 schema
+                        required_fields = ["source_id", "object_name", "object_type", "definition"]
+                        if all(field in fields for field in required_fields):
+                            return
+                        print(f"Schema v2 collection missing required fields. Recreating.")
+                        utility.drop_collection(settings.MILVUS_COLLECTION_SCHEMA_V2)
+                else:
+                    utility.drop_collection(settings.MILVUS_COLLECTION_SCHEMA_V2)
+            
+            schema_v2_fields = [
+                FieldSchema(name="id", dtype=DataType.INT64, is_primary=True, auto_id=True),
+                FieldSchema(name="embedding", dtype=DataType.FLOAT_VECTOR, dim=self._embedding_dim),
+                FieldSchema(name="source_id", dtype=DataType.VARCHAR, max_length=128),  # Links to data source
+                FieldSchema(name="schema_name", dtype=DataType.VARCHAR, max_length=128),
+                FieldSchema(name="object_name", dtype=DataType.VARCHAR, max_length=128),  # Renamed from table_name
+                FieldSchema(name="object_type", dtype=DataType.VARCHAR, max_length=32),  # 'table', 'view', 'stored_procedure', 'function'
+                FieldSchema(name="description", dtype=DataType.VARCHAR, max_length=65535),  # Rich Markdown description
+                FieldSchema(name="definition", dtype=DataType.VARCHAR, max_length=65535),  # SP/Function code
+                FieldSchema(name="return_type", dtype=DataType.VARCHAR, max_length=256),  # Function return type
+            ]
+            schema_v2_schema = CollectionSchema(fields=schema_v2_fields, description="Multi-Source Database Schema Index (v2)")
+            coll = Collection(name=settings.MILVUS_COLLECTION_SCHEMA_V2, schema=schema_v2_schema)
+            index_params = {
+                "metric_type": "L2",
+                "index_type": "IVF_FLAT",
+                "params": {"nlist": 1024}
+            }
+            coll.create_index(field_name="embedding", index_params=index_params)
+            coll.flush()
+            print(f"Created/updated schema_v2 collection: {settings.MILVUS_COLLECTION_SCHEMA_V2}")
+        except Exception as e:
+            print(f"Failed to ensure schema_v2 collection: {e}")
 
     def _ensure_fewshot_collection(self):
         """
@@ -710,6 +761,172 @@ class MilvusVectorStore(VectorStoreBase):
         except Exception:
             pass
         collection.delete("id >= 0")
+        collection.flush()
+
+    # --- Schema V2 (Multi-Source) Methods ---
+
+    def insert_data_object_v2(self, data_object: DataObject, text_for_embedding: str):
+        """
+        Insert a data object (table, view, SP, function) into schema_index_v2.
+        
+        Args:
+            data_object: DataObject with all metadata
+            text_for_embedding: Text to generate embedding from (usually description + object name)
+        """
+        if not self._connected:
+            raise Exception("Milvus is not connected. Cannot insert data object.")
+        self._ensure_schema_v2_collection()
+        collection = Collection(settings.MILVUS_COLLECTION_SCHEMA_V2)
+        try:
+            collection.load()
+        except Exception:
+            pass
+        
+        # Delete existing object to avoid duplicates
+        if data_object.source_id:
+            collection.delete(
+                f'object_name == "{data_object.object_name}" && '
+                f'schema_name == "{data_object.schema_name}" && '
+                f'source_id == "{data_object.source_id}"'
+            )
+        
+        # Generate embedding
+        embedding = self._get_embedding(text_for_embedding)
+        
+        # Prepare data for insertion
+        # Schema: [embedding], [source_id], [schema_name], [object_name], [object_type], [description], [definition], [return_type]
+        data = [
+            [embedding],
+            [data_object.source_id or ""],
+            [data_object.schema_name],
+            [data_object.object_name],
+            [data_object.object_type.value],
+            [data_object.description or ""],
+            [data_object.definition or ""],
+            [data_object.return_type or ""]
+        ]
+        
+        collection.insert(data)
+        collection.flush()
+
+    def get_all_objects_v2(self, source_id: Optional[str] = None) -> List[Dict[str, Any]]:
+        """
+        Retrieve all objects from schema_index_v2, optionally filtered by source_id.
+        
+        Args:
+            source_id: Optional source ID to filter by
+            
+        Returns:
+            List of data objects with metadata
+        """
+        if not self._connected:
+            return []
+        if not utility.has_collection(settings.MILVUS_COLLECTION_SCHEMA_V2):
+            return []
+        
+        collection = Collection(settings.MILVUS_COLLECTION_SCHEMA_V2)
+        collection.load()
+        
+        # Build filter expression
+        expr = "id >= 0"
+        if source_id:
+            expr = f'source_id == "{source_id}"'
+        
+        res = collection.query(
+            expr=expr,
+            output_fields=["id", "source_id", "schema_name", "object_name", "object_type", "description", "definition", "return_type"],
+            limit=10000,
+            consistency_level="Strong"
+        )
+        return res
+
+    def search_objects_v2(self, query: str, top_k: int = 5, source_id: Optional[str] = None, object_types: Optional[List[str]] = None) -> List[Dict[str, Any]]:
+        """
+        Semantic search for data objects in schema_index_v2.
+        
+        Args:
+            query: Natural language query
+            top_k: Number of results to return
+            source_id: Optional source filter
+            object_types: Optional list of object types to filter by
+            
+        Returns:
+            List of matching data objects with similarity scores
+        """
+        if not self._connected:
+            return []
+        if not utility.has_collection(settings.MILVUS_COLLECTION_SCHEMA_V2):
+            return []
+        
+        embedding = self._get_embedding(query)
+        collection = Collection(settings.MILVUS_COLLECTION_SCHEMA_V2)
+        collection.load()
+        
+        search_params = {
+            "metric_type": "L2",
+            "params": {"nprobe": 64}
+        }
+        
+        # Build filter expression
+        filter_parts = []
+        if source_id:
+            filter_parts.append(f'source_id == "{source_id}"')
+        if object_types:
+            types_str = ', '.join([f'"{t}"' for t in object_types])
+            filter_parts.append(f'object_type in [{types_str}]')
+        
+        filter_expr = " && ".join(filter_parts) if filter_parts else None
+        
+        results = collection.search(
+            data=[embedding],
+            anns_field="embedding",
+            param=search_params,
+            limit=top_k,
+            expr=filter_expr,
+            output_fields=["source_id", "schema_name", "object_name", "object_type", "description", "definition", "return_type"]
+        )
+        
+        retrieved_items = []
+        for hits in results:
+            for hit in hits:
+                if hit.score <= 1.5:  # Moderate relevance threshold
+                    item = hit.entity.to_dict()
+                    item['score'] = hit.score
+                    retrieved_items.append(item)
+        
+        return retrieved_items
+
+    def delete_data_object_v2(self, source_id: str, schema_name: str, object_name: str):
+        """Delete a specific data object from schema_index_v2."""
+        if not self._connected:
+            raise Exception("Milvus is not connected. Cannot delete object.")
+        if not utility.has_collection(settings.MILVUS_COLLECTION_SCHEMA_V2):
+            raise Exception(f"Collection {settings.MILVUS_COLLECTION_SCHEMA_V2} does not exist")
+        
+        collection = Collection(settings.MILVUS_COLLECTION_SCHEMA_V2)
+        collection.load()
+        
+        collection.delete(
+            f'source_id == "{source_id}" && '
+            f'schema_name == "{schema_name}" && '
+            f'object_name == "{object_name}"'
+        )
+        collection.flush()
+
+    def clear_source_objects_v2(self, source_id: str):
+        """Remove all objects for a specific data source from schema_index_v2."""
+        if not self._connected:
+            return
+        if not utility.has_collection(settings.MILVUS_COLLECTION_SCHEMA_V2):
+            return
+        
+        collection = Collection(settings.MILVUS_COLLECTION_SCHEMA_V2)
+        try:
+            collection.load()
+        except Exception:
+            pass
+        
+        collection.delete(f'source_id == "{source_id}"')
         collection.flush()
 
     def get_all_fewshots(self) -> List[Dict[str, Any]]:

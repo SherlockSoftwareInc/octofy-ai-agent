@@ -1,10 +1,14 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import settings
-from app.api.endpoints import discovery, generation, admin, settings as settings_endpoint, contributions, schema as schema_endpoint
-from app.api.endpoints import summarize
+from app.api.endpoints import (
+    discovery, generation, admin, settings as settings_endpoint, 
+    contributions, schema as schema_endpoint, summarize,
+    data_sources, schema_tree
+)
 from app.services.ingest_service import create_milvus_collections, ingest_metadata
 from app.services.vector_store import get_vector_store
+from app.services.migration_service import auto_migrate_if_needed
 import logging
 
 # Setup Logger
@@ -24,6 +28,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Register routers
 app.include_router(discovery.router, prefix=settings.API_V1_STR, tags=["discovery"])
 app.include_router(generation.router, prefix=settings.API_V1_STR, tags=["generation"])
 app.include_router(schema_endpoint.router, prefix=settings.API_V1_STR, tags=["schema"])
@@ -32,8 +37,25 @@ app.include_router(settings_endpoint.router, prefix=f"{settings.API_V1_STR}/admi
 app.include_router(contributions.router, prefix=settings.API_V1_STR, tags=["contributions"])
 app.include_router(summarize.router, prefix=settings.API_V1_STR, tags=["summarize"])
 
+# NEW: Multi-source management routers
+app.include_router(data_sources.router, prefix=f"{settings.API_V1_STR}/admin", tags=["data-sources"])
+app.include_router(schema_tree.router, prefix=f"{settings.API_V1_STR}/admin", tags=["schema-tree"])
+
 @app.on_event("startup")
 async def startup_event():
+    # Run configuration migration if needed
+    logger.info("Checking for configuration migration...")
+    try:
+        migration_result = auto_migrate_if_needed()
+        if migration_result == "migrated":
+            logger.info("✅ Configuration migrated from v1 to v2 successfully!")
+        elif migration_result == "v2":
+            logger.info("Configuration is already v2 format.")
+        elif migration_result == "error":
+            logger.warning("⚠️ Configuration migration encountered an error. Check logs.")
+    except Exception as e:
+        logger.error(f"Migration check failed: {e}")
+    
     if not settings.VECTOR_DB_ENABLED:
         logger.info("Vector DB disabled. Skipping startup ingestion.")
         return

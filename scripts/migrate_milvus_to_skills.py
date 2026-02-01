@@ -150,19 +150,6 @@ Please manually enhance with:
 # See app settings for connection string
 ```
 
-## Data Groups
-
-"""
-    
-    # Add data group links
-    for group_name in ds_info['groups']:
-        group_file = f"_{normalize_name(group_name)}-group.md"
-        content += f"""### [data-groups/{group_file}](data-groups/{group_file})
-Auto-generated data group (requires manual description)
-
-"""
-    
-    content += """
 ## Physical Schemas
 
 All table schemas are stored in the `schemas/` directory, organized by database schema:
@@ -175,6 +162,20 @@ All table schemas are stored in the `schemas/` directory, organized by database 
     ds_file = ds_dir / "_data-source.md"
     ds_file.write_text(content, encoding='utf-8')
     print(f"[SUCCESS] Created {ds_file}")
+    
+    # Create .data-groups file
+    data_groups_file = ds_dir / ".data-groups"
+    data_groups_content = ""
+    
+    for group_name in ds_info['groups']:
+        group_file = f"_{normalize_name(group_name)}-group.md"
+        # The group file will be created later, so we construct the title now
+        # Format: "GroupName Data Group" (consistent with the group file title)
+        group_title = f"{group_name} Data Group"
+        data_groups_content += f"{group_title}|{group_file}\n"
+    
+    data_groups_file.write_text(data_groups_content, encoding='utf-8')
+    print(f"[SUCCESS] Created {data_groups_file} with {len(ds_info['groups'])} groups")
 
 
 def generate_data_group_file(group_info: Dict, ds_folder: str, output_dir: Path):
@@ -197,19 +198,12 @@ def generate_data_group_file(group_info: Dict, ds_folder: str, output_dir: Path)
 
 **Data Source:** {group_info['data_source']}  
 **Category:** Auto-generated  
-**Status:** Active  
 **Keywords:** {', '.join(sorted(all_keywords))}
 
 ## Description
 
 This data group was auto-generated from Milvus schema_index.
 Contains {len(group_info['tables'])} table(s).
-
-**WARNING** Manual Enhancement Needed:
-- Add detailed description of data group purpose
-- Clarify relationships between tables
-- Document any schema migration notes
-- Add common use cases
 
 ## Data Objects
 
@@ -233,16 +227,6 @@ Contains {len(group_info['tables'])} table(s).
 """
         content += "\n"
     
-    content += """
-## Common Use Cases
-
-(Requires manual documentation)
-
-## Related Data Groups
-
-(Requires manual documentation)
-"""
-    
     file_path = group_dir / group_file
     file_path.write_text(content, encoding='utf-8')
     print(f"[SUCCESS] Created {file_path}")
@@ -258,37 +242,11 @@ def generate_table_file(table: TableSchema, ds_folder: str, output_dir: Path):
 
 **Data Source:** Auto-generated  
 **Schema:** {table.schema_name}  
-**Type:** {table.table_type.capitalize() if table.table_type else 'Table'}  
-**Era:** Unknown  
-**Record Count:** Unknown  
-**Update Frequency:** Unknown
+**Type:** {table.table_type.capitalize() if table.table_type else 'Table'}
 
 ## Description
 
 {table.description or 'No description available. Please add manually.'}
-
-## Columns
-
-"""
-    
-    # Add column information
-    for col in table.columns:
-        content += f"""### {col.name} ({col.data_type})
-{col.description or 'No description available.'}
-
-"""
-    
-    content += """## Common Queries
-
-(Requires manual documentation)
-
-## Related Tables
-
-(Requires manual documentation)
-
-## Data Quality Notes
-
-(Requires manual documentation)
 """
     
     table_file = schema_dir / f"{table.schema_name}.{table.table_name}.md"

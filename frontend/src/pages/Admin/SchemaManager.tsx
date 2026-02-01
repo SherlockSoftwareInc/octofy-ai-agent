@@ -1,9 +1,10 @@
 import React, { useEffect, useState, useMemo } from 'react';
 import { api } from '../../api/client';
 import type { AdminSchemaStatus } from '../../api/client';
-import { RefreshCw, CheckCircle, AlertCircle, Play, Edit, Trash2, Download, Upload, Loader2, PlayCircle, Search } from 'lucide-react';
+import { RefreshCw, CheckCircle, AlertCircle, Play, Edit, Trash2, Download, Upload, Loader2, PlayCircle, Search, FolderTree } from 'lucide-react';
 import { SchemaDescriptionEditor } from '../../components/SchemaDescriptionEditor';
 import { Pagination } from '../../components/Pagination';
+import { SkillsManager } from './SkillsManager';
 
 interface UploadStatus {
     status: 'idle' | 'loading' | 'success' | 'error';
@@ -31,6 +32,7 @@ interface SchemaManagerProps {
 }
 
 export const SchemaManager: React.FC<SchemaManagerProps> = ({ onUploadStateChange }) => {
+    const [viewMode, setViewMode] = useState<'vector' | 'skills'>('vector');
     const [schemas, setSchemas] = useState<AdminSchemaStatus[]>([]);
     const [loading, setLoading] = useState(false);
     const [syncing, setSyncing] = useState<string | null>(null);
@@ -338,9 +340,36 @@ export const SchemaManager: React.FC<SchemaManagerProps> = ({ onUploadStateChang
     return (
         <div className="p-6 w-full h-full">
             <div className="flex justify-between items-center mb-6">
-                <h2 className="text-2xl font-bold bg-gradient-to-r from-blue-400 to-indigo-400 bg-clip-text text-transparent">
-                    Schema Management
-                </h2>
+                <div className="flex items-center gap-4">
+                    <h2 className="text-2xl font-bold bg-gradient-to-r from-blue-400 to-indigo-400 bg-clip-text text-transparent">
+                        Schema Management
+                    </h2>
+                    
+                    {/* Mode Toggle */}
+                    <div className="flex bg-slate-800 rounded-lg p-1">
+                        <button
+                            onClick={() => setViewMode('vector')}
+                            className={`px-4 py-2 rounded-md text-sm font-medium transition ${
+                                viewMode === 'vector'
+                                    ? 'bg-indigo-600 text-white'
+                                    : 'text-slate-400 hover:text-slate-200'
+                            }`}
+                        >
+                            Vector Index
+                        </button>
+                        <button
+                            onClick={() => setViewMode('skills')}
+                            className={`px-4 py-2 rounded-md text-sm font-medium transition flex items-center gap-2 ${
+                                viewMode === 'skills'
+                                    ? 'bg-indigo-600 text-white'
+                                    : 'text-slate-400 hover:text-slate-200'
+                            }`}
+                        >
+                            <FolderTree size={16} />
+                            Skills
+                        </button>
+                    </div>
+                </div>
                 <div className="flex gap-2">
                     <button
                         onClick={handleInspectDatabase}
@@ -377,8 +406,15 @@ export const SchemaManager: React.FC<SchemaManagerProps> = ({ onUploadStateChang
                 </div>
             </div>
 
-            {/* Database Inspection Info */}
-            {showDbInspection && (
+            {/* Conditional Rendering Based on View Mode */}
+            {viewMode === 'skills' ? (
+                <SkillsManager />
+            ) : (
+                <>
+                    {/* Vector Index Mode - Original Content */}
+
+                    {/* Database Inspection Info */}
+                    {showDbInspection && (
                 <div className="bg-amber-500/10 border border-amber-500/30 rounded-xl p-4 mb-6">
                     <div className="flex items-center justify-between">
                         <div className="flex items-center gap-2">
@@ -791,6 +827,8 @@ export const SchemaManager: React.FC<SchemaManagerProps> = ({ onUploadStateChang
                         </div>
                     </div>
                 </div>
+            )}
+            </>
             )}
         </div>
     );

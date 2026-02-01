@@ -10,7 +10,8 @@ class Settings(BaseSettings):
     VECTOR_DB_ENABLED: bool = True
     MILVUS_HOST: str = "localhost"
     MILVUS_PORT: str = "19630"
-    MILVUS_COLLECTION_SCHEMA: str = "schema_index"
+    MILVUS_COLLECTION_SCHEMA: str = "schema_index"  # Legacy collection (v1)
+    MILVUS_COLLECTION_SCHEMA_V2: str = "schema_index_v2"  # Multi-source collection with SP/Function support
     MILVUS_COLLECTION_FEWSHOT: str = "fewshot_index"  # Legacy alias for knowledge_base
     MILVUS_COLLECTION_KNOWLEDGE_BASE: str = "knowledge_base"  # Renamed from fewshot_index
     MILVUS_COLLECTION_CONTRIBUTIONS: str = "contribution_library"  # Staging area for user contributions

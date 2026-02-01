@@ -7,7 +7,7 @@ import hashlib
 from typing import Optional
 from cryptography.fernet import Fernet
 import base64
-from app.models.schemas import AgentSettings, TargetDBConfig, LLMConfig, VectorConfig, EmbeddingConfig, AppMeta
+from app.models.schemas import AgentSettings, TargetDBConfig, LLMConfig, VectorConfig, EmbeddingConfig, AppMeta, AgentSettingsV2, TargetDBConfigV2
 from app.core.config import settings as app_settings
 
 # Path to store settings file
@@ -210,8 +210,176 @@ def load_settings() -> AgentSettings:
                 
             return settings
     except Exception as e:
-        print(f"Failed to load settings: {e}")
+        print(f"Error loading settings: {e}")
         return get_default_settings()
+
+
+# --- Multi-Source Helper Functions (V2) ---
+
+def encrypt_connection_string(connection_string: str) -> str:
+    """
+    Encrypt a connection string using Fernet.
+    Alias for encrypt_string for better readability in multi-source context.
+    """
+    return encrypt_string(connection_string)
+
+
+def decrypt_connection_string(encrypted_string: str) -> str:
+    """
+    Decrypt a connection string using Fernet.
+    Alias for decrypt_string for better readability in multi-source context.
+    """
+    return decrypt_string(encrypted_string)
+
+
+def get_data_source(source_id: str) -> Optional[TargetDBConfigV2]:
+    """
+    Retrieve a specific data source by ID from settings.
+    
+    Args:
+        source_id: Data source identifier
+        
+    Returns:
+        TargetDBConfigV2 instance or None if not found
+    """
+    settings = load_settings()
+    
+    # Check if v2 configuration
+    if not hasattr(settings, 'data_sources'):
+        return None
+    
+    return next((s for s in settings.data_sources if s.source_id == source_id), None)
+
+
+def add_data_source(source: TargetDBConfigV2) -> None:
+    """
+    Add a new data source to settings and save.
+    
+    Args:
+        source: TargetDBConfigV2 instance to add
+    """
+    settings = load_settings()
+    
+    # Ensure v2 format
+    if not hasattr(settings, 'data_sources'):
+        raise ValueError("Configuration not in v2 format. Run migration first.")
+    
+    # Check for duplicate source_id
+    if any(s.source_id == source.source_id for s in settings.data_sources):
+        raise ValueError(f"Data source with ID {source.source_id} already exists")
+    
+    settings.data_sources.append(source)
+    
+    # If this is the first source, set as primary
+    if settings.primary_source_id is None:
+        settings.primary_source_id = source.source_id
+    
+    save_settings(settings)
+
+
+def remove_data_source(source_id: str) -> bool:
+    """
+    Remove a data source from settings.
+    
+    Args:
+        source_id: Data source identifier
+        
+    Returns:
+        True if removed, False if not found
+    """
+    settings = load_settings()
+    
+    if not hasattr(settings, 'data_sources'):
+        return False
+    
+    # Find and remove
+    original_count = len(settings.data_sources)
+    settings.data_sources = [s for s in settings.data_sources if s.source_id != source_id]
+    
+    if len(settings.data_sources) == original_count:
+        return False  # Not found
+    
+    # Update primary if needed
+    if settings.primary_source_id == source_id:
+        settings.primary_source_id = settings.data_sources[0].source_id if settings.data_sources else None
+    
+    save_settings(settings)
+    return True
+
+
+def set_primary_source(source_id: str) -> bool:
+    """
+    Set a data source as the primary (default) source.
+    
+    Args:
+        source_id: Data source identifier
+        
+    Returns:
+        True if set, False if source not found
+    """
+    settings = load_settings()
+    
+    if not hasattr(settings, 'data_sources'):
+        return False
+    
+    # Verify source exists
+    if not any(s.source_id == source_id for s in settings.data_sources):
+        return False
+    
+    settings.primary_source_id = source_id
+    save_settings(settings)
+    return True
+
+
+def update_source_last_synced(source_id: str, timestamp: str) -> bool:
+    """
+    Update the last_synced timestamp for a data source.
+    
+    Args:
+        source_id: Data source identifier
+        timestamp: ISO format timestamp string
+        
+    Returns:
+        True if updated, False if source not found
+    """
+    settings = load_settings()
+    
+    if not hasattr(settings, 'data_sources'):
+        return False
+    
+    for source in settings.data_sources:
+        if source.source_id == source_id:
+            source.last_synced = timestamp
+            save_settings(settings)
+            return True
+    
+    return False
+
+
+def update_source_object_count(source_id: str, count: int) -> bool:
+    """
+    Update the object_count for a data source.
+    
+    Args:
+        source_id: Data source identifier
+        count: Number of indexed objects
+        
+    Returns:
+        True if updated, False if source not found
+    """
+    settings = load_settings()
+    
+    if not hasattr(settings, 'data_sources'):
+        return False
+    
+    for source in settings.data_sources:
+        if source.source_id == source_id:
+            source.object_count = count
+            save_settings(settings)
+            return True
+    
+    return False
+
 
 def save_settings(agent_settings: AgentSettings) -> bool:
     """Save settings to file"""
