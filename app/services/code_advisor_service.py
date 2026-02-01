@@ -22,167 +22,6 @@ class CodeAdvisorContext(BaseModel):
     is_supported: bool
 
 
-def extract_code_from_message(message: str) -> Optional[str]:
-    """
-    Extract code from user message.
-    1. First try to find markdown code blocks (```language ... ```)
-    2. If not found, use LLM to detect and extract code
-    
-    Args:
-        message: User's input message
-        
-    Returns:
-        Extracted code or None if no code found
-    """
-    # Try to find markdown code blocks first
-    # Pattern matches: ```language\ncode\n``` or ```\ncode\n```
-    code_block_pattern = r'```(?:\w+)?\s*\n(.*?)```'
-    matches = re.findall(code_block_pattern, message, re.DOTALL)
-    
-    if matches:
-        # Return the first code block found, stripped of extra whitespace
-        code = matches[0].strip()
-        logger.info(f"Extracted code from markdown block ({len(code)} chars)")
-        return code
-    
-    # No code block found, use LLM to extract code from plain text
-    try:
-        llm_service = get_llm_service()
-        prompt = f"""Extract any code from this message. If there's SQL, Python, R, or SAS code present, return ONLY the code itself with no explanations or markdown.
-
-If there's absolutely no code in the message, respond with exactly: NO_CODE_FOUND
-
-Message:
-{message}
-
-Remember: Return ONLY the code, or NO_CODE_FOUND if there's no code."""
-        
-        response = llm_service.chat(prompt, temperature=0)
-        
-        if "NO_CODE_FOUND" in response.upper():
-            logger.info("No code found by LLM extraction")
-            return None
-        
-        # Clean up any markdown that might have been added
-        code = response.strip()
-        code = re.sub(r'^```\w*\s*\n', '', code)  # Remove opening ```
-        code = re.sub(r'\n```\s*$', '', code)  # Remove closing ```
-        code = code.strip()
-        
-        if code:
-            logger.info(f"Extracted code via LLM ({len(code)} chars)")
-            return code
-        
-        return None
-        
-    except Exception as e:
-        logger.error(f"Error extracting code with LLM: {e}")
-        return None
-
-
-def extract_code_from_history(query_history: str) -> Optional[str]:
-    """
-    Extract the most recent code from conversation history.
-    This allows follow-up questions without re-pasting code.
-    
-    Args:
-        query_history: Conversation history string
-        
-    Returns:
-        Most recent code found in history or None
-    """
-    if not query_history:
-        return None
-    
-    # Split by user/AI turns and search in reverse order (most recent first)
-    # History format is typically: "User: ... AI: ... User: ..."
-    turns = query_history.split("\n")
-    
-    # Try to extract code from recent turns
-    for i in range(len(turns) - 1, -1, -1):
-        turn = turns[i]
-        code = extract_code_from_message(turn)
-        if code:
-            logger.info(f"Found code in conversation history (turn {i})")
-            return code
-    
-    return None
-
-
-def detect_language_and_intent(code: str, message: str) -> CodeAdvisorContext:
-    """
-    Use LLM to detect programming language and user intent.
-    
-    Args:
-        code: Extracted code to analyze
-        message: Original user message for context
-        
-    Returns:
-        CodeAdvisorContext with detection results
-    """
-    try:
-        llm_service = get_llm_service()
-        
-        prompt = f"""Analyze this code and the user's message to determine:
-
-1. Programming language (must be EXACTLY ONE of: sql, r, sas, python, unsupported)
-2. What the user is asking for (choose ONE: review, optimize, bug_fix, explain, refactor, general)
-
-Code:
-```
-{code}
-```
-
-User message:
-{message}
-
-Return ONLY a JSON object in this exact format (no markdown, no explanation):
-{{"language": "sql", "intent": "review"}}"""
-        
-        response = llm_service.chat(prompt, temperature=0)
-        
-        # Clean any markdown formatting
-        response = response.strip()
-        response = re.sub(r'^```json\s*\n?', '', response)
-        response = re.sub(r'\n?```\s*$', '', response)
-        
-        # Parse JSON response
-        result = json.loads(response)
-        language = result.get("language", "unsupported").lower()
-        intent = result.get("intent", "general").lower()
-        
-        # Validate language
-        supported_languages = ["sql", "r", "sas", "python"]
-        is_supported = language in supported_languages
-        
-        logger.info(f"Detected language: {language}, intent: {intent}, supported: {is_supported}")
-        
-        return CodeAdvisorContext(
-            extracted_code=code,
-            detected_language=language,
-            request_type=intent,
-            is_supported=is_supported
-        )
-        
-    except json.JSONDecodeError as e:
-        logger.error(f"Failed to parse LLM response as JSON: {e}")
-        # Fallback to unsupported
-        return CodeAdvisorContext(
-            extracted_code=code,
-            detected_language="unsupported",
-            request_type="general",
-            is_supported=False
-        )
-    except Exception as e:
-        logger.error(f"Error detecting language and intent: {e}")
-        return CodeAdvisorContext(
-            extracted_code=code,
-            detected_language="unsupported",
-            request_type="general",
-            is_supported=False
-        )
-
-
 def build_advisor_prompt(message: str) -> str:
     """
     Build single-shot optimization prompt for code analysis.
@@ -193,7 +32,6 @@ def build_advisor_prompt(message: str) -> str:
     Returns:
         Formatted prompt for LLM
     """
-    
     return f"""Act as an expert polyglot developer. The user will provide code (SQL, Python, R, or SAS) for you to analyze and optimize.
 
 Your task:
@@ -203,13 +41,10 @@ Your task:
 4. **Explain** the specific optimizations made using language-specific best practices (e.g., Vectorization in Python/R, Hash Joins in SAS, or SARGability and CTEs in SQL)
 5. **List** any environmental or structural recommendations (like indexing or hardware considerations) that would further enhance performance
 
-IMPORTANT: When providing the optimized code, you MUST wrap it in a markdown fenced code block using triple backticks. Use the following EXACT format:
-
-```sql
-SELECT column FROM table WHERE condition;
-```
-
-Do NOT omit the triple backticks! The opening must be three backticks followed by the language name (sql, python, r, or sas), and the closing must be three backticks on their own line.
+When providing the optimized code, wrap it in triple single quotes with the language identifier, like:
+'''sql
+<optimized code here>
+'''
 
 **User's message:**
 {message}

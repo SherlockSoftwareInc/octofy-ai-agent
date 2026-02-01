@@ -1310,7 +1310,7 @@ function App() {
                           {/* User Message */}
                           {message.type === 'user' && (
                             <div className="space-y-2">
-                              <p className="text-slate-200 leading-relaxed">
+                              <p className="text-slate-200 leading-relaxed whitespace-pre-wrap break-words">
                                 {message.content}
                               </p>
                               {/* Chart Type Updated Badge */}
@@ -1328,7 +1328,7 @@ function App() {
                             <div className="space-y-4">
                               {/* Hide raw content for search results and code advisor since we display formatted content */}
                               {message.queryType !== 'search' && message.queryType !== 'code_advisor' && (
-                                <p className="text-slate-200 leading-relaxed">
+                                <p className="text-slate-200 leading-relaxed whitespace-pre-wrap break-words">
                                   {message.content}
                                 </p>
                               )}
@@ -1629,7 +1629,7 @@ function App() {
                                           `(\\n\\n|Code\\n\\n|Code\\n)${lang}\\n((?:SELECT|INSERT|UPDATE|DELETE|CREATE|ALTER|DROP|WITH|DECLARE|SET|IF|BEGIN|PROC|DATA|IMPORT|EXPORT|def |class |import |from |for |while |print|library\\(|require\\()[\\s\\S]*?)(?=\\n\\n[A-Z#*]|\\n\\n---|\$)`,
                                           'gi'
                                         );
-                                        normalizedContent = normalizedContent.replace(pattern, (match, prefix, code) => {
+                                        normalizedContent = normalizedContent.replace(pattern, (_match, prefix, code) => {
                                           console.log(`Detected unformatted ${lang} code block, converting to markdown`);
                                           return `${prefix}\`\`\`${lang}\n${code.trim()}\n\`\`\``;
                                         });
