@@ -139,19 +139,25 @@ def auto_migrate_if_needed() -> Literal["v1", "v2", "migrated", "error"]:
             return "v2"
         
         elif version == "v1":
-            logger.info("Detected v1 configuration. Starting automatic migration...")
+            logger.info("Detected v1 configuration. Auto-migration is DISABLED.")
+            logger.info("⚠️ Configuration will remain in v1 format. Manual migration required if needed.")
             
-            # Parse as v1
-            settings_v1 = AgentSettings(**config_dict)
+            # DISABLED: Automatic migration to prevent unwanted config modifications
+            # To re-enable, uncomment the code below:
             
-            # Migrate to v2
-            settings_v2 = migrate_v1_to_v2(settings_v1)
+            # # Parse as v1
+            # settings_v1 = AgentSettings(**config_dict)
+            # 
+            # # Migrate to v2
+            # settings_v2 = migrate_v1_to_v2(settings_v1)
+            # 
+            # # Save migrated config with backup
+            # save_migrated_config(settings_v2, backup_original=True)
+            # 
+            # logger.info("✅ Configuration migration completed successfully!")
+            # return "migrated"
             
-            # Save migrated config with backup
-            save_migrated_config(settings_v2, backup_original=True)
-            
-            logger.info("✅ Configuration migration completed successfully!")
-            return "migrated"
+            return "v1"
         
         else:
             logger.error("Unknown configuration format. Manual migration required.")

@@ -62,6 +62,7 @@ def generate_code_advice(message: str) -> str:
     Returns:
         LLM-generated advice
     """
+
     try:
         llm_service = get_llm_service()
         prompt = build_advisor_prompt(message)

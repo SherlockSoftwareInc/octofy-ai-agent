@@ -21,6 +21,13 @@ interface AnchorProps {
 }
 
 export const MarkdownViewer: React.FC<MarkdownViewerProps> = ({ content, className = '' }) => {
+    // Pre-process content to support triple single quotes as code blocks
+    const processedContent = React.useMemo(() => {
+        if (!content) return '';
+        // Replace '''language with ```language at the start of lines
+        return content.replace(/^'''(\w*)\s*$/gm, '```$1');
+    }, [content]);
+
     return (
         <div className={`markdown-viewer prose prose-invert max-w-none ${className}`}>
             <ReactMarkdown
@@ -145,7 +152,7 @@ export const MarkdownViewer: React.FC<MarkdownViewerProps> = ({ content, classNa
                     ),
                 }}
             >
-                {content}
+                {processedContent}
             </ReactMarkdown>
         </div>
     );
