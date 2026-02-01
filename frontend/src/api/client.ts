@@ -464,6 +464,67 @@ export const api = {
         return finalResult;
     },
 
+    generateCodeAdvisorStream: async (query: string, onStatus: (status: AgentStatus) => void, signal?: AbortSignal, queryHistory?: string): Promise<GenerateSQLResponse> => {
+        const url = `${getApiBaseUrl()}/code-advisor`;
+        const headers = {
+            'Content-Type': 'application/json',
+            'X-API-Key': getApiKey()
+        };
+        const body = JSON.stringify({ query, queryHistory });
+
+        const response = await fetch(url, {
+            method: 'POST',
+            headers,
+            body,
+            signal
+        });
+
+        if (!response.ok) {
+            const errorText = await response.text();
+            throw new Error(`Error ${response.status}: ${errorText || response.statusText}`);
+        }
+
+        const reader = response.body?.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        let finalResult: GenerateSQLResponse | null = null;
+
+        if (reader) {
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+
+                buffer += decoder.decode(value, { stream: true });
+                const lines = buffer.split('\n\n');
+                buffer = lines.pop() || '';
+
+                for (const line of lines) {
+                    const trimmedLine = line.trim();
+                    if (trimmedLine.startsWith('data: ')) {
+                        const jsonStr = trimmedLine.replace('data: ', '');
+                        try {
+                            const data = JSON.parse(jsonStr);
+                            if (data.type === 'status') {
+                                onStatus(data as AgentStatus);
+                            } else if (data.type === 'result') {
+                                finalResult = data.payload as GenerateSQLResponse;
+                            } else if (data.type === 'error') {
+                                throw new Error(data.message);
+                            }
+                        } catch (e) {
+                            console.error('Error parsing stream data:', e);
+                        }
+                    }
+                }
+            }
+        }
+
+        if (!finalResult) {
+            throw new Error("Stream ended without result");
+        }
+        return finalResult;
+    },
+
     executePython: async (code: string, context?: any, chartTypeOverride?: ChartTypeOption, enableProfiling: boolean = false): Promise<ExecutePythonResponse> => {
         const response = await axios.post(`${API_BASE_URL}/execute-python`, { 
             code, 
