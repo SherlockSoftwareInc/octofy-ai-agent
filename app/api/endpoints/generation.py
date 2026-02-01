@@ -446,3 +446,60 @@ async def generate_planning_summary_endpoint(
         logger.error(traceback.format_exc())
         raise HTTPException(status_code=500, detail=str(e))
 
+
+@router.post("/code-advisor")
+async def code_advisor_endpoint(request: GenerateSQLRequest, api_key: str = Depends(verify_api_key)):
+    """
+    Code Advisor - Get advice on SQL/R/SAS/Python code.
+    
+    Extracts code from query, detects language and intent,
+    provides conversational advice for supported languages.
+    
+    Rate limited to 10 requests per minute per API key.
+    """
+    from app.core.rate_limiter import code_advisor_rate_limiter
+    from app.services.code_advisor_service import generate_code_advisor_for_request
+    
+    # Check rate limit
+    is_allowed, message = code_advisor_rate_limiter.is_allowed(api_key)
+    
+    if not is_allowed:
+        raise HTTPException(
+            status_code=429,
+            detail=message
+        )
+    
+    # Log rate limit info
+    logger.info(f"Code Advisor request from {api_key[:8]}... - {message}")
+    
+    def event_generator():
+        try:
+            for item in generate_code_advisor_for_request(request):
+                if isinstance(item, AgentStatus):
+                    yield f"data: {json.dumps(item.model_dump())}\n\n"
+                elif isinstance(item, dict) and item.get("type") == "result":
+                    payload = item["payload"]
+                    data = {
+                        "type": "result",
+                        "payload": payload.model_dump(by_alias=True)
+                    }
+                    yield f"data: {json.dumps(data)}\n\n"
+        except Exception as e:
+            logger.error(f"Error in code_advisor_endpoint: {str(e)}")
+            logger.error(traceback.format_exc())
+            error_data = {
+                "type": "error",
+                "message": str(e)
+            }
+            yield f"data: {json.dumps(error_data)}\n\n"
+    
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-RateLimit-Info": message,
+        }
+    )
+

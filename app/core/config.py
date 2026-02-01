@@ -35,4 +35,9 @@ class Settings(BaseSettings):
     # API Security
     API_KEY: str = "change-this-to-a-secure-key"
     
+    # Code Advisor settings
+    CODE_ADVISOR_RATE_LIMIT: int = 10  # Maximum requests per window
+    CODE_ADVISOR_RATE_WINDOW: int = 60  # Time window in seconds
+    CODE_ADVISOR_TEMPERATURE: float = 0.3  # LLM temperature for conversational advice
+    
 settings = Settings()

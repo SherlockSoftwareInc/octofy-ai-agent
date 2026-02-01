@@ -49,7 +49,7 @@ function App() {
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
   const [query, setQuery] = useState('');
   const [isLoading, setIsLoading] = useState(false);
-  const [queryMode, setQueryMode] = useState<'plan' | 'generate-sql' | 'generate-r' | 'generate-sas' | 'generate-python'>('plan');
+  const [queryMode, setQueryMode] = useState<'plan' | 'generate-sql' | 'generate-r' | 'generate-sas' | 'generate-python' | 'code-advisor'>('plan');
   const [toast, setToast] = useState<{ message: string; type: ToastType } | null>(null);
   const [steps, setSteps] = useState<AgentStatus[]>([]);
   const abortControllerRef = useRef<AbortController | null>(null);
@@ -176,7 +176,7 @@ function App() {
           // Call backend to generate summary
           const summaryResponse = await generatePlanningSummary(planningContext);
           setPlanningSummary(summaryResponse.summary);
-          
+
           // Add summary as AI message
           const summaryMessage: ChatMessage = {
             id: generateMessageId(),
@@ -191,19 +191,19 @@ function App() {
               objects: []
             }
           };
-          
+
           const currentMessages = activeConversation?.messages || [];
           updateConversation(activeConversationId, {
             messages: [...currentMessages, summaryMessage],
             planningSummary: summaryResponse.summary
           });
-          
+
         } catch (error) {
           console.error('Failed to generate planning summary:', error);
         }
       }
     };
-    
+
     generateSummary();
   }, [queryMode, planningContext, planningSummary, activeConversationId]);
 
@@ -513,7 +513,7 @@ function App() {
       const nextSelected = prev.includes(objectName)
         ? prev.filter((item) => item !== objectName)
         : [...prev, objectName];
-      
+
       // Update planning context if in plan mode
       if (queryMode === 'plan' && planningContext) {
         const updatedContext = {
@@ -528,7 +528,7 @@ function App() {
       } else {
         updateConversation(activeConversationId, { selectedObjects: nextSelected });
       }
-      
+
       return nextSelected;
     });
   };
@@ -864,8 +864,8 @@ function App() {
     }
 
     // Determine user message content - use auto-generate indicator if no query but planning summary exists
-    const userMessageContent = query.trim() 
-      ? query 
+    const userMessageContent = query.trim()
+      ? query
       : (planningSummary ? '✨ Auto-generate from planning summary' : '');
 
     const userMessage: ChatMessage = {
@@ -897,7 +897,7 @@ function App() {
     try {
       let result: GenerateSQLResponse;
       const tableOverride = selectedObjects.length > 0 ? selectedObjects : undefined;
-      
+
       // NEW: Handle plan mode
       if (queryMode === 'plan') {
         result = await api.generateSQLStream(
@@ -912,13 +912,13 @@ function App() {
           undefined,
           planningContext
         );
-        
+
         // Update planning context from response
         if (result.context_text) {
           try {
             const updatedContext = JSON.parse(result.context_text);
             setPlanningContext(updatedContext);
-            
+
             // Update conversation
             updateConversation(conversationId, {
               planningContext: updatedContext
@@ -927,7 +927,7 @@ function App() {
             console.error('Failed to parse planning context:', e);
           }
         }
-        
+
         // Handle AI response
         const aiMessage: ChatMessage = {
           id: generateMessageId(),
@@ -938,11 +938,11 @@ function App() {
           queryType: 'plan',
           sourceQuery: currentQuery
         };
-        
+
         updateConversation(conversationId, {
           messages: [...currentMessages, aiMessage],
         });
-        
+
       } else if (queryMode === 'generate-r') {
         // Use summary as prompt if available
         let queryToSend = currentQuery;
@@ -951,7 +951,7 @@ function App() {
         } else if (planningSummary && currentQuery.trim()) {
           queryToSend = `${planningSummary}\n\nAdditional requirements:\n${currentQuery}`;
         }
-        
+
         result = await api.generateRStream(queryToSend, (status) => {
           setSteps([status]);
         }, undefined, abortControllerRef.current.signal);
@@ -965,7 +965,7 @@ function App() {
         } else if (planningSummary && currentQuery.trim()) {
           queryToSend = `${planningSummary}\n\nAdditional requirements:\n${currentQuery}`;
         }
-        
+
         result = await api.generateSASStream(queryToSend, (status) => {
           setSteps([status]);
         }, undefined, abortControllerRef.current.signal);
@@ -978,11 +978,24 @@ function App() {
         } else if (planningSummary && currentQuery.trim()) {
           queryToSend = `${planningSummary}\n\nAdditional requirements:\n${currentQuery}`;
         }
-        
+
         result = await api.generatePythonStream(queryToSend, (status) => {
           setSteps([status]);
         }, undefined, abortControllerRef.current.signal);
         if (!result.query_type) result.query_type = 'python_code';
+      } else if (queryMode === 'code-advisor') {
+        // Code Advisor mode - pass conversation history for follow-up questions
+        const queryHistory = chatHistory
+          .map(msg => `${msg.type === 'user' ? 'User' : 'AI'}: ${msg.content}`)
+          .join('\n');
+
+        result = await api.generateCodeAdvisorStream(
+          currentQuery,
+          (status) => setSteps([status]),
+          abortControllerRef.current.signal,
+          queryHistory
+        );
+        if (!result.query_type) result.query_type = 'code_advisor';
       } else {
         // 'generate-sql' mode
         // Use summary as prompt if available
@@ -1053,6 +1066,30 @@ function App() {
 
         // Auto-generate better title after a few messages
         if (updatedMessages.length === 4) { // After 2 exchanges
+          const autoTitle = await generateAutoTitle(updatedMessages, api.generateSQL);
+          if (autoTitle) {
+            updateConversation(conversationId, { title: autoTitle });
+          }
+        }
+      } else if (result.query_type === 'code_advisor') {
+        // Code Advisor response - display advice with code
+        const aiMessage: ChatMessage = {
+          id: generateMessageId(),
+          type: 'ai',
+          content: result.explanation || 'Here is my code advice:',
+          timestamp: new Date(),
+          sqlResult: result,
+          queryType: 'code_advisor',
+          sourceQuery: currentQuery
+        };
+
+        const updatedMessages = [...currentMessages, aiMessage];
+        updateConversation(conversationId, {
+          messages: updatedMessages,
+        });
+
+        // Auto-generate title if needed
+        if (updatedMessages.length === 4) {
           const autoTitle = await generateAutoTitle(updatedMessages, api.generateSQL);
           if (autoTitle) {
             updateConversation(conversationId, { title: autoTitle });
@@ -1289,8 +1326,8 @@ function App() {
                           {/* AI Message */}
                           {message.type === 'ai' && (
                             <div className="space-y-4">
-                              {/* Hide raw content for search results since we display formatted grid */}
-                              {message.queryType !== 'search' && (
+                              {/* Hide raw content for search results and code advisor since we display formatted content */}
+                              {message.queryType !== 'search' && message.queryType !== 'code_advisor' && (
                                 <p className="text-slate-200 leading-relaxed">
                                   {message.content}
                                 </p>
@@ -1348,7 +1385,7 @@ function App() {
                                     if (parsedObjects.length > 0) {
                                       const themeColor = message.queryType === 'plan' ? 'amber' : 'emerald';
                                       const hasAutoChecked = parsedObjects.some(obj => obj.autoChecked);
-                                      
+
                                       return (
                                         <>
                                           {hasAutoChecked && (
@@ -1415,7 +1452,7 @@ function App() {
                                     );
                                   })()}
                                 </div>
-                                )}
+                              )}
 
                               {/* Planning Summary Card */}
                               {message.queryType === 'planning_summary' && (
@@ -1424,11 +1461,11 @@ function App() {
                                     <FileText size={18} />
                                     <span>Planning Summary</span>
                                   </div>
-                                  
+
                                   <div className="prose prose-sm prose-invert max-w-none text-slate-200">
                                     <ReactMarkdown>{message.content}</ReactMarkdown>
                                   </div>
-                                  
+
                                   <div className="flex gap-2 mt-4 pt-3 border-t border-amber-500/20">
                                     <button
                                       onClick={() => {
@@ -1449,7 +1486,7 @@ function App() {
                                       <RotateCcw size={12} />
                                       Start Over
                                     </button>
-                                    
+
                                     <button
                                       onClick={() => setQueryMode('plan')}
                                       className="px-3 py-1.5 text-xs rounded-md bg-amber-600 hover:bg-amber-500 text-white transition-colors flex items-center gap-1"
@@ -1559,6 +1596,222 @@ function App() {
                                 )
                               )}
 
+                              {/* Code Advisor display */}
+                              {message.queryType === 'code_advisor' && (
+                                <div className="mt-3 space-y-4">
+                                  {/* Show LLM advice with code blocks extracted */}
+                                  {/* Use sqlResult.explanation if available, fallback to message.content for persisted messages */}
+                                  {(message.sqlResult?.explanation || message.content) && (() => {
+                                    const rawContent = message.sqlResult?.explanation || message.content || '';
+
+                                    // Manual code block extraction and rendering
+                                    // This bypasses ReactMarkdown for code blocks to ensure they're always styled correctly
+                                    const renderContentWithCodeBlocks = (content: string) => {
+                                      // Normalize line endings and triple quotes to backticks
+                                      // Also handle smart quotes and various whitespace patterns
+                                      let normalizedContent = content
+                                        // Normalize Windows line endings first
+                                        .replace(/\r\n/g, '\n')
+                                        .replace(/\r/g, '\n')
+                                        // Normalize triple single quotes to backticks
+                                        .replace(/'''(\w+)?\s*\n/g, '```$1\n')
+                                        .replace(/'''/g, '```')
+                                        // Handle backticks without newline after language (e.g., ```sql SELECT)
+                                        .replace(/```(\w+)(?!\n)(\s*)/g, '```$1\n$2');
+
+                                      // FALLBACK: Detect code blocks without backticks
+                                      // Pattern: "\n\nsql\nSELECT..." or "Optimized Code\n\nsql\nSELECT..."
+                                      // Look for language identifier on its own line followed by code-like content
+                                      const languagePatterns = ['sql', 'python', 'r', 'sas', 'tsql', 't-sql'];
+                                      for (const lang of languagePatterns) {
+                                        // Match: newline + language on its own line + newline + code starting with common keywords
+                                        const pattern = new RegExp(
+                                          `(\\n\\n|Code\\n\\n|Code\\n)${lang}\\n((?:SELECT|INSERT|UPDATE|DELETE|CREATE|ALTER|DROP|WITH|DECLARE|SET|IF|BEGIN|PROC|DATA|IMPORT|EXPORT|def |class |import |from |for |while |print|library\\(|require\\()[\\s\\S]*?)(?=\\n\\n[A-Z#*]|\\n\\n---|\$)`,
+                                          'gi'
+                                        );
+                                        normalizedContent = normalizedContent.replace(pattern, (match, prefix, code) => {
+                                          console.log(`Detected unformatted ${lang} code block, converting to markdown`);
+                                          return `${prefix}\`\`\`${lang}\n${code.trim()}\n\`\`\``;
+                                        });
+                                      }
+
+                                      console.log('=== CODE ADVISOR DEBUG ===');
+                                      console.log('Raw content length:', content.length);
+                                      console.log('Normalized content sample:', normalizedContent.substring(0, 500));
+                                      console.log('Contains triple backticks:', normalizedContent.includes('```'));
+                                      console.log('Contains triple quotes:', content.includes("'''"));
+                                      // Show a section around where code might be (after "optimized" text)
+                                      const optimizedIdx = normalizedContent.toLowerCase().indexOf('optimized');
+                                      if (optimizedIdx > 0) {
+                                        console.log('Content around "optimized":', normalizedContent.substring(optimizedIdx, optimizedIdx + 300));
+                                      }
+                                      // Check for any backtick patterns
+                                      const backtickMatches = normalizedContent.match(/`+/g);
+                                      console.log('Backtick patterns found:', backtickMatches);
+
+                                      // Split content by code blocks - more flexible regex
+                                      // Matches ```lang\ncode``` or ```\ncode``` with optional newline before closing
+                                      const codeBlockRegex = /```(\w+)?\n([\s\S]*?)```/g;
+                                      const parts: Array<{ type: 'text' | 'code'; content: string; language?: string }> = [];
+                                      let lastIndex = 0;
+                                      let match;
+
+                                      while ((match = codeBlockRegex.exec(normalizedContent)) !== null) {
+                                        // Add text before code block
+                                        if (match.index > lastIndex) {
+                                          parts.push({
+                                            type: 'text',
+                                            content: normalizedContent.substring(lastIndex, match.index)
+                                          });
+                                        }
+
+                                        // Add code block
+                                        parts.push({
+                                          type: 'code',
+                                          content: match[2].trim(),
+                                          language: match[1] || 'code'
+                                        });
+
+                                        lastIndex = match.index + match[0].length;
+                                      }
+
+                                      // Add remaining text
+                                      if (lastIndex < normalizedContent.length) {
+                                        parts.push({
+                                          type: 'text',
+                                          content: normalizedContent.substring(lastIndex)
+                                        });
+                                      }
+
+                                      console.log('Parts found:', parts.length);
+                                      parts.forEach((part, idx) => {
+                                        console.log(`Part ${idx}: type=${part.type}, language=${part.language}, content length=${part.content.length}`);
+                                      });
+                                      console.log('========================');
+
+                                      // Render parts
+                                      return parts.map((part, idx) => {
+                                        if (part.type === 'code') {
+                                          const language = (part.language || 'CODE').toUpperCase();
+                                          return (
+                                            <div key={idx} className="my-4 rounded-xl border border-slate-700 bg-slate-900 overflow-hidden">
+                                              {/* Header bar with Copy button */}
+                                              <div className="flex items-center justify-between px-4 py-2 border-b border-slate-700 bg-slate-800/50">
+                                                <div className="flex items-center gap-2">
+                                                  <div className="w-2 h-2 rounded-full bg-emerald-500"></div>
+                                                  <span className="text-xs font-semibold text-slate-300 tracking-wider">
+                                                    {language}
+                                                  </span>
+                                                </div>
+                                                <button
+                                                  onClick={() => {
+                                                    navigator.clipboard.writeText(part.content);
+                                                    setToast({ message: 'Code copied to clipboard!', type: 'success' });
+                                                  }}
+                                                  className="flex items-center gap-1.5 px-3 py-1 text-xs text-slate-300 hover:text-white bg-slate-700 hover:bg-slate-600 rounded-md transition-colors"
+                                                >
+                                                  <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 5H6a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2v-1M8 5a2 2 0 002 2h2a2 2 0 002-2M8 5a2 2 0 012-2h2a2 2 0 012 2m0 0h2a2 2 0 012 2v3m2 4H10m0 0l3-3m-3 3l3 3" />
+                                                  </svg>
+                                                  Copy
+                                                </button>
+                                              </div>
+                                              {/* Code content */}
+                                              <div className="p-4 overflow-x-auto">
+                                                <pre className="text-sm text-slate-300 font-mono m-0 whitespace-pre-wrap">
+                                                  {part.content}
+                                                </pre>
+                                              </div>
+                                            </div>
+                                          );
+                                        } else {
+                                          // Render text content with ReactMarkdown
+                                          return (
+                                            <div key={idx}>
+                                              <ReactMarkdown
+                                                remarkPlugins={[remarkGfm]}
+                                                className="prose prose-invert max-w-none"
+                                                components={{
+                                                  h2({ children }) {
+                                                    return (
+                                                      <h2 className="text-lg font-semibold text-slate-100 mt-6 mb-3 border-b border-slate-700 pb-1">
+                                                        {children}
+                                                      </h2>
+                                                    );
+                                                  },
+                                                  h3({ children }) {
+                                                    return (
+                                                      <h3 className="text-sm font-semibold uppercase tracking-wide text-slate-400 mt-5 mb-2">
+                                                        {children}
+                                                      </h3>
+                                                    );
+                                                  },
+                                                  p({ children }) {
+                                                    return (
+                                                      <p className="text-slate-200 leading-relaxed">
+                                                        {children}
+                                                      </p>
+                                                    );
+                                                  },
+                                                  strong({ children }) {
+                                                    return (
+                                                      <strong className="text-slate-100 font-semibold">
+                                                        {children}
+                                                      </strong>
+                                                    );
+                                                  },
+                                                  ul({ children }) {
+                                                    return (
+                                                      <ul className="list-disc list-inside space-y-1 text-slate-200">
+                                                        {children}
+                                                      </ul>
+                                                    );
+                                                  },
+                                                  ol({ children }) {
+                                                    return (
+                                                      <ol className="list-decimal list-inside space-y-1 text-slate-200">
+                                                        {children}
+                                                      </ol>
+                                                    );
+                                                  },
+                                                  li({ children }) {
+                                                    return (
+                                                      <li className="text-slate-200">
+                                                        {children}
+                                                      </li>
+                                                    );
+                                                  },
+                                                  blockquote({ children }) {
+                                                    return (
+                                                      <blockquote className="border-l-4 border-indigo-500/60 pl-4 text-slate-300 italic">
+                                                        {children}
+                                                      </blockquote>
+                                                    );
+                                                  },
+                                                  code(props: any) {
+                                                    const { children, className } = props;
+                                                    // Inline code only
+                                                    return (
+                                                      <code className={className || "bg-slate-800 px-1.5 py-0.5 rounded text-sm text-emerald-300 font-mono"}>
+                                                        {children}
+                                                      </code>
+                                                    );
+                                                  }
+                                                }}
+                                              >
+                                                {part.content}
+                                              </ReactMarkdown>
+                                            </div>
+                                          );
+                                        }
+                                      });
+                                    };
+
+                                    return <>{renderContentWithCodeBlocks(rawContent)}</>;
+                                  })()}
+                                </div>
+                              )}
+
                               {/* Workflow Components - Insights, Refinement Suggestions, and Data Profile */}
                               {message.analysisContext && (
                                 <div className="mt-4 space-y-3">
@@ -1657,7 +1910,7 @@ function App() {
                     📋 Plan
                   </span>
                 </label>
-                
+
                 {/* 2. Generate SQL */}
                 <label className="flex items-center gap-2 cursor-pointer group">
                   <input
@@ -1672,7 +1925,7 @@ function App() {
                     ✨ Generate SQL
                   </span>
                 </label>
-                
+
                 {/* 3. Generate R */}
                 <label className="flex items-center gap-2 cursor-pointer group">
                   <input
@@ -1687,7 +1940,7 @@ function App() {
                     📈 Generate R
                   </span>
                 </label>
-                
+
                 {/* 4. Generate SAS */}
                 <label className="flex items-center gap-2 cursor-pointer group">
                   <input
@@ -1702,7 +1955,7 @@ function App() {
                     📊 Generate SAS
                   </span>
                 </label>
-                
+
                 {/* 5. Generate Python */}
                 <label className="flex items-center gap-2 cursor-pointer group">
                   <input
@@ -1717,6 +1970,21 @@ function App() {
                     🐍 Generate Python
                   </span>
                 </label>
+
+                {/* 6. Code Advisor */}
+                <label className="flex items-center gap-2 cursor-pointer group">
+                  <input
+                    type="radio"
+                    name="queryMode"
+                    value="code-advisor"
+                    checked={queryMode === 'code-advisor'}
+                    onChange={() => setQueryMode('code-advisor')}
+                    className="w-4 h-4 text-purple-600 bg-slate-800 border-slate-600 focus:ring-purple-500 focus:ring-offset-slate-900"
+                  />
+                  <span className={`text-sm font-medium transition-colors ${queryMode === 'code-advisor' ? 'text-purple-400' : 'text-slate-400 group-hover:text-slate-300'}`}>
+                    🤖 Code Advisor
+                  </span>
+                </label>
               </div>
 
               {/* Planning summary ready banner */}
@@ -1725,7 +1993,7 @@ function App() {
                   📋 I have your planning summary ready. Click below to generate code, or add additional requirements first.
                 </div>
               )}
-              
+
               {/* Selected objects banner */}
               {selectedObjects.length > 0 && queryMode !== 'plan' && !planningSummary && (
                 <div className="mb-3 rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-200">
@@ -1749,9 +2017,11 @@ function App() {
                     placeholder={
                       queryMode === 'plan'
                         ? 'Describe your analysis goal or ask about available data...'
-                        : planningSummary
-                          ? 'Add additional requirements (optional)...'
-                          : 'Ask a question about your data (SQL, R, SAS, or Python)...'
+                        : queryMode === 'code-advisor'
+                          ? 'Paste your SQL, R, SAS, or Python code here for advice... (e.g., "Review this query", "Optimize this code", "Fix this bug")'
+                          : planningSummary
+                            ? 'Add additional requirements (optional)...'
+                            : 'Ask a question about your data (SQL, R, SAS, or Python)...'
                     }
                     disabled={isLoading}
                     rows={1}
