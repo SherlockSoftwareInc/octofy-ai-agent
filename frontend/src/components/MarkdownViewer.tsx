@@ -9,13 +9,24 @@ interface MarkdownViewerProps {
     className?: string;
 }
 
+interface CodeProps {
+    inline?: boolean;
+    className?: string;
+    children?: React.ReactNode;
+}
+
+interface AnchorProps {
+    children?: React.ReactNode;
+    href?: string;
+}
+
 export const MarkdownViewer: React.FC<MarkdownViewerProps> = ({ content, className = '' }) => {
     return (
         <div className={`markdown-viewer prose prose-invert max-w-none ${className}`}>
             <ReactMarkdown
                 remarkPlugins={[remarkGfm]}
                 components={{
-                    code({ node, inline, className, children, ...props }: any) {
+                    code({ inline, className, children, ...props }: CodeProps) {
                         const match = /language-(\w+)/.exec(className || '');
                         return !inline && match ? (
                             <SyntaxHighlighter
@@ -109,9 +120,9 @@ export const MarkdownViewer: React.FC<MarkdownViewerProps> = ({ content, classNa
                             {children}
                         </td>
                     ),
-                    a: ({ children, ...props }: any) => (
+                    a: ({ children, href }: AnchorProps) => (
                         <a
-                            {...props}
+                            href={href}
                             className="text-indigo-400 hover:text-indigo-300 underline"
                             target="_blank"
                             rel="noopener noreferrer"
