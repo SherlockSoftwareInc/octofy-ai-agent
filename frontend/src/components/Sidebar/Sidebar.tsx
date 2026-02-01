@@ -117,7 +117,7 @@ export function Sidebar({
             >
               <p className="text-sm text-slate-200 truncate">{conv.title}</p>
               <p className="text-xs text-slate-500 truncate">
-                {conv.messages.length} message{conv.messages.length !== 1 ? 's' : ''}
+                {(conv.messages?.length || 0)} message{(conv.messages?.length || 0) !== 1 ? 's' : ''}
               </p>
             </div>
             <div className="relative">

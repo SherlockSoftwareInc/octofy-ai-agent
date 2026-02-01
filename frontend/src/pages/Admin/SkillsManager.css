@@ -1,0 +1,46 @@
+/* SkillsManager.css - Styles for the Skills Manager component */
+
+/* Tree node indentation levels */
+.tree-node-depth-0 {
+  margin-left: 0;
+}
+
+.tree-node-depth-1 {
+  margin-left: 16px;
+}
+
+.tree-node-depth-2 {
+  margin-left: 32px;
+}
+
+.tree-node-depth-3 {
+  margin-left: 48px;
+}
+
+.tree-node-depth-4 {
+  margin-left: 64px;
+}
+
+.tree-node-depth-5 {
+  margin-left: 80px;
+}
+
+.tree-node-depth-6 {
+  margin-left: 96px;
+}
+
+.tree-node-depth-7 {
+  margin-left: 112px;
+}
+
+.tree-node-depth-8 {
+  margin-left: 128px;
+}
+
+.tree-node-depth-9 {
+  margin-left: 144px;
+}
+
+.tree-node-depth-10 {
+  margin-left: 160px;
+}

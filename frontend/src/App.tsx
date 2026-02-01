@@ -9,6 +9,7 @@ import { FewShotManager } from './pages/Admin/FewShotManager';
 import { ValueManager } from './pages/Admin/ValueManager';
 import { ContributionManager } from './pages/Admin/ContributionManager';
 import { Settings } from './pages/Admin/Settings';
+import { DataSourcesManager } from './pages/Admin/DataSourcesManager';
 import { Toast } from './components/Toast';
 import type { ToastType } from './components/Toast';
 import { ErrorBoundary } from './components/ErrorBoundary';
@@ -1163,6 +1164,7 @@ function App() {
     return (
       <ErrorBoundary>
         <AdminLayout currentPage={adminPage} onNavigate={setAdminPage} isUploading={isUploadingInAdmin}>
+          {adminPage === 'sources' && <DataSourcesManager />}
           {adminPage === 'schema' && <SchemaManager onUploadStateChange={setIsUploadingInAdmin} />}
           {adminPage === 'fewshot' && <FewShotManager onUploadStateChange={setIsUploadingInAdmin} />}
           {adminPage === 'contributions' && <ContributionManager onUploadStateChange={setIsUploadingInAdmin} />}

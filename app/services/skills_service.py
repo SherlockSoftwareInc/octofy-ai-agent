@@ -103,6 +103,49 @@ class SkillsService:
         self._data_groups_cache = data_groups
         return data_groups
     
+    def load_data_groups_for_source(self, data_source_name: str) -> List[DataGroup]:
+        """
+        Load data groups for a specific data source by reading .data-groups file
+        
+        Args:
+            data_source_name: Name of the data source (e.g., "Northwind")
+            
+        Returns:
+            List of DataGroup objects for this data source
+        """
+        # Convert data source name to slug format
+        slug = re.sub(r'[^\w\s-]', '', data_source_name.lower()).replace(' ', '-')
+        ds_dir = self.skills_path / slug
+        
+        if not ds_dir.exists():
+            return []
+        
+        data_groups_file = ds_dir / ".data-groups"
+        
+        if not data_groups_file.exists():
+            return []
+        
+        groups = []
+        content = data_groups_file.read_text(encoding='utf-8')
+        
+        for line in content.strip().split('\n'):
+            if not line.strip():
+                continue
+            
+            # Parse format: "Group Name|_filename-group.md"
+            if '|' in line:
+                name, filename = line.split('|', 1)
+                filename = filename.strip()
+                
+                # Load the group file
+                group_file_path = ds_dir / "data-groups" / filename
+                group = self._parse_data_group_file(group_file_path)
+                
+                if group:
+                    groups.append(group)
+        
+        return groups
+    
     def _parse_data_group_file(self, file_path: Path) -> Optional[DataGroup]:
         """
         Parse a single _data-group.md file

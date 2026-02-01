@@ -15,10 +15,10 @@ export const conversationStorage = {
       if (!stored) return [];
       
       const conversations: StoredConversation[] = JSON.parse(stored);
-      // Convert timestamp strings back to Date objects
+      // Convert timestamp strings back to Date objects and ensure messages array exists
       return conversations.map((conv) => ({
         ...conv,
-        messages: conv.messages.map((msg) => ({
+        messages: (conv.messages || []).map((msg) => ({
           ...msg,
           timestamp: new Date(msg.timestamp),
         })),

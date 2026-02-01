@@ -2,9 +2,17 @@ from pydantic import BaseModel, Field
 from typing import List, Optional, Any, Dict, Literal
 from enum import Enum
 import time
+import uuid
 
 
 # --- Shared Models ---
+
+class ObjectType(str, Enum):
+    """Database object types supported in schema tree"""
+    TABLE = "table"
+    VIEW = "view"
+    STORED_PROCEDURE = "stored_procedure"
+    FUNCTION = "function"
 
 class ColumnInfo(BaseModel):
     name: str
@@ -17,6 +25,18 @@ class TableSchema(BaseModel):
     table_type: Optional[str] = "table"  # 'table' or 'view'
     description: Optional[str] = None  # Rich Markdown description (also used for embedding)
     columns: List[ColumnInfo] = []
+
+class DataObject(BaseModel):
+    """Unified model for all database objects (tables, views, SPs, functions)"""
+    source_id: Optional[str] = None  # Links to data source
+    schema_name: str
+    object_name: str
+    object_type: ObjectType
+    description: Optional[str] = None
+    definition: Optional[str] = None  # For stored procedures and functions
+    parameters: Optional[List[Dict[str, Any]]] = []  # For stored procedures and functions
+    return_type: Optional[str] = None  # For functions
+    columns: List[ColumnInfo] = []  # For tables and views
     
 class DiscoveryContext(BaseModel):
     relevant_tables: List[TableSchema]
@@ -288,6 +308,13 @@ class TargetDBConfig(BaseModel):
     python_connection_string_encrypted: Optional[str] = None
     python_connection_string_decrypted: Optional[str] = None
 
+class TargetDBConfigV2(TargetDBConfig):
+    """Extended version with unique identifier for multi-source support"""
+    source_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    enabled: bool = True  # Allow disabling without deleting
+    last_synced: Optional[str] = None  # ISO timestamp of last sync
+    object_count: int = 0  # Total indexed objects
+
 class LLMConfig(BaseModel):
     llm_model: str = "gpt-4o"
     temperature: float = 0.0
@@ -332,6 +359,22 @@ class AgentSettings(BaseModel):
     embedding_config: EmbeddingConfig
     vector_config: VectorConfig
     app_meta: AppMeta
+
+class AgentSettingsV2(BaseModel):
+    """Multi-source configuration with backward compatibility"""
+    data_sources: List[TargetDBConfigV2] = []  # Multiple data sources
+    primary_source_id: Optional[str] = None  # Default source for queries
+    llm_config: LLMConfig
+    embedding_config: EmbeddingConfig
+    vector_config: VectorConfig
+    app_meta: AppMeta
+    
+    @property
+    def target_db(self) -> Optional[TargetDBConfigV2]:
+        """Returns primary source for legacy code compatibility"""
+        if self.primary_source_id:
+            return next((s for s in self.data_sources if s.source_id == self.primary_source_id), None)
+        return self.data_sources[0] if self.data_sources else None
 
 class ConnectionTestRequest(BaseModel):
     driver: str = "ODBC Driver 17 for SQL Server"
@@ -450,3 +493,92 @@ class ThreeProngedResult(BaseModel):
     exact_match_query: Optional[Dict[str, Any]] = None  # Contains: question, sql, tables, score
     requires_user_selection: bool = False
     selection_candidates: List[RankedTable] = []  # Top N candidates for user to choose from
+
+class EnhanceSchemaRequest(BaseModel):
+    """Request to enhance schema descriptions with AI"""
+    file_path: str
+    current_content: str
+    user_context: Optional[str] = None
+
+class EnhanceSchemaResponse(BaseModel):
+    """Response with enhanced markdown content"""
+    enhanced_markdown: str
+
+
+# --- Multi-Source Schema Tree Models ---
+
+class AddDataSourceRequest(BaseModel):
+    """Request to add a new data source"""
+    friendly_name: str
+    description: str
+    keywords: List[str] = []
+    server: str
+    database_name: str
+    auth_type: AuthType = "sql"
+    username: Optional[str] = None
+    password: Optional[str] = None
+    driver: str = "ODBC Driver 17 for SQL Server"
+    trust_server_certificate: bool = False
+
+class DataSourceResponse(BaseModel):
+    """Response for data source information"""
+    source_id: str
+    friendly_name: str
+    description: str
+    keywords: List[str] = []
+    server: str
+    database_name: str
+    db_type: str = "mssql"
+    enabled: bool
+    is_primary: bool
+    object_count: int
+    last_synced: Optional[str] = None
+
+class DataSourceListResponse(BaseModel):
+    """Response listing all data sources"""
+    sources: List[DataSourceResponse]
+    primary_source_id: Optional[str] = None
+    total_objects: int = 0
+
+class SchemaTreeNode(BaseModel):
+    """Hierarchical tree node for schema browser"""
+    node_id: str  # Format: "source_id" or "source_id:schema" or "source_id:schema:object"
+    name: str
+    type: Literal["source", "schema", "table", "view", "stored_procedure", "function"]
+    parent_id: Optional[str] = None
+    children: List['SchemaTreeNode'] = []
+    metadata: Dict[str, Any] = {}  # Description, row counts, etc.
+    is_indexed: bool = False
+
+class SchemaTreeResponse(BaseModel):
+    """Full tree structure response"""
+    roots: List[SchemaTreeNode]
+    total_sources: int
+    total_objects: int
+
+class AddObjectRequest(BaseModel):
+    """Request to add object to vector index"""
+    source_id: str
+    schema_name: str
+    object_name: str
+    object_type: ObjectType
+    description: Optional[str] = None
+
+class SyncObjectRequest(BaseModel):
+    """Request to sync object from database"""
+    source_id: str
+    schema_name: str
+    object_name: str
+    object_type: ObjectType
+
+class DiscoverObjectsRequest(BaseModel):
+    """Request to discover objects from database"""
+    source_id: str
+    schema_name: Optional[str] = None  # If None, discover from all schemas
+    object_types: List[ObjectType] = [ObjectType.TABLE, ObjectType.VIEW]
+
+class DiscoverObjectsResponse(BaseModel):
+    """Response with discovered objects"""
+    discovered: List[DataObject]
+    total_count: int
+    by_type: Dict[str, int] = {}  # Count by object type

@@ -1,0 +1,46 @@
+/* SchemaTreeManager.css - Styles for the Schema Tree component */
+
+/* Tree node indentation levels (depth * 16px) */
+.tree-depth-0 {
+  margin-left: 0;
+}
+
+.tree-depth-1 {
+  margin-left: 16px;
+}
+
+.tree-depth-2 {
+  margin-left: 32px;
+}
+
+.tree-depth-3 {
+  margin-left: 48px;
+}
+
+.tree-depth-4 {
+  margin-left: 64px;
+}
+
+.tree-depth-5 {
+  margin-left: 80px;
+}
+
+.tree-depth-6 {
+  margin-left: 96px;
+}
+
+.tree-depth-7 {
+  margin-left: 112px;
+}
+
+.tree-depth-8 {
+  margin-left: 128px;
+}
+
+.tree-depth-9 {
+  margin-left: 144px;
+}
+
+.tree-depth-10 {
+  margin-left: 160px;
+}

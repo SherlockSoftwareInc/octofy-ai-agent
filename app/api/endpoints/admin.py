@@ -1,12 +1,17 @@
 from fastapi import APIRouter, HTTPException, UploadFile, File, Depends
 from fastapi.responses import StreamingResponse, FileResponse
-from typing import List, Dict
-from app.models.schemas import AdminSchemaStatus, FewShotItem, ValueIndexItem, BatchSyncRequest, BatchSyncResponse
+from typing import List, Dict, Optional
+from app.models.schemas import (
+    AdminSchemaStatus, FewShotItem, ValueIndexItem, BatchSyncRequest, BatchSyncResponse, 
+    EnhanceSchemaRequest, EnhanceSchemaResponse, AddObjectRequest, SyncObjectRequest,
+    DiscoverObjectsRequest, DiscoverObjectsResponse, DataObject, ObjectType
+)
 from app.services.admin_service import (
     get_schema_status, sync_specific_table, sync_all_schemas, batch_sync_tables,
     ingest_values_from_excel, get_all_values, delete_value_item, clear_all_values,
     ingest_schemas_from_excel, ingest_fewshots_from_excel
 )
+from app.services.skills_service import get_skills_service
 from app.services.vector_store import get_vector_store
 from app.core.auth import verify_api_key
 import json
@@ -214,6 +219,245 @@ def clear_all_schemas_endpoint(api_key: str = Depends(verify_api_key)):
             raise HTTPException(status_code=500, detail="Failed to clear schemas")
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+# --- Multi-Source Object Management (V2) ---
+
+@router.post("/object")
+def add_data_object(request: AddObjectRequest, api_key: str = Depends(verify_api_key)):
+    """
+    Add a data object (table, view, SP, function) to vector store.
+    
+    This manually adds an object without discovering from database.
+    """
+    try:
+        vector_store = get_vector_store()
+        
+        # Create DataObject
+        obj = DataObject(
+            source_id=request.source_id,
+            schema_name=request.schema_name,
+            object_name=request.object_name,
+            object_type=request.object_type,
+            description=request.description or f"{request.object_type.value}: {request.object_name}",
+            columns=[]
+        )
+        
+        # Generate embedding text
+        embedding_text = f"{obj.object_name} {obj.description}"
+        
+        # Insert to vector store
+        vector_store.insert_data_object_v2(obj, embedding_text)
+        
+        return {"status": "success", "message": f"Added {obj.object_name} to vector store"}
+    
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to add object: {str(e)}")
+
+
+@router.post("/object/sync")
+def sync_data_object(request: SyncObjectRequest, api_key: str = Depends(verify_api_key)):
+    """
+    Sync a specific object from database to vector store.
+    
+    Discovers the object from database and adds it to vector store with full metadata.
+    """
+    try:
+        from app.core.database import get_database_engine
+        from app.services.object_discovery_service import (
+            discover_stored_procedures, discover_functions,
+            build_sp_markdown_description, build_function_markdown_description
+        )
+        from app.services.ingest_service import build_table_markdown_description
+        from sqlalchemy import inspect
+        
+        # Get database engine
+        engine = get_database_engine(request.source_id)
+        inspector = inspect(engine)
+        vector_store = get_vector_store()
+        
+        if request.object_type == ObjectType.TABLE:
+            # Discover table metadata
+            columns = inspector.get_columns(request.object_name, schema=request.schema_name)
+            pk_constraint = inspector.get_pk_constraint(request.object_name, schema=request.schema_name)
+            fk_constraints = inspector.get_foreign_keys(request.object_name, schema=request.schema_name)
+            
+            # Build TableSchema object (legacy format)
+            from app.models.schemas import TableSchema, ColumnInfo
+            table_schema = TableSchema(
+                schema_name=request.schema_name,
+                table_name=request.object_name,
+                table_type="table",
+                columns=[ColumnInfo(name=c['name'], data_type=str(c['type'])) for c in columns]
+            )
+            
+            # Build markdown description
+            markdown = build_table_markdown_description(
+                table_schema, pk_constraint, fk_constraints, "table"
+            )
+            
+            # Create DataObject
+            obj = DataObject(
+                source_id=request.source_id,
+                schema_name=request.schema_name,
+                object_name=request.object_name,
+                object_type=ObjectType.TABLE,
+                description=markdown,
+                columns=table_schema.columns
+            )
+            
+            embedding_text = f"{obj.object_name} table"
+            vector_store.insert_data_object_v2(obj, embedding_text)
+        
+        elif request.object_type == ObjectType.VIEW:
+            # Similar to table
+            columns = inspector.get_columns(request.object_name, schema=request.schema_name)
+            from app.models.schemas import TableSchema, ColumnInfo
+            
+            table_schema = TableSchema(
+                schema_name=request.schema_name,
+                table_name=request.object_name,
+                table_type="view",
+                columns=[ColumnInfo(name=c['name'], data_type=str(c['type'])) for c in columns]
+            )
+            
+            markdown = build_table_markdown_description(
+                table_schema, None, [], "view"
+            )
+            
+            obj = DataObject(
+                source_id=request.source_id,
+                schema_name=request.schema_name,
+                object_name=request.object_name,
+                object_type=ObjectType.VIEW,
+                description=markdown,
+                columns=table_schema.columns
+            )
+            
+            embedding_text = f"{obj.object_name} view"
+            vector_store.insert_data_object_v2(obj, embedding_text)
+        
+        elif request.object_type == ObjectType.STORED_PROCEDURE:
+            # Discover stored procedure
+            sps = discover_stored_procedures(engine, request.schema_name)
+            sp = next((s for s in sps if s.object_name == request.object_name), None)
+            
+            if not sp:
+                raise HTTPException(status_code=404, detail=f"Stored procedure {request.object_name} not found")
+            
+            sp.source_id = request.source_id
+            markdown = build_sp_markdown_description(sp)
+            sp.description = markdown
+            
+            embedding_text = f"{sp.object_name} stored procedure"
+            vector_store.insert_data_object_v2(sp, embedding_text)
+        
+        elif request.object_type == ObjectType.FUNCTION:
+            # Discover function
+            funcs = discover_functions(engine, request.schema_name)
+            func = next((f for f in funcs if f.object_name == request.object_name), None)
+            
+            if not func:
+                raise HTTPException(status_code=404, detail=f"Function {request.object_name} not found")
+            
+            func.source_id = request.source_id
+            markdown = build_function_markdown_description(func)
+            func.description = markdown
+            
+            embedding_text = f"{func.object_name} function"
+            vector_store.insert_data_object_v2(func, embedding_text)
+        
+        return {"status": "success", "message": f"Synced {request.object_name} from database"}
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to sync object: {str(e)}")
+
+
+@router.delete("/object")
+def delete_data_object(source_id: str, schema: str, object_name: str, api_key: str = Depends(verify_api_key)):
+    """Delete a data object from vector store."""
+    try:
+        vector_store = get_vector_store()
+        vector_store.delete_data_object_v2(source_id, schema, object_name)
+        return {"status": "success", "message": f"Deleted {schema}.{object_name} from vector store"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/object/discover")
+def discover_objects(request: DiscoverObjectsRequest, api_key: str = Depends(verify_api_key)):
+    """
+    Discover objects from database without adding to vector store.
+    
+    Returns list of discovered objects that can be selectively synced.
+    """
+    try:
+        from app.core.database import get_database_engine
+        from app.services.object_discovery_service import (
+            discover_stored_procedures, discover_functions, discover_all_schemas
+        )
+        from sqlalchemy import inspect
+        
+        engine = get_database_engine(request.source_id)
+        inspector = inspect(engine)
+        
+        discovered = []
+        
+        # Determine which schemas to search
+        if request.schema_name:
+            schemas = [request.schema_name]
+        else:
+            schemas = discover_all_schemas(engine)
+        
+        # Discover objects by type
+        for schema in schemas:
+            if ObjectType.TABLE in request.object_types:
+                tables = inspector.get_table_names(schema=schema)
+                for table in tables:
+                    discovered.append(DataObject(
+                        source_id=request.source_id,
+                        schema_name=schema,
+                        object_name=table,
+                        object_type=ObjectType.TABLE,
+                        description=f"Table: {table}",
+                        columns=[]
+                    ))
+            
+            if ObjectType.VIEW in request.object_types:
+                views = inspector.get_view_names(schema=schema)
+                for view in views:
+                    discovered.append(DataObject(
+                        source_id=request.source_id,
+                        schema_name=schema,
+                        object_name=view,
+                        object_type=ObjectType.VIEW,
+                        description=f"View: {view}",
+                        columns=[]
+                    ))
+            
+            if ObjectType.STORED_PROCEDURE in request.object_types:
+                sps = discover_stored_procedures(engine, schema)
+                discovered.extend(sps)
+            
+            if ObjectType.FUNCTION in request.object_types:
+                funcs = discover_functions(engine, schema)
+                discovered.extend(funcs)
+        
+        # Count by type
+        by_type = {}
+        for obj in discovered:
+            obj_type = obj.object_type.value
+            by_type[obj_type] = by_type.get(obj_type, 0) + 1
+        
+        return DiscoverObjectsResponse(
+            discovered=discovered,
+            total_count=len(discovered),
+            by_type=by_type
+        )
+    
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to discover objects: {str(e)}")
 
 @router.post("/ingest-fewshots")
 async def ingest_fewshots(file: UploadFile = File(...), mode: str = "append", api_key: str = Depends(verify_api_key)):
@@ -573,4 +817,296 @@ def backup_vector_store(api_key: str = Depends(verify_api_key)):
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error creating backup: {str(e)}")
+
+
+# --- Skills Management ---
+
+@router.get("/skills/data-sources")
+def get_data_sources(api_key: str = Depends(verify_api_key)):
+    """Get all data sources from skills index"""
+    try:
+        skills_service = get_skills_service()
+        # Clear cache to get fresh data
+        skills_service._data_sources_cache = None
+        data_sources = skills_service.load_data_sources_index()
+        return [ds.dict() for ds in data_sources]
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/skills/data-sources")
+def create_data_source(data: Dict, api_key: str = Depends(verify_api_key)):
+    """Create a new data source"""
+    try:
+        from app.services.skills_admin_service import create_data_source as create_ds
+        result = create_ds(data)
+        return {"status": "success", "message": f"Created data source: {data.get('name')}", "data": result}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.put("/skills/data-sources/{data_source_name}")
+def update_data_source(data_source_name: str, data: Dict, api_key: str = Depends(verify_api_key)):
+    """Update an existing data source"""
+    try:
+        from app.services.skills_admin_service import update_data_source as update_ds
+        result = update_ds(data_source_name, data)
+        return {"status": "success", "message": f"Updated data source: {data_source_name}", "data": result}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/skills/data-sources/{data_source_name}")
+def delete_data_source(data_source_name: str, api_key: str = Depends(verify_api_key)):
+    """Delete a data source and all its contents"""
+    try:
+        from app.services.skills_admin_service import delete_data_source as delete_ds
+        delete_ds(data_source_name)
+        return {"status": "success", "message": f"Deleted data source: {data_source_name}"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/skills/data-groups")
+def get_data_groups(data_source: Optional[str] = None, api_key: str = Depends(verify_api_key)):
+    """Get all data groups, optionally filtered by data source"""
+    try:
+        skills_service = get_skills_service()
+        # Clear cache to get fresh data
+        skills_service._data_groups_cache = None
+        all_groups = skills_service.load_all_data_groups()
+        
+        groups = list(all_groups.values())
+        if data_source:
+            groups = [g for g in groups if g.data_source == data_source]
+        
+        return [g.dict() for g in groups]
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/skills/data-groups")
+def create_data_group(data: Dict, api_key: str = Depends(verify_api_key)):
+    """Create a new data group"""
+    try:
+        from app.services.skills_admin_service import create_data_group as create_dg
+        result = create_dg(data)
+        return {"status": "success", "message": f"Created data group: {data.get('name')}", "data": result}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.put("/skills/data-groups")
+def update_data_group(data: Dict, api_key: str = Depends(verify_api_key)):
+    """Update an existing data group (requires file_path in data)"""
+    try:
+        from app.services.skills_admin_service import update_data_group as update_dg
+        result = update_dg(data)
+        return {"status": "success", "message": f"Updated data group: {data.get('name')}", "data": result}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/skills/data-groups")
+def delete_data_group(file_path: str, api_key: str = Depends(verify_api_key)):
+    """Delete a data group file"""
+    try:
+        from app.services.skills_admin_service import delete_data_group as delete_dg
+        delete_dg(file_path)
+        return {"status": "success", "message": "Deleted data group"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/skills/tables")
+def get_tables(data_source: Optional[str] = None, data_group: Optional[str] = None, api_key: str = Depends(verify_api_key)):
+    """Get table schemas, optionally filtered by data source or data group"""
+    try:
+        skills_service = get_skills_service()
+        all_groups = skills_service.load_all_data_groups()
+        
+        # Filter groups
+        groups = list(all_groups.values())
+        if data_source:
+            groups = [g for g in groups if g.data_source == data_source]
+        if data_group:
+            groups = [g for g in groups if g.name == data_group]
+        
+        # Collect all table paths
+        table_paths = []
+        for g in groups:
+            table_paths.extend(g.tables)
+        
+        # Load table schemas
+        tables = skills_service.load_table_schemas(table_paths)
+        return [t.dict() for t in tables]
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/skills/tables/by-path")
+def get_table_by_path(file_path: str, api_key: str = Depends(verify_api_key)):
+    """Get a specific table schema by file path"""
+    try:
+        skills_service = get_skills_service()
+        tables = skills_service.load_table_schemas([file_path])
+        if not tables:
+            raise HTTPException(status_code=404, detail="Table not found")
+        return tables[0].dict()
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/skills/tables")
+def create_table(data: Dict, api_key: str = Depends(verify_api_key)):
+    """Create a new table schema (data object)"""
+    try:
+        from app.services.skills_admin_service import create_table_schema as create_ts
+        result = create_ts(data)
+        return {"status": "success", "message": f"Created table: {data.get('schema_name')}.{data.get('table_name')}", "data": result}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.put("/skills/tables")
+def update_table(data: Dict, api_key: str = Depends(verify_api_key)):
+    """Update an existing table schema (requires file_path in data)"""
+    try:
+        from app.services.skills_admin_service import update_table_schema as update_ts
+        result = update_ts(data)
+        return {"status": "success", "message": f"Updated table: {data.get('table_name')}", "data": result}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/skills/tables")
+def delete_table(file_path: str, api_key: str = Depends(verify_api_key)):
+    """Delete a table schema file"""
+    try:
+        from app.services.skills_admin_service import delete_table_schema as delete_ts
+        delete_ts(file_path)
+        return {"status": "success", "message": "Deleted table schema"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/skills/raw-markdown")
+def get_raw_markdown(file_path: str, api_key: str = Depends(verify_api_key)):
+    """Get raw markdown content of a skill file"""
+    try:
+        from pathlib import Path
+        path = Path(file_path)
+        if not path.exists():
+            raise HTTPException(status_code=404, detail="File not found")
+        content = path.read_text(encoding='utf-8')
+        return {"content": content, "file_path": file_path}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.put("/skills/raw-markdown")
+def save_raw_markdown(data: Dict, api_key: str = Depends(verify_api_key)):
+    """Save raw markdown content to a skill file"""
+    try:
+        from pathlib import Path
+        file_path = data.get('file_path')
+        content = data.get('content')
+        
+        if not file_path or content is None:
+            raise HTTPException(status_code=400, detail="file_path and content are required")
+        
+        path = Path(file_path)
+        if not path.exists():
+            raise HTTPException(status_code=404, detail="File not found")
+        
+        path.write_text(content, encoding='utf-8')
+        
+        # Clear skills service cache to reload data
+        skills_service = get_skills_service()
+        skills_service._data_sources_cache = None
+        skills_service._data_groups_cache = None
+        
+        return {"status": "success", "message": "Markdown file saved", "file_path": file_path}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/skills/folder-tree")
+def get_folder_tree(api_key: str = Depends(verify_api_key)):
+    """Get the actual folder hierarchy from skills/data-sources directory"""
+    try:
+        from pathlib import Path
+        import os
+        
+        def build_tree(path: Path, relative_to: Path) -> Dict:
+            """Recursively build folder tree"""
+            item = {
+                "name": path.name,
+                "path": str(path),
+                "relative_path": str(path.relative_to(relative_to)),
+                "is_file": path.is_file(),
+                "type": "file" if path.is_file() else "folder"
+            }
+            
+            if path.is_file():
+                # Add file metadata
+                item["extension"] = path.suffix
+                item["is_markdown"] = path.suffix == ".md"
+            else:
+                # Add folder children
+                children = []
+                try:
+                    for child in sorted(path.iterdir()):
+                        # Skip hidden files/folders
+                        if not child.name.startswith('.'):
+                            children.append(build_tree(child, relative_to))
+                except PermissionError:
+                    pass
+                item["children"] = children
+            
+            return item
+        
+        base_path = Path("skills/data-sources")
+        if not base_path.exists():
+            return {"error": "skills/data-sources directory not found"}
+        
+        tree = build_tree(base_path, base_path.parent)
+        return tree
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/enhance-schema", response_model=EnhanceSchemaResponse)
+def enhance_schema_with_ai(
+    request: EnhanceSchemaRequest,
+    api_key: str = Depends(verify_api_key)
+):
+    """
+    Enhance table and column descriptions using AI.
+    Combines markdown parsing, database schema queries, and LLM generation.
+    """
+    try:
+        from app.services.schema_enhancement_service import SchemaEnhancementService
+        
+        service = SchemaEnhancementService()
+        enhanced_md = service.enhance_schema(
+            file_path=request.file_path,
+            current_content=request.current_content,
+            user_context=request.user_context
+        )
+        
+        return EnhanceSchemaResponse(enhanced_markdown=enhanced_md)
+    except ValueError as e:
+        # Handle validation errors from service
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error enhancing schema: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 

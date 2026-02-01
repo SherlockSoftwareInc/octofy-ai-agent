@@ -856,6 +856,174 @@ export const api = {
         verifySettings: async (): Promise<VerifySettingsResponse> => {
             const response = await axios.post(`${API_BASE_URL}/admin/verify-settings`);
             return response.data;
+        },
+        
+        // Skills Management
+        getDataSources: async (): Promise<DataSource[]> => {
+            const response = await axios.get(`${API_BASE_URL}/admin/skills/data-sources`);
+            return response.data;
+        },
+        createDataSource: async (data: Partial<DataSource>) => {
+            const response = await axios.post(`${API_BASE_URL}/admin/skills/data-sources`, data);
+            return response.data;
+        },
+        updateDataSource: async (name: string, data: Partial<DataSource>) => {
+            const response = await axios.put(`${API_BASE_URL}/admin/skills/data-sources/${encodeURIComponent(name)}`, data);
+            return response.data;
+        },
+        deleteDataSource: async (name: string) => {
+            const response = await axios.delete(`${API_BASE_URL}/admin/skills/data-sources/${encodeURIComponent(name)}`);
+            return response.data;
+        },
+        getDataGroups: async (dataSource?: string): Promise<DataGroup[]> => {
+            const params = dataSource ? { data_source: dataSource } : {};
+            const response = await axios.get(`${API_BASE_URL}/admin/skills/data-groups`, { params });
+            return response.data;
+        },
+        createDataGroup: async (data: Partial<DataGroup>) => {
+            const response = await axios.post(`${API_BASE_URL}/admin/skills/data-groups`, data);
+            return response.data;
+        },
+        updateDataGroup: async (data: Partial<DataGroup>) => {
+            const response = await axios.put(`${API_BASE_URL}/admin/skills/data-groups`, data);
+            return response.data;
+        },
+        deleteDataGroup: async (filePath: string) => {
+            const response = await axios.delete(`${API_BASE_URL}/admin/skills/data-groups`, {
+                params: { file_path: filePath }
+            });
+            return response.data;
+        },
+        getTables: async (dataSource?: string, dataGroup?: string): Promise<SkillTableSchema[]> => {
+            const params: any = {};
+            if (dataSource) params.data_source = dataSource;
+            if (dataGroup) params.data_group = dataGroup;
+            const response = await axios.get(`${API_BASE_URL}/admin/skills/tables`, { params });
+            return response.data;
+        },
+        getTableByPath: async (filePath: string): Promise<SkillTableSchema> => {
+            const response = await axios.get(`${API_BASE_URL}/admin/skills/tables/by-path`, {
+                params: { file_path: filePath }
+            });
+            return response.data;
+        },
+        updateTable: async (data: Partial<SkillTableSchema>) => {
+            const response = await axios.put(`${API_BASE_URL}/admin/skills/tables`, data);
+            return response.data;
+        },
+        
+        // Read/Write Raw Markdown
+        getRawMarkdown: async (filePath: string): Promise<string> => {
+            const response = await axios.get(`${API_BASE_URL}/admin/skills/raw-markdown`, {
+                params: { file_path: filePath }
+            });
+            return response.data.content;
+        },
+        saveRawMarkdown: async (filePath: string, content: string) => {
+            const response = await axios.put(`${API_BASE_URL}/admin/skills/raw-markdown`, {
+                file_path: filePath,
+                content: content
+            });
+            return response.data;
+        },
+        
+        // Get folder tree hierarchy
+        getFolderTree: async (): Promise<FolderTreeNode> => {
+            const response = await axios.get(`${API_BASE_URL}/admin/skills/folder-tree`);
+            return response.data;
+        },
+
+        // Enhance schema descriptions with AI
+        enhanceSchemaWithAI: async (params: {
+            file_path: string;
+            current_content: string;
+            user_context?: string;
+        }): Promise<{ enhanced_markdown: string }> => {
+            const response = await axios.post(`${API_BASE_URL}/admin/enhance-schema`, params);
+            return response.data;
+        }
+    },
+
+    // Data Sources Management (V2 Multi-Source)
+    dataSources: {
+        getAll: async (): Promise<DataSourceListResponse> => {
+            const response = await axios.get(`${API_BASE_URL}/admin/data-sources`);
+            return response.data;
+        },
+        add: async (request: AddDataSourceRequest): Promise<DataSourceResponse> => {
+            const response = await axios.post(`${API_BASE_URL}/admin/data-sources`, request);
+            return response.data;
+        },
+        get: async (sourceId: string): Promise<DataSourceResponse> => {
+            const response = await axios.get(`${API_BASE_URL}/admin/data-sources/${encodeURIComponent(sourceId)}`);
+            return response.data;
+        },
+        update: async (sourceId: string, request: AddDataSourceRequest): Promise<void> => {
+            await axios.put(`${API_BASE_URL}/admin/data-sources/${encodeURIComponent(sourceId)}`, request);
+        },
+        delete: async (sourceId: string): Promise<void> => {
+            await axios.delete(`${API_BASE_URL}/admin/data-sources/${encodeURIComponent(sourceId)}`);
+        },
+        testConnection: async (sourceId: string): Promise<ConnectionTestResponse> => {
+            const response = await axios.post(`${API_BASE_URL}/admin/data-sources/${encodeURIComponent(sourceId)}/test`);
+            return response.data;
+        },
+        setPrimary: async (sourceId: string): Promise<void> => {
+            await axios.post(`${API_BASE_URL}/admin/data-sources/${encodeURIComponent(sourceId)}/set-primary`);
+        },
+        toggleEnabled: async (sourceId: string, enabled: boolean): Promise<void> => {
+            await axios.post(`${API_BASE_URL}/admin/data-sources/${encodeURIComponent(sourceId)}/enable`, { enabled });
+        }
+    },
+
+    // Schema Tree Navigation (V2 Multi-Source)
+    schemaTree: {
+        getTree: async (sourceId?: string): Promise<SchemaTreeResponse> => {
+            const params = sourceId ? { source_id: sourceId } : {};
+            const response = await axios.get(`${API_BASE_URL}/admin/schema-tree`, { params });
+            return response.data;
+        },
+        getTreeForSource: async (sourceId: string): Promise<SchemaTreeResponse> => {
+            const response = await axios.get(`${API_BASE_URL}/admin/schema-tree/${encodeURIComponent(sourceId)}`);
+            return response.data;
+        },
+        getSchemas: async (sourceId: string): Promise<string[]> => {
+            const response = await axios.get(`${API_BASE_URL}/admin/schema-tree/${encodeURIComponent(sourceId)}/schemas`);
+            return response.data.schemas;
+        },
+        getObjects: async (sourceId: string, schema?: string, objectType?: ObjectType): Promise<DataObject[]> => {
+            const params: any = {};
+            if (schema) params.schema = schema;
+            if (objectType) params.object_type = objectType;
+            const response = await axios.get(`${API_BASE_URL}/admin/schema-tree/${encodeURIComponent(sourceId)}/objects`, { params });
+            return response.data.objects;
+        },
+        discoverObjects: async (request: DiscoverObjectsRequest): Promise<DiscoverObjectsResponse> => {
+            const response = await axios.post(`${API_BASE_URL}/admin/schema-tree/${encodeURIComponent(request.source_id)}/discover`, request);
+            return response.data;
+        }
+    },
+
+    // Object Management (V2 Multi-Source)
+    objects: {
+        add: async (request: AddObjectRequest): Promise<void> => {
+            await axios.post(`${API_BASE_URL}/admin/object`, request);
+        },
+        sync: async (request: SyncObjectRequest): Promise<void> => {
+            await axios.post(`${API_BASE_URL}/admin/object/sync`, request);
+        },
+        delete: async (sourceId: string, schema: string, objectName: string): Promise<void> => {
+            await axios.delete(`${API_BASE_URL}/admin/object`, {
+                params: {
+                    source_id: sourceId,
+                    schema: schema,
+                    object_name: objectName
+                }
+            });
+        },
+        discover: async (request: DiscoverObjectsRequest): Promise<DiscoverObjectsResponse> => {
+            const response = await axios.post(`${API_BASE_URL}/admin/object/discover`, request);
+            return response.data;
         }
     },
 
@@ -993,13 +1161,185 @@ export interface EnvApiKeyResponse {
 }
 
 export interface VerifySettingsResponse {
-    db_connected: boolean;
-    db_message: string;
-    llm_connected: boolean;
-    llm_message: string;
-    milvus_connected: boolean;
-    milvus_message: string;
+    success: boolean;
+    message: string;
+    errors?: { [key: string]: string };
+    db_connected?: boolean;
+    db_message?: string;
+    llm_connected?: boolean;
+    llm_message?: string;
+    milvus_connected?: boolean;
+    milvus_message?: string;
 }
+
+// Skills Management Types
+export interface DataSource {
+    name: string;
+    type: string;
+    description: string;
+    keywords: string[];
+    status: string;
+    connection_info?: any;
+    data_groups?: string[];
+    file_path?: string;
+}
+
+export interface DataGroup {
+    name: string;
+    data_source: string;
+    description: string;
+    keywords: string[];
+    tables: string[];
+    schema_notes?: string;
+    category?: string;
+    file_path?: string;
+}
+
+export interface SkillTableSchema {
+    schema_name: string;
+    table_name: string;
+    table_type?: string;
+    description?: string;
+    columns: ColumnInfo[];
+    file_path?: string;
+}
+
+export interface FolderTreeNode {
+    name: string;
+    path: string;
+    relative_path: string;
+    is_file: boolean;
+    type: 'file' | 'folder';
+    extension?: string;
+    is_markdown?: boolean;
+    children?: FolderTreeNode[];
+}
+
+// Multi-Source Schema Tree Types (V2)
+export type ObjectType = 'table' | 'view' | 'stored_procedure' | 'function';
+
+export interface DataObject {
+    source_id: string;
+    schema_name: string;
+    object_name: string;
+    object_type: ObjectType;
+    description?: string;
+    columns?: ColumnInfo[];
+    definition?: string;
+    parameters?: string;
+    return_type?: string;
+}
+
+export interface TargetDBConfigV2 {
+    source_id: string;
+    friendly_name: string;
+    description: string;
+    keywords: string[];
+    db_type: string;
+    server: string;
+    database_name: string;
+    connection_string_encrypted: string;
+    connection_string_decrypted?: string;
+    driver?: string;
+    auth_type?: string;
+    username?: string;
+    trust_server_certificate?: boolean;
+    enabled: boolean;
+    last_synced?: string;
+    object_count: number;
+}
+
+export interface DataSourceResponse {
+    source_id: string;
+    friendly_name: string;
+    description: string;
+    keywords: string[];
+    server: string;
+    database_name: string;
+    db_type: string;
+    enabled: boolean;
+    is_primary: boolean;
+    object_count: number;
+    last_synced?: string;
+}
+
+export interface DataSourceListResponse {
+    data_sources: DataSourceResponse[];
+    primary_source_id?: string;
+}
+
+export interface AddDataSourceRequest {
+    friendly_name: string;
+    description: string;
+    keywords: string[];
+    db_type: string;
+    server: string;
+    database_name: string;
+    connection_string_encrypted: string;
+    driver?: string;
+    auth_type?: string;
+    username?: string;
+    trust_server_certificate?: boolean;
+}
+
+export interface SchemaTreeNode {
+    node_id: string;
+    name: string;
+    type: 'source' | 'schema' | 'table' | 'view' | 'stored_procedure' | 'function';
+    parent_id?: string;
+    children: SchemaTreeNode[];
+    metadata: {
+        source_id?: string;
+        schema_name?: string;
+        object_name?: string;
+        object_type?: ObjectType;
+        description?: string;
+        column_count?: number;
+        enabled?: boolean;
+        is_primary?: boolean;
+        object_count?: number;
+        last_synced?: string;
+    };
+    is_indexed: boolean;
+}
+
+export interface SchemaTreeResponse {
+    roots: SchemaTreeNode[];
+    total_sources: number;
+    total_objects: number;
+}
+
+export interface AddObjectRequest {
+    source_id: string;
+    schema_name: string;
+    object_name: string;
+    object_type: ObjectType;
+    description: string;
+    columns?: ColumnInfo[];
+    definition?: string;
+    parameters?: string;
+    return_type?: string;
+}
+
+export interface SyncObjectRequest {
+    source_id: string;
+    schema_name: string;
+    object_name: string;
+    object_type: ObjectType;
+}
+
+export interface DiscoverObjectsRequest {
+    source_id: string;
+    schema_name?: string;
+    object_types?: ObjectType[];
+}
+
+export interface DiscoverObjectsResponse {
+    objects: DataObject[];
+    count: number;
+}
+
+
 
 /**
  * Summarize Python execution results using LLM
