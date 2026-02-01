@@ -1,31 +1,25 @@
 {
-  "data_sources": [
-    {
-      "friendly_name": "Northwind Database",
-      "description": "Sales database for imported and exported specialty foods",
-      "keywords": [
-        "sales",
-        "customers",
-        "orders",
-        "products",
-        "employees",
-        "shipping"
-      ],
-      "db_type": "mssql",
-      "server": "host.docker.internal",
-      "database_name": "northwind",
-      "connection_string_encrypted": "gAAAAABpfjcTfLJe0EcPDN0B5FUpK569LodSnw3lBBa1fGwm93E6Z6ORJLNJWit6oLKiin0sr2V5sZLUs939OjqAGvQaNI_6VFOSndl3-I8wKhF50uwlK2_c7stEPTVa4bCkzSbIEG6eWVKl8IrmgTandvxhTLDYxPHaCjxrk41H3_tqGw2row4eJWp5I7oHLKwSzi_tSj4r8i8BGbrCRvqkl0D5BEx4Kp7MHL_Eiy8EG7RULwHDWusT0V3Z1MPYBJvHFSY06vMDhs3oozKuFBXrQ8oZQcJ8tg==",
-      "driver": "ODBC Driver 17 for SQL Server",
-      "auth_type": "sql",
-      "username": "sql_agent",
-      "trust_server_certificate": true,
-      "python_connection_string_encrypted": "gAAAAABpfjcTU5IIi36k6V3y-AWAwJPcI2FHlmZ4VVv2n2_3qkOOQq7Pkh1_Ceg-qWDXoffDvOeIqCpNYB0y4W-TVjSkaCXTlIMPKH4Yi08OXq4ZP5FoJbQuec38gGwqqCKm6v7D9RGoGK983jb896997Hk6slon-lLclIhvKT2dcgZu1xphD42T-mQhz_Bz3tlLBoy-WnrkSlwglPXFdWlOPQfxX6rIUxewtoW3DvcS-_65sNX288E_eF_6gzwbEa_V6mKdOiUYWMx7xUxwJWw7k_tPLPFrNg==",
-      "source_id": "4fcf65f9-0ce9-4e07-850b-8d82e6ed74fd",
-      "enabled": true,
-      "object_count": 0
-    }
-  ],
-  "primary_source_id": "4fcf65f9-0ce9-4e07-850b-8d82e6ed74fd",
+  "target_db": {
+    "friendly_name": "Northwind Database",
+    "description": "Sales database for imported and exported specialty foods",
+    "keywords": [
+      "sales",
+      "customers",
+      "orders",
+      "products",
+      "employees",
+      "shipping"
+    ],
+    "db_type": "mssql",
+    "server": "localhost",
+    "database_name": "northwind",
+    "connection_string_encrypted": "gAAAAABpfrZDRd4lwoDV_ktAPLiaL8IoSstOHYkj6lPJhqAMwlOiYp-L01jFYOLFy5lRIo_tUKDn_kzdZTXZ3j8cyJrIvkmrZwaw7FkFyohh3kQFwcI_4Jqiha57bWvIGqLj0iweRow5vF8IeJR1Fcx2PHcH5i9gBzIsAY6NKLOdeG33Vn70fuyhN0OJiKl_XraWOCx26biTb9dYX2hLwhMiOHYfHVeKshsQgNQ9JDSvwMaWKmUUvTF37dDeugZ0zQeaHkDgtKsBWL-7L9QSCfqCAT-XfFz-dw==",
+    "driver": "ODBC Driver 17 for SQL Server",
+    "auth_type": "sql",
+    "username": "sql_agent",
+    "trust_server_certificate": true,
+    "python_connection_string_encrypted": "gAAAAABpfrZDMApLWAkiSDSIJ7JaKTipKqdn-Z-E_zyT0dfUNE3NSnJhz7HEtb5Y-XespimEfkDOXqdfgPpjCNMgrr1ugiATOM-6M6L0fK7saHRgwG_dB4q2F1IRKGH1o8Rk08UjIeZ1FH7eggHYu6OgVgpo31hw70InIZqYv4z9jJkpTUYLQd-QemQTnDO0TKlvSZSa5OwAeo8p3I8jCOHlywd2C7IQheLhzGZ28by_L0WqCWv5htBb805DzNb5vCPe8NpeYQ6O"
+  },
   "llm_config": {
     "llm_model": "deepseek-chat",
     "temperature": 0.0,
