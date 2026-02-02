@@ -3,8 +3,8 @@ Code Advisor Service - Provides code review, optimization, and debugging advice
 for SQL, R, SAS, and Python code.
 """
 
-import re
 import json
+import re
 import logging
 from typing import Optional, Generator, Union, Dict
 from app.models.schemas import GenerateSQLRequest, GenerateSQLResponse, AgentStatus
@@ -41,10 +41,14 @@ Your task:
 4. **Explain** the specific optimizations made using language-specific best practices (e.g., Vectorization in Python/R, Hash Joins in SAS, or SARGability and CTEs in SQL)
 5. **List** any environmental or structural recommendations (like indexing or hardware considerations) that would further enhance performance
 
-When providing the optimized code, wrap it in triple single quotes with the language identifier, like:
-'''sql
-<optimized code here>
-'''
+**CRITICAL FORMATTING RULE:**
+When providing optimized code, you MUST wrap it in a proper markdown code block using THREE backticks (```), like this example:
+
+```sql
+SELECT * FROM table;
+```
+
+Do NOT use any other format. The code block must start with three backticks followed by the language name (sql/python/r/sas).
 
 **User's message:**
 {message}
@@ -65,12 +69,31 @@ def generate_code_advice(message: str) -> str:
 
     try:
         llm_service = get_llm_service()
-        prompt = build_advisor_prompt(message)
+        user_prompt = build_advisor_prompt(message)
         
-        # Use slightly higher temperature for more natural conversation
-        advice = llm_service.chat(prompt, temperature=0.3)
+        # Use system message to enforce markdown code block formatting
+        system_message = "You are a code optimization expert. When providing optimized code, you MUST wrap it in markdown code blocks using three backticks (```) followed by the language identifier (sql, python, r, or sas). This is MANDATORY."
         
-        logger.info(f"Generated advice ({len(advice)} chars)")
+        # Use chat_completion to preserve code block formatting (chat() strips backticks)
+        advice = llm_service.chat_completion(
+            messages=[
+                {"role": "system", "content": system_message},
+                {"role": "user", "content": user_prompt}
+            ],
+            temperature=0.3
+        )
+        
+        # 🔍 DEBUG: Log raw LLM output
+        import sys
+        print("\n" + "=" * 80, flush=True)
+        print("🔍 RAW LLM OUTPUT (first 800 chars):", flush=True)
+        print(advice[:800], flush=True)
+        print(f"🔍 Contains ```: {('```' in advice)}", flush=True)
+        print(f"🔍 Total length: {len(advice)} chars", flush=True)
+        print("=" * 80 + "\n", flush=True)
+        sys.stdout.flush()
+        
+        # Return advice unchanged - frontend will handle code block extraction
         return advice
         
     except Exception as e:
