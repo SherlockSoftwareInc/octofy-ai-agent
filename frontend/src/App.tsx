@@ -1420,7 +1420,7 @@ function App() {
                                                 key={idx}
                                                 remarkPlugins={[remarkGfm]}
                                                 components={{
-                                                  code({ inline, children }: any) {
+                                                  code({ children }: any) {
                                                     // Render inline code as plain text
                                                     return <span>{children}</span>;
                                                   },
@@ -1800,7 +1800,7 @@ function App() {
                                                 remarkPlugins={[remarkGfm]}
                                                 className="prose prose-invert max-w-none"
                                                 components={{
-                                                  code({ inline, children }: any) {
+                                                  code({ children }: any) {
                                                     // Inline code as plain span
                                                     return <span>{children}</span>;
                                                   },

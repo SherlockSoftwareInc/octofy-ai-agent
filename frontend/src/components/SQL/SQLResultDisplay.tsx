@@ -15,26 +15,86 @@ import { ResultChart } from './ResultChart';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 
+const mergeClassNames = (...classes: Array<string | undefined>): string => classes.filter(Boolean).join(' ');
+
+type MarkdownComponents = NonNullable<React.ComponentProps<typeof ReactMarkdown>['components']>;
+
 const markdownComponents = {
-    ul: ({ node, ...props }: any) => <ul className="list-disc list-outside ml-4 space-y-1" {...props} />,
-    ol: ({ node, ...props }: any) => <ol className="list-decimal list-outside ml-4 space-y-1" {...props} />,
-    strong: ({ node, ...props }: any) => <strong className="font-bold text-white" {...props} />,
-    p: ({ node, ...props }: any) => <p className="mb-2 last:mb-0" {...props} />,
-    a: ({ node, ...props }: any) => <a className="text-blue-400 hover:underline" target="_blank" rel="noopener noreferrer" {...props} />,
-};
+    ul: (props) => {
+        const { className, ...rest } = props as React.ComponentPropsWithoutRef<'ul'>;
+        return (
+            <ul
+                className={mergeClassNames('list-disc list-outside ml-4 space-y-1', className)}
+                {...rest}
+            />
+        );
+    },
+    ol: (props) => {
+        const { className, ...rest } = props as React.ComponentPropsWithoutRef<'ol'>;
+        return (
+            <ol
+                className={mergeClassNames('list-decimal list-outside ml-4 space-y-1', className)}
+                {...rest}
+            />
+        );
+    },
+    strong: (props) => {
+        const { className, ...rest } = props as React.ComponentPropsWithoutRef<'strong'>;
+        return <strong className={mergeClassNames('font-bold text-white', className)} {...rest} />;
+    },
+    p: (props) => {
+        const { className, ...rest } = props as React.ComponentPropsWithoutRef<'p'>;
+        return <p className={mergeClassNames('mb-2 last:mb-0', className)} {...rest} />;
+    },
+    a: (props) => {
+        const { className, ...rest } = props as React.ComponentPropsWithoutRef<'a'>;
+        return (
+            <a
+                className={mergeClassNames('text-blue-400 hover:underline', className)}
+                target="_blank"
+                rel="noopener noreferrer"
+                {...rest}
+            />
+        );
+    },
+} satisfies MarkdownComponents;
 
 const ResultsWrapper = ({ children }: { children: React.ReactNode }) => (
-    <div style={{
-        maxWidth: '100%',
-        overflowX: 'auto',
-        margin: '10px 0',
-        border: '1px solid #334155', // slate-700
-        borderRadius: '8px',
-        backgroundColor: 'rgba(15, 23, 42, 0.3)' // slate-900/30
-    }}>
+    <div className="w-full max-w-full overflow-x-auto my-2.5 border border-slate-700 rounded-lg bg-slate-900/30">
         {children}
     </div>
 );
+
+type ResultWithExtras = ExecutePythonResult & { recommendation?: ChartRecommendation };
+type DisplayableChartType = Exclude<ChartTypeOption, 'none'>;
+
+const SUPPORTED_CHART_TYPES: readonly DisplayableChartType[] = ['bar', 'line', 'pie', 'scatter', 'column', 'stackedBar', 'stackedColumn', 'clusteredColumn', 'area', 'radar', 'treemap', 'funnel'];
+
+const isSupportedChartType = (chartType?: ChartTypeOption): chartType is DisplayableChartType => {
+    if (!chartType || chartType === 'none') {
+        return false;
+    }
+    return SUPPORTED_CHART_TYPES.includes(chartType as DisplayableChartType);
+};
+
+const selectPrimaryResult = <T extends ExecutePythonResult>(results: T[]): T | undefined => {
+    if (results.length === 0) {
+        return undefined;
+    }
+    const finalResult = results.find(result => result.name === 'final_result_df');
+    return finalResult ?? results[0];
+};
+
+const extractRows = (result?: ExecutePythonResult): Array<Record<string, unknown>> => {
+    if (!result) {
+        return [];
+    }
+    const payload = result.data;
+    if (!payload) {
+        return [];
+    }
+    return Array.isArray(payload) ? payload : payload.data;
+};
 
 /**
  * Convert a ChartRecommendation (from backend) to ChartMetadata (for ResultChart)
@@ -51,7 +111,7 @@ function recommendationToMetadata(rec: ChartRecommendation): ChartMetadata {
     };
 }
 
-const ExecutionResultViewer: React.FC<{ results: ExecutePythonResult[]; recommendation?: ChartRecommendation; pythonSummary?: string }> = ({ results, recommendation, pythonSummary }) => {
+const ExecutionResultViewer: React.FC<{ results: ResultWithExtras[]; recommendation?: ChartRecommendation; pythonSummary?: string }> = ({ results, recommendation, pythonSummary }) => {
     const normalizeTableData = (data: StructuredTableData | Array<Record<string, unknown>>, fallbackColumns?: string[]) => {
         if (Array.isArray(data)) {
             return { columns: fallbackColumns || Object.keys(data[0] || {}), rows: data };
@@ -66,7 +126,7 @@ const ExecutionResultViewer: React.FC<{ results: ExecutePythonResult[]; recommen
         const filteredResults = finalResult ? [finalResult] : results;
 
         return filteredResults.map((res) => {
-            const normalized = normalizeTableData(res.data as StructuredTableData | Array<Record<string, unknown>>, res.columns);
+            const normalized = normalizeTableData(res.data, res.columns);
             return {
                 ...res,
                 normalized
@@ -87,7 +147,7 @@ const ExecutionResultViewer: React.FC<{ results: ExecutePythonResult[]; recommen
                 // 2. Fall back to global recommendation (backward compatibility)
                 // 3. Fall back to result-level chart_metadata
                 // 4. Fall back to viz_config based chart_metadata
-                const resultRecommendation = (res as any).recommendation;
+                const resultRecommendation = res.recommendation;
                 const effectiveRecommendation = resultRecommendation || (idx === 0 ? recommendation : null);
                 const chartMetadataFromRecommendation = effectiveRecommendation && effectiveRecommendation.chart_type !== 'none'
                     ? recommendationToMetadata(effectiveRecommendation)
@@ -411,52 +471,45 @@ export const SQLResultDisplay: React.FC<SQLResultDisplayProps> = ({
 
     // CHART ONLY MODE: Only show the chart for code execution results (Python/R/SAS - for re-visualization)
     if (chartOnly && (queryType === 'python_code' || queryType === 'r_code' || queryType === 'sas_code') && executionResult && executionResult.results && executionResult.results.length > 0) {
-        // Use the same normalization logic as ExecutionResultViewer
         const rec = executionResult.recommendation;
-        const supportedChartTypes = ['bar', 'line', 'pie', 'scatter', 'column', 'stackedBar', 'stackedColumn', 'clusteredColumn', 'area', 'radar', 'treemap', 'funnel'];
+        const requestedType = chartTypeOverride ?? rec?.chart_type;
         // #region agent log
-        const requestedType = chartTypeOverride || rec?.chart_type;
         fetch('http://127.0.0.1:7242/ingest/46ec3597-91be-4ee3-bc4e-4aece9c658e1', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'SQLResultDisplay.tsx:chartOnly-python', message: 'Chart-only Python branch', data: { chartTypeOverride, recChartType: rec?.chart_type, requestedType }, timestamp: Date.now(), sessionId: 'debug-session', hypothesisId: 'A' }) }).catch(() => { });
         // #endregion
-        const isSupported = requestedType && supportedChartTypes.includes(requestedType);
-        // Use chartTypeOverride when provided - prefer user's explicit request over API recommendation
-        let chartMetadata: ChartMetadata | null = null;
-        if (rec && isSupported && requestedType !== 'none') {
-            const meta = recommendationToMetadata(rec);
-            const effectiveType = (chartTypeOverride && supportedChartTypes.includes(chartTypeOverride))
+
+        const metadataFromRecommendation = rec && isSupportedChartType(rec.chart_type)
+            ? recommendationToMetadata(rec)
+            : null;
+
+        const resolvedType: ChartMetadata['type'] | undefined = metadataFromRecommendation
+            ? (chartTypeOverride && isSupportedChartType(chartTypeOverride)
                 ? chartTypeOverride
-                : meta.type;
-            chartMetadata = { ...meta, type: effectiveType as ChartMetadata['type'] };
-        }
+                : metadataFromRecommendation.type)
+            : undefined;
 
-        // Normalize data for chart (handle both StructuredTableData and array)
-        let rows: any[] = [];
-        const result = executionResult.results.find(r => r.name === 'final_result_df') || executionResult.results[0];
-        if (result) {
-            if (Array.isArray(result.data)) {
-                rows = result.data;
-            } else if (result.data && Array.isArray(result.data)) {
-                rows = result.data;
-            } else if (result.data && (result.data as any).data) {
-                rows = (result.data as any).data;
-            }
-        }
+        const chartMetadata = metadataFromRecommendation && resolvedType
+            ? { ...metadataFromRecommendation, type: resolvedType }
+            : null;
 
-        // If not supported or not an exact match, show only the warning message, no chart
-        const shouldShowWarning = !isSupported || !chartMetadata || requestedType !== chartMetadata?.type;
+        const primaryResult = selectPrimaryResult(executionResult.results);
+        const rows = extractRows(primaryResult);
+
+        const shouldShowWarning = !chartMetadata || (requestedType !== undefined && (!isSupportedChartType(requestedType) || requestedType !== chartMetadata.type));
+
         return (
             <div className="relative group mt-4">
                 <div className="absolute -inset-1 bg-gradient-to-r from-cyan-500 to-blue-500 rounded-2xl opacity-20 group-hover:opacity-30 blur transition duration-500"></div>
                 <div className="relative bg-slate-900 rounded-xl border border-slate-700/50 shadow-xl overflow-hidden p-6 flex flex-col items-center">
                     {shouldShowWarning && (
                         <div className="mb-4 p-4 bg-amber-900/40 border border-amber-600/40 rounded-lg text-amber-200 text-center">
-                            <div className="font-semibold mb-1">Sorry, I am not able to provide a <span className="uppercase">{requestedType}</span> chart.</div>
-                            <div className="text-sm">Supported chart types are: <span className="font-mono">{supportedChartTypes.join(', ')}</span></div>
+                            <div className="font-semibold mb-1">
+                                Sorry, I am not able to provide {requestedType ? `a ${requestedType.toUpperCase()} chart.` : 'the requested chart.'}
+                            </div>
+                            <div className="text-sm">Supported chart types are: <span className="font-mono">{SUPPORTED_CHART_TYPES.join(', ')}</span></div>
                         </div>
                     )}
-                    {/* Only render the chart if the requested type is supported and matches the recommendation exactly */}
-                    {!shouldShowWarning && (
-                        <ResultChart data={rows} metadata={chartMetadata as ChartMetadata} />
+                    {!shouldShowWarning && chartMetadata && (
+                        <ResultChart data={rows} metadata={chartMetadata} />
                     )}
                 </div>
             </div>
@@ -465,53 +518,47 @@ export const SQLResultDisplay: React.FC<SQLResultDisplayProps> = ({
 
     // CHART ONLY MODE: Only show the chart for SQL execution results (for re-visualization)
     if (chartOnly && queryType === 'database' && sqlExecutionResult && sqlExecutionResult.success && sqlExecutionResult.results && sqlExecutionResult.results.length > 0) {
-        // Use the same normalization logic as SQLExecutionResultViewer
         const rec = sqlExecutionResult.recommendation;
-        const supportedChartTypes = ['bar', 'line', 'pie', 'scatter', 'column', 'stackedBar', 'stackedColumn', 'clusteredColumn', 'area', 'radar', 'treemap', 'funnel'];
+        const requestedType = chartTypeOverride ?? rec?.chart_type;
         // #region agent log
-        const requestedType = chartTypeOverride || rec?.chart_type;
         fetch('http://127.0.0.1:7242/ingest/46ec3597-91be-4ee3-bc4e-4aece9c658e1', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'SQLResultDisplay.tsx:chartOnly-database', message: 'Chart-only Database branch', data: { chartTypeOverride, recChartType: rec?.chart_type, requestedType }, timestamp: Date.now(), sessionId: 'debug-session', hypothesisId: 'B' }) }).catch(() => { });
         // #endregion
-        const isSupported = requestedType && supportedChartTypes.includes(requestedType);
-        // Use chartTypeOverride when provided - prefer user's explicit request over API recommendation
-        let chartMetadata: ChartMetadata | null = null;
-        if (rec && isSupported && requestedType !== 'none') {
-            const meta = recommendationToMetadata(rec);
-            const effectiveType = (chartTypeOverride && supportedChartTypes.includes(chartTypeOverride))
+
+        const metadataFromRecommendation = rec && isSupportedChartType(rec.chart_type)
+            ? recommendationToMetadata(rec)
+            : null;
+
+        const resolvedType: ChartMetadata['type'] | undefined = metadataFromRecommendation
+            ? (chartTypeOverride && isSupportedChartType(chartTypeOverride)
                 ? chartTypeOverride
-                : meta.type;
-            chartMetadata = { ...meta, type: effectiveType as ChartMetadata['type'] };
-        }
+                : metadataFromRecommendation.type)
+            : undefined;
 
-        // Normalize data for chart
-        let rows: any[] = [];
-        const result = sqlExecutionResult.results[0];
-        if (result && result.data) {
-            if (Array.isArray(result.data)) {
-                rows = result.data;
-            } else if ((result.data as any).data && Array.isArray((result.data as any).data)) {
-                rows = (result.data as any).data;
-            }
-        }
+        const chartMetadata = metadataFromRecommendation && resolvedType
+            ? { ...metadataFromRecommendation, type: resolvedType }
+            : null;
 
-        // If not supported or not an exact match, show only the warning message, no chart
-        const shouldShowWarning = !isSupported || !chartMetadata || requestedType !== chartMetadata?.type;
+        const primaryResult = selectPrimaryResult(sqlExecutionResult.results);
+        const rows = extractRows(primaryResult);
+
+        const shouldShowWarning = !chartMetadata || (requestedType !== undefined && (!isSupportedChartType(requestedType) || requestedType !== chartMetadata.type));
+
         return (
             <div className="relative group mt-4">
                 <div className="absolute -inset-1 bg-gradient-to-r from-cyan-500 to-blue-500 rounded-2xl opacity-20 group-hover:opacity-30 blur transition duration-500"></div>
                 <div className="relative bg-slate-900 rounded-xl border border-slate-700/50 shadow-xl overflow-hidden p-6 flex flex-col items-center">
                     {shouldShowWarning && (
                         <div className="mb-4 p-4 bg-amber-900/40 border border-amber-600/40 rounded-lg text-amber-200 text-center">
-                            <div className="font-semibold mb-1">Sorry, I am not able to provide a <span className="uppercase">{requestedType}</span> chart.</div>
-                            <div className="text-sm">Supported chart types are: <span className="font-mono">{supportedChartTypes.join(', ')}</span></div>
+                            <div className="font-semibold mb-1">
+                                Sorry, I am not able to provide {requestedType ? `a ${requestedType.toUpperCase()} chart.` : 'the requested chart.'}
+                            </div>
+                            <div className="text-sm">Supported chart types are: <span className="font-mono">{SUPPORTED_CHART_TYPES.join(', ')}</span></div>
                         </div>
                     )}
-                    {/* Only render the chart if the requested type is supported and matches the recommendation exactly */}
-                    {!shouldShowWarning && (
-                        <ResultChart data={rows} metadata={chartMetadata as ChartMetadata} />
+                    {!shouldShowWarning && chartMetadata && (
+                        <ResultChart data={rows} metadata={chartMetadata} />
                     )}
 
-                    {/* Show SQL Summary if available */}
                     {sqlSummary && (
                         <div className="w-full mt-4 p-4 bg-purple-900/20 border border-purple-500/30 rounded-lg">
                             <div className="flex items-center gap-2 mb-2 text-sm font-semibold text-purple-300">
