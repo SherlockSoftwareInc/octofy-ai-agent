@@ -4,7 +4,7 @@ Settings Service - Manages agent configuration with encryption for sensitive dat
 import json
 import os
 import hashlib
-from typing import Optional
+from typing import Optional, Union
 from cryptography.fernet import Fernet
 import base64
 from app.models.schemas import AgentSettings, TargetDBConfig, LLMConfig, VectorConfig, EmbeddingConfig, AppMeta, AgentSettingsV2, TargetDBConfigV2
@@ -137,78 +137,96 @@ def get_default_settings() -> AgentSettings:
         )
     )
 
-def load_settings() -> AgentSettings:
-    """Load settings from file, return defaults if not found"""
+def _apply_runtime_defaults(settings_obj: Union[AgentSettings, AgentSettingsV2]) -> Union[AgentSettings, AgentSettingsV2]:
+    """Apply environment-based fallbacks without overwriting explicit config."""
+
+    # LLM defaults
+    if not settings_obj.llm_config.llm_api_key and app_settings.OPENAI_API_KEY:
+        settings_obj.llm_config.llm_api_key = app_settings.OPENAI_API_KEY
+
+    if not settings_obj.llm_config.llm_model and app_settings.OPENAI_MODEL:
+        settings_obj.llm_config.llm_model = app_settings.OPENAI_MODEL
+
+    if (not settings_obj.llm_config.llm_endpoint
+            and settings_obj.llm_config.llm_api_key
+            and str(settings_obj.llm_config.llm_api_key).startswith("sk-")):
+        settings_obj.llm_config.llm_endpoint = "https://api.openai.com/v1"
+
+    # Embedding defaults
+    if not settings_obj.embedding_config.api_key and app_settings.OPENAI_API_KEY:
+        settings_obj.embedding_config.api_key = app_settings.OPENAI_API_KEY
+    if not settings_obj.embedding_config.base_url and app_settings.OPENAI_EMBEDDING_ENDPOINT:
+        settings_obj.embedding_config.base_url = app_settings.OPENAI_EMBEDDING_ENDPOINT
+
+    # Vector defaults (stay within config file values when possible)
+    if not settings_obj.vector_config.host:
+        settings_obj.vector_config.host = "localhost"
+    if not settings_obj.vector_config.port:
+        settings_obj.vector_config.port = "19630"
+
+    return settings_obj
+
+
+def _load_v1_settings(data: dict) -> AgentSettings:
+    data = data.copy()
+
+    # Legacy migration for embedding config
+    if "embedding_config" not in data:
+        vec_conf = data.get("vector_config", {})
+        old_model = vec_conf.get("embedding_model", "text-embedding-3-small")
+        data["embedding_config"] = {
+            "provider": "openai",
+            "model": old_model,
+            "dimensions": 1536,
+            "api_key": None,
+            "base_url": None
+        }
+
+    data.setdefault("target_db", {})
+    data.setdefault("llm_config", {})
+    data.setdefault("embedding_config", {})
+    data.setdefault("vector_config", {})
+    data.setdefault("app_meta", {})
+
+    settings = AgentSettings(**data)
+    return _apply_runtime_defaults(settings)
+
+
+def _load_v2_settings(data: dict) -> AgentSettingsV2:
+    normalized = {
+        "data_sources": data.get("data_sources", []),
+        "primary_source_id": data.get("primary_source_id"),
+        "llm_config": data.get("llm_config", {}),
+        "embedding_config": data.get("embedding_config", {}),
+        "vector_config": data.get("vector_config", {}),
+        "app_meta": data.get("app_meta", {})
+    }
+
+    settings_v2 = AgentSettingsV2(**normalized)
+
+    if settings_v2.data_sources and not settings_v2.primary_source_id:
+        settings_v2.primary_source_id = settings_v2.data_sources[0].source_id
+
+    return _apply_runtime_defaults(settings_v2)
+
+
+def load_settings() -> Union[AgentSettings, AgentSettingsV2]:
+    """Load settings from file, handling both v1 and v2 formats."""
     if not os.path.exists(SETTINGS_FILE):
         return get_default_settings()
-    
+
     try:
         with open(SETTINGS_FILE, 'r') as f:
             data = json.load(f)
-            
-            if not isinstance(data, dict):
-                raise ValueError("Settings file must be a JSON object")
-            
-            # --- MIGRATION LOGIC ---
-            # If embedding_config is missing, migrate from vector_config
-            if "embedding_config" not in data:
-                print("Migrating old vector config to new embedding config...")
-                vec_conf = data.get("vector_config", {})
-                old_model = vec_conf.get("embedding_model", "text-embedding-3-small")
-                
-                # Assume OpenAI default for migration
-                data["embedding_config"] = {
-                    "provider": "openai",
-                    "model": old_model,
-                    "dimensions": 1536, # Default for text-embedding-3-small
-                    "api_key": None,
-                    "base_url": None
-                }
-                # vector_config will be cleaned up by Pydantic model validation (extra fields ignored/removed)
-            elif data.get("embedding_config") is None:
-                data["embedding_config"] = {}
-            
-            if data.get("target_db") is None:
-                data["target_db"] = {}
-            if data.get("llm_config") is None:
-                data["llm_config"] = {}
-            if data.get("vector_config") is None:
-                data["vector_config"] = {}
-            if data.get("app_meta") is None:
-                data["app_meta"] = {}
-            
-            data.setdefault("target_db", {})
-            data.setdefault("llm_config", {})
-            data.setdefault("embedding_config", {})
-            data.setdefault("vector_config", {})
-            data.setdefault("app_meta", {})
-            
-            settings = AgentSettings(**data)
-            
-            # Populate defaults from environment if missing
-            if not settings.llm_config.llm_api_key and app_settings.OPENAI_API_KEY:
-                settings.llm_config.llm_api_key = app_settings.OPENAI_API_KEY
-                
-            if not settings.llm_config.llm_model and app_settings.OPENAI_MODEL:
-                settings.llm_config.llm_model = app_settings.OPENAI_MODEL
-                
-            # Default endpoint for OpenAI if missing
-            if not settings.llm_config.llm_endpoint and settings.llm_config.llm_api_key and str(settings.llm_config.llm_api_key).startswith("sk-"):
-                settings.llm_config.llm_endpoint = "https://api.openai.com/v1"
 
-            # Embedding config fallbacks
-            if not settings.embedding_config.api_key and app_settings.OPENAI_API_KEY:
-                settings.embedding_config.api_key = app_settings.OPENAI_API_KEY
-            if not settings.embedding_config.base_url and app_settings.OPENAI_EMBEDDING_ENDPOINT:
-                settings.embedding_config.base_url = app_settings.OPENAI_EMBEDDING_ENDPOINT
+        if not isinstance(data, dict):
+            raise ValueError("Settings file must be a JSON object")
 
-            # Vector config fallbacks (do not read from .env)
-            if not settings.vector_config.host:
-                settings.vector_config.host = "localhost"
-            if not settings.vector_config.port:
-                settings.vector_config.port = "19630"
-                
-            return settings
+        if "data_sources" in data:
+            return _load_v2_settings(data)
+
+        return _load_v1_settings(data)
+
     except Exception as e:
         print(f"Error loading settings: {e}")
         return get_default_settings()
@@ -507,55 +525,75 @@ def validate_milvus_settings(vector_config: VectorConfig) -> None:
         except Exception:
             pass
 
-def get_settings_for_display() -> AgentSettings:
-    """Get settings with masked sensitive data for frontend display"""
+def _mask_api_key(value: Optional[str]) -> Optional[str]:
+    if not value:
+        return value
+    key_str = str(value)
+    if len(key_str) <= 10:
+        return key_str
+    return f"{key_str[:3]}...{key_str[-4:]}"
+
+
+def _populate_connection_metadata(connection_string: str, fallback_server: str, fallback_db: str) -> tuple[str, str]:
+    import re
+    server = fallback_server
+    database = fallback_db
+    if connection_string:
+        server_match = re.search(r'SERVER=([^;]+)', connection_string, re.IGNORECASE)
+        db_match = re.search(r'DATABASE=([^;]+)', connection_string, re.IGNORECASE)
+        if server_match:
+            server = server_match.group(1)
+        if db_match:
+            database = db_match.group(1)
+    return server, database
+
+
+def get_settings_for_display() -> Union[AgentSettings, AgentSettingsV2]:
+    """Get settings with masked sensitive data for frontend display."""
     settings = load_settings()
-    
-    # Decrypt and mask connection string for display
+
+    # Handle multi-source configuration (v2)
+    if isinstance(settings, AgentSettingsV2):
+        display_settings = settings.model_copy(deep=True)
+
+        for source in display_settings.data_sources:
+            decrypted = decrypt_string(source.connection_string_encrypted)
+            server, database = _populate_connection_metadata(decrypted, source.server or "", source.database_name or "")
+            source.server = server
+            source.database_name = database
+            source.connection_string_decrypted = None
+            source.python_connection_string_decrypted = None
+
+        display_settings.embedding_config.api_key = _mask_api_key(display_settings.embedding_config.api_key)
+        return display_settings
+
+    # Legacy single-source configuration (v1)
     if settings.target_db.connection_string_encrypted:
         decrypted = decrypt_string(settings.target_db.connection_string_encrypted)
-        # Parse server and database from connection string if empty
-        if decrypted:
-            import re
-            server_match = re.search(r'SERVER=([^;]+)', decrypted, re.IGNORECASE)
-            db_match = re.search(r'DATABASE=([^;]+)', decrypted, re.IGNORECASE)
-            
-            server = server_match.group(1) if server_match else settings.target_db.server
-            database = db_match.group(1) if db_match else settings.target_db.database_name
-            
-            # Create a new settings object with updated values
-            settings = AgentSettings(
-                target_db=TargetDBConfig(
-                    friendly_name=settings.target_db.friendly_name,
-                    description=settings.target_db.description,
-                    keywords=settings.target_db.keywords,
-                    db_type=settings.target_db.db_type,
-                    server=server,
-                    database_name=database,
-                    connection_string_encrypted=settings.target_db.connection_string_encrypted,
-                    connection_string_decrypted=None,
-                    python_connection_string_encrypted=settings.target_db.python_connection_string_encrypted,
-                    python_connection_string_decrypted=None,
-                    driver=settings.target_db.driver,
-                    auth_type=settings.target_db.auth_type,
-                    username=settings.target_db.username,
-                    trust_server_certificate=settings.target_db.trust_server_certificate
-                ),
-                llm_config=settings.llm_config,
-                embedding_config=settings.embedding_config, # Start with raw config
-                vector_config=settings.vector_config,
-                app_meta=settings.app_meta
-            )
-            
-            # Mask Embedding API Key if present
-            if settings.embedding_config.api_key:
-                 # Simple masking: sk-...1234
-                 key_str = str(settings.embedding_config.api_key)
-                 if len(key_str) > 10:
-                     masked = f"{key_str[:3]}...{key_str[-4:]}"
-                     # We can't modify the model in place cleanly if it's frozen, 
-                     # but Pydantic models are mutable by default.
-                     # However, creating a copy is safer.
-                     settings.embedding_config.api_key = masked
+        server, database = _populate_connection_metadata(decrypted, settings.target_db.server, settings.target_db.database_name)
 
+        settings = AgentSettings(
+            target_db=TargetDBConfig(
+                friendly_name=settings.target_db.friendly_name,
+                description=settings.target_db.description,
+                keywords=settings.target_db.keywords,
+                db_type=settings.target_db.db_type,
+                server=server,
+                database_name=database,
+                connection_string_encrypted=settings.target_db.connection_string_encrypted,
+                connection_string_decrypted=None,
+                python_connection_string_encrypted=settings.target_db.python_connection_string_encrypted,
+                python_connection_string_decrypted=None,
+                driver=settings.target_db.driver,
+                auth_type=settings.target_db.auth_type,
+                username=settings.target_db.username,
+                trust_server_certificate=settings.target_db.trust_server_certificate
+            ),
+            llm_config=settings.llm_config,
+            embedding_config=settings.embedding_config,
+            vector_config=settings.vector_config,
+            app_meta=settings.app_meta
+        )
+
+    settings.embedding_config.api_key = _mask_api_key(settings.embedding_config.api_key)
     return settings
