@@ -38,6 +38,26 @@ services:
       - octofyagent-net
     restart: unless-stopped
 
+  postgres:
+    container_name: octofyagent-postgres
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: octofy
+      POSTGRES_PASSWORD: ***REMOVED***
+      POSTGRES_DB: octofy_users
+    ports:
+      - "5432:5432"
+    volumes:
+      - ${DOCKER_VOLUME_DIRECTORY:-.}/volumes/postgres:/var/lib/postgresql/data
+    networks:
+      - octofyagent-net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U octofy"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
   backend:
     build:
       context: .
@@ -49,8 +69,10 @@ services:
       - "8100:8000"
     environment:
       - MILVUS_HOST=octofyagent-milvus
+      - POSTGRES_HOST=octofyagent-postgres
     depends_on:
       - milvus
+      - postgres
     networks:
       - octofyagent-net
     restart: unless-stopped

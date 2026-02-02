@@ -14,27 +14,33 @@
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                         Frontend (React)                        │
-│  - Chat Interface    - Admin Panel    - Schema/KB Management   │
+│                    Frontend (React + Auth)                      │
+│  - Login/Auth    - Chat Interface    - Admin Panel             │
+│  - User Profile  - Conversation History                        │
 └──────────────────────────────┬──────────────────────────────────┘
-                               │ HTTP/SSE
+                               │ HTTP/SSE (JWT or API Key)
                                ▼
 ┌─────────────────────────────────────────────────────────────────┐
 │                      Backend (FastAPI)                          │
-│  /api/v1/discovery   /api/v1/generate-sql   /api/v1/execute-sql│
-│  /api/v1/execute-python   /api/v1/admin/*                      │
+│  /api/v1/auth/*   /api/v1/users/*   /api/v1/conversations/*   │
+│  /api/v1/discovery   /api/v1/generate-sql   /api/v1/admin/*   │
 └──────────────────────────────┬──────────────────────────────────┘
                                │
-          ┌────────────────────┼────────────────────┐
-          ▼                    ▼                    ▼
-┌─────────────────┐  ┌─────────────────┐  ┌─────────────────┐
-│   Milvus v2.3   │  │  SQL Server     │  │   OpenAI/LLM    │
-│  Vector Store   │  │  (Northwind)    │  │   API           │
-│  - schema_index │  │                 │  │                 │
-│  - fewshot_index│  │                 │  │                 │
-│  - value_index  │  │                 │  │                 │
-│  - contributions│  │                 │  │                 │
-└─────────────────┘  └─────────────────┘  └─────────────────┘
+      ┌────────────────────────┼────────────────────┐
+      ▼                        ▼                    ▼
+┌──────────────┐  ┌─────────────────┐  ┌─────────────────┐
+│ PostgreSQL   │  │   Milvus v2.3   │  │  SQL Server     │
+│ (Users &     │  │  Vector Store   │  │  (Data Source)  │
+│ Convos)      │  │  - schema_index │  │                 │
+│              │  │  - fewshot_index│  │                 │
+│              │  │  - value_index  │  │                 │
+└──────────────┘  └─────────────────┘  └─────────────────┘
+                         │
+                         ▼
+                  ┌─────────────────┐
+                  │   OpenAI/LLM    │
+                  │   API           │
+                  └─────────────────┘
 ```
 
 ---
@@ -43,8 +49,10 @@
 
 | Feature | Description |
 |---------|-------------|
+| **User Management** | ⭐ NEW: Multi-user authentication with JWT tokens and role-based access control |
+| **Conversation History** | ⭐ NEW: Persistent chat history synced across devices via PostgreSQL |
 | **Natural Language to SQL** | Converts user questions into optimized, validated T-SQL queries |
-| **SQL Execution & Analysis** | ⭐ NEW: Executes SQL with auto-retry, data profiling, and AI-powered insights |
+| **SQL Execution & Analysis** | Executes SQL with auto-retry, data profiling, and AI-powered insights |
 | **Multi-Language Code Gen** | Supports SQL, R, SAS, and Python code generation |
 | **Value Index** | Maps user terms (e.g., "North America") to exact database values |
 | **Schema Management** | Admin UI for managing table schemas with Excel bulk upload |
@@ -52,7 +60,7 @@
 | **Semantic Search** | Milvus vector database for finding relevant tables and queries |
 | **Iterative Validation** | SQL is parse-checked and auto-corrected using database feedback |
 | **Contribution Library** | User-submitted examples pending admin review |
-| **Secure API** | API key authentication for all endpoints |
+| **Secure API** | JWT token and API key authentication with admin/user roles |
 
 ---
 
@@ -96,10 +104,12 @@
 |-------|------------|
 | **Frontend** | React + TypeScript, Vite, TailwindCSS |
 | **Backend** | FastAPI (Python), SQLAlchemy, pyodbc |
+| **User Database** | PostgreSQL 15+ |
 | **Vector Store** | Milvus v2.3.13 |
-| **Database** | Microsoft SQL Server |
+| **Data Warehouse** | Microsoft SQL Server |
 | **LLM** | OpenAI GPT-4o (configurable) |
 | **Embeddings** | OpenAI text-embedding-3-small |
+| **Authentication** | JWT (python-jose), Bcrypt (passlib) |
 
 ---
 
@@ -119,7 +129,7 @@
 ### Prerequisites
 - Python 3.8+
 - Node.js 16+
-- Docker (for Milvus)
+- Docker (for Milvus + PostgreSQL)
 - Microsoft SQL Server
 
 ### Installation
@@ -130,14 +140,20 @@ cd octofy-ai-agent
 pip install -r requirements.txt
 cd frontend && npm install && cd ..
 
-# Start Milvus
+# Start infrastructure (Milvus + PostgreSQL)
 docker-compose up -d
 
 # Configure environment
 cat > .env << EOF
 OPENAI_API_KEY=your_openai_api_key
 SQL_SERVER_CONNECTION_STRING=your_db_connection_string
+JWT_SECRET_KEY=your-super-secret-jwt-key
+POSTGRES_HOST=localhost
+POSTGRES_PORT=5432
 EOF
+
+# Initialize user database and create default admin
+python scripts/init_user_db.py
 
 # Ingest schemas
 python scripts/ingest_metadata.py
@@ -158,8 +174,9 @@ cd frontend && npm run dev
 
 | Document | Description |
 |----------|-------------|
-| [GENERATE_SQL.md](GENERATE_SQL.md) | ⭐ NEW: Complete SQL generation & execution process guide |
-| [SQL_EXECUTION_AUTO_RETRY_FEATURE.md](SQL_EXECUTION_AUTO_RETRY_FEATURE.md) | ⭐ NEW: SQL execution with auto-retry feature details |
+| [USER_MANAGEMENT.md](USER_MANAGEMENT.md) | ⭐ NEW: Complete user management and authentication guide |
+| [GENERATE_SQL.md](GENERATE_SQL.md) | Complete SQL generation & execution process guide |
+| [SQL_EXECUTION_AUTO_RETRY_FEATURE.md](SQL_EXECUTION_AUTO_RETRY_FEATURE.md) | SQL execution with auto-retry feature details |
 | [BACKEND_API.md](BACKEND_API.md) | Complete API reference |
 | [FRONTEND.md](FRONTEND.md) | Frontend architecture and components |
 | [PYTHON_CODE_AUTO_RETRY_FEATURE.md](PYTHON_CODE_AUTO_RETRY_FEATURE.md) | Python execution with auto-retry |
@@ -172,8 +189,24 @@ cd frontend && npm run dev
 ## Environment Variables
 
 ```env
-# Required
+# Required - Authentication
 API_KEY=change-this-to-a-secure-key
+JWT_SECRET_KEY=your-super-secret-jwt-key-min-32-chars
+JWT_ACCESS_TOKEN_EXPIRE_DAYS=7
+
+# Required - PostgreSQL
+POSTGRES_USER=octofy
+POSTGRES_PASSWORD=***REMOVED***
+POSTGRES_HOST=localhost
+POSTGRES_PORT=5432
+POSTGRES_DB=octofy_users
+
+# Required - OpenAI
+OPENAI_API_KEY=your_openai_api_key
+
+# Optional - Milvus
+MILVUS_HOST=localhost
+MILVUS_PORT=19630
 ```
 
 ---
@@ -184,15 +217,24 @@ API_KEY=change-this-to-a-secure-key
 octofy-ai-agent/
 ├── app/                    # Backend application
 │   ├── api/endpoints/      # API route handlers
+│   │   ├── users.py               # ⭐ NEW: User management endpoints
+│   │   ├── conversations.py       # ⭐ NEW: Conversation history endpoints
+│   │   ├── generation.py          # SQL generation endpoints
+│   │   └── admin.py              # Admin panel endpoints
 │   ├── core/               # Config, auth, database
+│   │   ├── auth.py                # ⭐ UPDATED: JWT + API key authentication
+│   │   ├── user_database.py       # ⭐ NEW: PostgreSQL connection
+│   │   └── config.py              # ⭐ UPDATED: JWT + PostgreSQL config
 │   ├── models/             # Pydantic schemas
+│   │   ├── user_models.py         # ⭐ NEW: User & Conversation models
+│   │   ├── user_schemas.py        # ⭐ NEW: User API schemas
+│   │   └── schemas.py             # SQL generation schemas
 │   ├── services/           # Business logic
-│   │   ├── generation_service.py      # SQL generation logic
-│   │   ├── validation_service.py      # SQL validation & execution ⭐ UPDATED
-│   │   ├── execution_service.py       # Python code execution
-│   │   ├── profiling_service.py       # Data profiling (SQL & Python)
-│   │   ├── insight_service.py         # AI insights (SQL & Python)
-│   │   └── visualization_service.py   # Chart recommendations
+│   │   ├── user_service.py        # ⭐ NEW: User CRUD operations
+│   │   ├── auth_service.py        # ⭐ NEW: JWT & password hashing
+│   │   ├── generation_service.py  # SQL generation logic
+│   │   ├── validation_service.py  # SQL validation & execution
+│   │   └── execution_service.py   # Python code execution
 │   └── utils/              # Utilities
 ├── frontend/               # React frontend
 │   ├── src/
@@ -203,7 +245,10 @@ octofy-ai-agent/
 │   └── vite.config.ts
 ├── config/                 # Runtime configuration
 ├── scripts/                # Utility scripts
+│   └── init_user_db.py           # ⭐ NEW: Initialize user database
 ├── tests/                  # Test suite
-└── volumes/                # Docker volumes (Milvus data)
+├── volumes/                # Docker volumes (Milvus + PostgreSQL data)
+├── USER_MANAGEMENT.md      # ⭐ NEW: User management documentation
+└── docker-compose.yml      # ⭐ UPDATED: Added PostgreSQL service
 ```
 

@@ -32,8 +32,20 @@ class Settings(BaseSettings):
     # Database
     SQL_SERVER_CONNECTION_STRING: Optional[str] = None
     
+    # PostgreSQL for user management
+    POSTGRES_USER: str = "octofy"
+    POSTGRES_PASSWORD: str = "***REMOVED***"
+    POSTGRES_HOST: str = "localhost"
+    POSTGRES_PORT: str = "5432"
+    POSTGRES_DB: str = "octofy_users"
+    
     # API Security
     API_KEY: str = "change-this-to-a-secure-key"
+    
+    # JWT Authentication
+    JWT_SECRET_KEY: str = "***REMOVED***"
+    JWT_ALGORITHM: str = "HS256"
+    JWT_ACCESS_TOKEN_EXPIRE_DAYS: int = 7
     
     # Code Advisor settings
     CODE_ADVISOR_RATE_LIMIT: int = 10  # Maximum requests per window

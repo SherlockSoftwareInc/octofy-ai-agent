@@ -1,0 +1,60 @@
+================================================================================
+USER MANAGEMENT SYSTEM - COMPREHENSIVE TEST SUITE
+================================================================================
+Base URL: http://localhost:8000/api/v1
+Time: 2026-02-02T07:20:10.979138
+================================================================================
+
+Waiting for server to start...
+[PASS] - Admin Login
+  Details: Token received, user role: admin
+
+[PASS] - Get Current User
+  Details: API Key: PZfPHr2SQFx3eEHW_QUT...
+
+[PASS] - API Key Authentication
+  Details: API key auth successful
+
+[PASS] - Create User
+  Details: User ID: 4
+
+[PASS] - List Users
+  Details: Found 2 users
+
+[PASS] - Update Profile
+  Details: Profile updated successfully
+
+[PASS] - Regenerate API Key
+  Details: New key: SYdSnNXuIh40udOr3-kw...
+
+[PASS] - Create Conversation
+  Details: Conversation ID: 3
+
+[PASS] - List Conversations
+  Details: Found 3 conversation(s)
+
+[PASS] - Get Conversation
+  Details: 1 message(s) retrieved
+
+[PASS] - Update Conversation
+  Details: Title updated successfully
+
+[PASS] - RBAC - Access Control
+  Details: User correctly denied admin access
+
+[PASS] - Delete Conversation
+  Details: Conversation deleted successfully
+
+[PASS] - Delete User
+  Details: User deleted successfully
+
+================================================================================
+TEST SUMMARY
+================================================================================
+Total Tests: 14
+Passed: 14
+Failed: 0
+Success Rate: 100.0%
+================================================================================
+
+Detailed results saved to: test_results.json
