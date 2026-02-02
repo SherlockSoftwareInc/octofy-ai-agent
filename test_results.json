@@ -1,0 +1,93 @@
+{
+  "timestamp": "2026-02-02T07:20:52.240093",
+  "total": 14,
+  "passed": 14,
+  "failed": 0,
+  "success_rate": 100.0,
+  "results": [
+    {
+      "test": "Admin Login",
+      "success": true,
+      "details": "Token received, user role: admin",
+      "timestamp": "2026-02-02T07:20:16.226918"
+    },
+    {
+      "test": "Get Current User",
+      "success": true,
+      "details": "API Key: PZfPHr2SQFx3eEHW_QUT...",
+      "timestamp": "2026-02-02T07:20:18.752619"
+    },
+    {
+      "test": "API Key Authentication",
+      "success": true,
+      "details": "API key auth successful",
+      "timestamp": "2026-02-02T07:20:21.301084"
+    },
+    {
+      "test": "Create User",
+      "success": true,
+      "details": "User ID: 4",
+      "timestamp": "2026-02-02T07:20:24.042715"
+    },
+    {
+      "test": "List Users",
+      "success": true,
+      "details": "Found 2 users",
+      "timestamp": "2026-02-02T07:20:26.577423"
+    },
+    {
+      "test": "Update Profile",
+      "success": true,
+      "details": "Profile updated successfully",
+      "timestamp": "2026-02-02T07:20:29.116895"
+    },
+    {
+      "test": "Regenerate API Key",
+      "success": true,
+      "details": "New key: SYdSnNXuIh40udOr3-kw...",
+      "timestamp": "2026-02-02T07:20:31.662279"
+    },
+    {
+      "test": "Create Conversation",
+      "success": true,
+      "details": "Conversation ID: 3",
+      "timestamp": "2026-02-02T07:20:34.210117"
+    },
+    {
+      "test": "List Conversations",
+      "success": true,
+      "details": "Found 3 conversation(s)",
+      "timestamp": "2026-02-02T07:20:36.761544"
+    },
+    {
+      "test": "Get Conversation",
+      "success": true,
+      "details": "1 message(s) retrieved",
+      "timestamp": "2026-02-02T07:20:39.307620"
+    },
+    {
+      "test": "Update Conversation",
+      "success": true,
+      "details": "Title updated successfully",
+      "timestamp": "2026-02-02T07:20:41.858645"
+    },
+    {
+      "test": "RBAC - Access Control",
+      "success": true,
+      "details": "User correctly denied admin access",
+      "timestamp": "2026-02-02T07:20:46.639260"
+    },
+    {
+      "test": "Delete Conversation",
+      "success": true,
+      "details": "Conversation deleted successfully",
+      "timestamp": "2026-02-02T07:20:49.195253"
+    },
+    {
+      "test": "Delete User",
+      "success": true,
+      "details": "User deleted successfully",
+      "timestamp": "2026-02-02T07:20:51.739341"
+    }
+  ]
+}

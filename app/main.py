@@ -4,7 +4,7 @@ from app.core.config import settings
 from app.api.endpoints import (
     discovery, generation, admin, settings as settings_endpoint, 
     contributions, schema as schema_endpoint, summarize,
-    data_sources, schema_tree
+    data_sources, schema_tree, users, conversations
 )
 from app.services.ingest_service import create_milvus_collections, ingest_metadata
 from app.services.vector_store import get_vector_store
@@ -41,8 +41,48 @@ app.include_router(summarize.router, prefix=settings.API_V1_STR, tags=["summariz
 app.include_router(data_sources.router, prefix=f"{settings.API_V1_STR}/admin", tags=["data-sources"])
 app.include_router(schema_tree.router, prefix=f"{settings.API_V1_STR}/admin", tags=["schema-tree"])
 
+# NEW: User management routers
+app.include_router(users.router, prefix=settings.API_V1_STR, tags=["users"])
+app.include_router(conversations.router, prefix=settings.API_V1_STR, tags=["conversations"])
+
 @app.on_event("startup")
 async def startup_event():
+    # Initialize user database (create tables if not exist)
+    try:
+        from app.core.user_database import init_user_db
+        from app.models.user_models import User
+        from app.core.user_database import SessionLocal
+        from app.services.auth_service import hash_password
+        
+        logger.info("Initializing user database...")
+        init_user_db()
+        
+        # Create default admin if no users exist
+        db = SessionLocal()
+        try:
+            user_count = db.query(User).count()
+            if user_count == 0:
+                logger.info("No users found. Creating default admin account...")
+                admin_user = User(
+                    username="admin",
+                    email="admin@example.com",
+                    full_name="System Administrator",
+                    hashed_password=hash_password("admin123"),
+                    role="admin",
+                    is_active=True,
+                    api_key=User.generate_api_key()
+                )
+                db.add(admin_user)
+                db.commit()
+                logger.info(f"✅ Default admin created - Username: admin, Password: admin123, API Key: {admin_user.api_key}")
+                logger.info("⚠️  CHANGE DEFAULT PASSWORD AFTER FIRST LOGIN!")
+            else:
+                logger.info(f"User database initialized with {user_count} user(s)")
+        finally:
+            db.close()
+    except Exception as e:
+        logger.warning(f"User database initialization skipped: {e}")
+    
     # Run configuration migration if needed
     logger.info("Checking for configuration migration...")
     try:
