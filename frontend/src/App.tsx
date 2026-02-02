@@ -21,6 +21,8 @@ import { RefinementSuggestions } from './components/RefinementSuggestions';
 import { DataProfileCard } from './components/DataProfileCard';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
+import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import {
   conversationStorage,
   generateConversationId,
@@ -1328,9 +1330,121 @@ function App() {
                             <div className="space-y-4">
                               {/* Hide raw content for search results and code advisor since we display formatted content */}
                               {message.queryType !== 'search' && message.queryType !== 'code_advisor' && (
-                                <p className="text-slate-200 leading-relaxed whitespace-pre-wrap break-words">
-                                  {message.content}
-                                </p>
+                                <div className="prose prose-invert max-w-none">
+                                  {(() => {
+                                    // Pre-process content to extract code blocks
+                                    const content = message.content;
+                                    // Debug: Log raw content
+                                    console.log('=== DEBUG: Raw content ===');
+                                    console.log('Content length:', content.length);
+                                    console.log('First 200 chars:', content.substring(0, 200));
+                                    console.log('Contains ```:', content.includes('```'));
+                                    
+                                    // More flexible regex: allow optional whitespace after language identifier
+                                    const codeBlockRegex = /```(\w+)?[\s\n]*([\s\S]*?)```/g;
+                                    const parts: Array<{ type: 'text' | 'code'; content: string; language?: string }> = [];
+                                    let lastIndex = 0;
+                                    let match;
+
+                                    while ((match = codeBlockRegex.exec(content)) !== null) {
+                                      console.log('=== Found code block ===');
+                                      console.log('Language:', match[1]);
+                                      console.log('Code preview:', match[2]?.substring(0, 100));
+                                      // Add text before code block
+                                      if (match.index > lastIndex) {
+                                        parts.push({
+                                          type: 'text',
+                                          content: content.substring(lastIndex, match.index)
+                                        });
+                                      }
+                                      
+                                      // Add code block
+                                      parts.push({
+                                        type: 'code',
+                                        content: match[2],
+                                        language: match[1] || 'text'
+                                      });
+                                      
+                                      lastIndex = match.index + match[0].length;
+                                    }
+                                    
+                                    // Add remaining text
+                                    if (lastIndex < content.length) {
+                                      parts.push({
+                                        type: 'text',
+                                        content: content.substring(lastIndex)
+                                      });
+                                    }
+
+                                    return (
+                                      <>
+                                        {parts.map((part, idx) => {
+                                          if (part.type === 'code') {
+                                            return (
+                                              <div key={idx} className="my-4 rounded-xl border border-slate-700 bg-slate-900 overflow-hidden">
+                                                <div className="flex items-center justify-between px-4 py-2 border-b border-slate-700 bg-slate-800/50">
+                                                  <div className="flex items-center gap-2">
+                                                    <div className="w-2 h-2 rounded-full bg-emerald-500"></div>
+                                                    <span className="text-xs font-semibold text-slate-300 tracking-wider uppercase">
+                                                      {part.language?.toUpperCase() || 'CODE'}
+                                                    </span>
+                                                  </div>
+                                                  <button
+                                                    onClick={() => {
+                                                      navigator.clipboard.writeText(part.content);
+                                                      setToast({ message: 'Code copied to clipboard!', type: 'success' });
+                                                    }}
+                                                    className="flex items-center gap-1.5 px-3 py-1 text-xs text-slate-300 hover:text-white bg-slate-700 hover:bg-slate-600 rounded-md transition-colors"
+                                                  >
+                                                    <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 5H6a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2v-1M8 5a2 2 0 002 2h2a2 2 0 002-2M8 5a2 2 0 012-2h2a2 2 0 012 2m0 0h2a2 2 0 012 2v3m2 4H10m0 0l3-3m-3 3l3 3" />
+                                                    </svg>
+                                                    Copy
+                                                  </button>
+                                                </div>
+                                                <div className="text-sm">
+                                                  <SyntaxHighlighter
+                                                    language={part.language || 'text'}
+                                                    style={vscDarkPlus}
+                                                    customStyle={{ margin: 0, padding: '1rem', background: 'transparent' }}
+                                                  >
+                                                    {part.content}
+                                                  </SyntaxHighlighter>
+                                                </div>
+                                              </div>
+                                            );
+                                          } else {
+                                            // Render text parts with ReactMarkdown (excluding code blocks)
+                                            return (
+                                              <ReactMarkdown
+                                                key={idx}
+                                                remarkPlugins={[remarkGfm]}
+                                                components={{
+                                                  code({ inline, children }: any) {
+                                                    // Render inline code as plain text
+                                                    return <span>{children}</span>;
+                                                  },
+                                                  h1: ({ children }) => <h1 className="text-2xl font-bold text-slate-100 mt-6 mb-4">{children}</h1>,
+                                                  h2: ({ children }) => <h2 className="text-lg font-semibold text-slate-100 mt-6 mb-3 border-b border-slate-700 pb-1">{children}</h2>,
+                                                  h3: ({ children }) => <h3 className="text-sm font-semibold uppercase tracking-wide text-slate-400 mt-5 mb-2">{children}</h3>,
+                                                  p: ({ children }) => <p className="text-slate-200 leading-relaxed mb-4">{children}</p>,
+                                                  ul: ({ children }) => <ul className="list-disc list-inside space-y-1 text-slate-200 mb-4">{children}</ul>,
+                                                  ol: ({ children }) => <ol className="list-decimal list-inside space-y-1 text-slate-200 mb-4">{children}</ol>,
+                                                  blockquote: ({ children }) => <blockquote className="border-l-4 border-indigo-500/60 pl-4 text-slate-300 italic my-4">{children}</blockquote>,
+                                                  table: ({ children }) => <table className="w-full border-collapse border border-slate-700 my-4">{children}</table>,
+                                                  th: ({ children }) => <th className="border border-slate-700 px-3 py-2 bg-slate-800 text-left text-xs font-semibold text-slate-200">{children}</th>,
+                                                  td: ({ children }) => <td className="border border-slate-700 px-3 py-2 text-xs text-slate-200">{children}</td>,
+                                                }}
+                                              >
+                                                {part.content}
+                                              </ReactMarkdown>
+                                            );
+                                          }
+                                        })}
+                                      </>
+                                    );
+                                  })()}
+                                </div>
                               )}
 
                               {/* Plan Mode and Search Results Grid */}
@@ -1599,215 +1713,112 @@ function App() {
                               {/* Code Advisor display */}
                               {message.queryType === 'code_advisor' && (
                                 <div className="mt-3 space-y-4">
-                                  {/* Show LLM advice with code blocks extracted */}
-                                  {/* Use sqlResult.explanation if available, fallback to message.content for persisted messages */}
-                                  {(message.sqlResult?.explanation || message.content) && (() => {
-                                    const rawContent = message.sqlResult?.explanation || message.content || '';
+                                  {(() => {
+                                    // Pre-process content to extract code blocks (same logic as AI messages)
+                                    const content = message.sqlResult?.explanation || message.content || '';
+                                    console.log('=== CODE ADVISOR DEBUG ===');
+                                    console.log('Content:', content.substring(0, 200));
+                                    console.log('Contains ```:', content.includes('```'));
+                                    
+                                    const codeBlockRegex = /```(\w+)?[\s\n]*([\s\S]*?)```/g;
+                                    const parts: Array<{ type: 'text' | 'code'; content: string; language?: string }> = [];
+                                    let lastIndex = 0;
+                                    let match;
 
-                                    // Manual code block extraction and rendering
-                                    // This bypasses ReactMarkdown for code blocks to ensure they're always styled correctly
-                                    const renderContentWithCodeBlocks = (content: string) => {
-                                      // Normalize line endings and triple quotes to backticks
-                                      // Also handle smart quotes and various whitespace patterns
-                                      let normalizedContent = content
-                                        // Normalize Windows line endings first
-                                        .replace(/\r\n/g, '\n')
-                                        .replace(/\r/g, '\n')
-                                        // Normalize triple single quotes to backticks
-                                        .replace(/'''(\w+)?\s*\n/g, '```$1\n')
-                                        .replace(/'''/g, '```')
-                                        // Handle backticks without newline after language (e.g., ```sql SELECT)
-                                        .replace(/```(\w+)(?!\n)(\s*)/g, '```$1\n$2');
-
-                                      // FALLBACK: Detect code blocks without backticks
-                                      // Pattern: "\n\nsql\nSELECT..." or "Optimized Code\n\nsql\nSELECT..."
-                                      // Look for language identifier on its own line followed by code-like content
-                                      const languagePatterns = ['sql', 'python', 'r', 'sas', 'tsql', 't-sql'];
-                                      for (const lang of languagePatterns) {
-                                        // Match: newline + language on its own line + newline + code starting with common keywords
-                                        const pattern = new RegExp(
-                                          `(\\n\\n|Code\\n\\n|Code\\n)${lang}\\n((?:SELECT|INSERT|UPDATE|DELETE|CREATE|ALTER|DROP|WITH|DECLARE|SET|IF|BEGIN|PROC|DATA|IMPORT|EXPORT|def |class |import |from |for |while |print|library\\(|require\\()[\\s\\S]*?)(?=\\n\\n[A-Z#*]|\\n\\n---|\$)`,
-                                          'gi'
-                                        );
-                                        normalizedContent = normalizedContent.replace(pattern, (_match, prefix, code) => {
-                                          console.log(`Detected unformatted ${lang} code block, converting to markdown`);
-                                          return `${prefix}\`\`\`${lang}\n${code.trim()}\n\`\`\``;
-                                        });
-                                      }
-
-                                      console.log('=== CODE ADVISOR DEBUG ===');
-                                      console.log('Raw content length:', content.length);
-                                      console.log('Normalized content sample:', normalizedContent.substring(0, 500));
-                                      console.log('Contains triple backticks:', normalizedContent.includes('```'));
-                                      console.log('Contains triple quotes:', content.includes("'''"));
-                                      // Show a section around where code might be (after "optimized" text)
-                                      const optimizedIdx = normalizedContent.toLowerCase().indexOf('optimized');
-                                      if (optimizedIdx > 0) {
-                                        console.log('Content around "optimized":', normalizedContent.substring(optimizedIdx, optimizedIdx + 300));
-                                      }
-                                      // Check for any backtick patterns
-                                      const backtickMatches = normalizedContent.match(/`+/g);
-                                      console.log('Backtick patterns found:', backtickMatches);
-
-                                      // Split content by code blocks - more flexible regex
-                                      // Matches ```lang\ncode``` or ```\ncode``` with optional newline before closing
-                                      const codeBlockRegex = /```(\w+)?\n([\s\S]*?)```/g;
-                                      const parts: Array<{ type: 'text' | 'code'; content: string; language?: string }> = [];
-                                      let lastIndex = 0;
-                                      let match;
-
-                                      while ((match = codeBlockRegex.exec(normalizedContent)) !== null) {
-                                        // Add text before code block
-                                        if (match.index > lastIndex) {
-                                          parts.push({
-                                            type: 'text',
-                                            content: normalizedContent.substring(lastIndex, match.index)
-                                          });
-                                        }
-
-                                        // Add code block
-                                        parts.push({
-                                          type: 'code',
-                                          content: match[2].trim(),
-                                          language: match[1] || 'code'
-                                        });
-
-                                        lastIndex = match.index + match[0].length;
-                                      }
-
-                                      // Add remaining text
-                                      if (lastIndex < normalizedContent.length) {
+                                    while ((match = codeBlockRegex.exec(content)) !== null) {
+                                      console.log('Found code block:', match[1], match[2]?.substring(0, 50));
+                                      // Add text before code block
+                                      if (match.index > lastIndex) {
                                         parts.push({
                                           type: 'text',
-                                          content: normalizedContent.substring(lastIndex)
+                                          content: content.substring(lastIndex, match.index)
                                         });
                                       }
-
-                                      console.log('Parts found:', parts.length);
-                                      parts.forEach((part, idx) => {
-                                        console.log(`Part ${idx}: type=${part.type}, language=${part.language}, content length=${part.content.length}`);
+                                      
+                                      // Add code block
+                                      parts.push({
+                                        type: 'code',
+                                        content: match[2],
+                                        language: match[1] || 'text'
                                       });
-                                      console.log('========================');
+                                      
+                                      lastIndex = match.index + match[0].length;
+                                    }
+                                    
+                                    // Add remaining text
+                                    if (lastIndex < content.length) {
+                                      parts.push({
+                                        type: 'text',
+                                        content: content.substring(lastIndex)
+                                      });
+                                    }
 
-                                      // Render parts
-                                      return parts.map((part, idx) => {
-                                        if (part.type === 'code') {
-                                          const language = (part.language || 'CODE').toUpperCase();
-                                          return (
-                                            <div key={idx} className="my-4 rounded-xl border border-slate-700 bg-slate-900 overflow-hidden">
-                                              {/* Header bar with Copy button */}
-                                              <div className="flex items-center justify-between px-4 py-2 border-b border-slate-700 bg-slate-800/50">
-                                                <div className="flex items-center gap-2">
-                                                  <div className="w-2 h-2 rounded-full bg-emerald-500"></div>
-                                                  <span className="text-xs font-semibold text-slate-300 tracking-wider">
-                                                    {language}
-                                                  </span>
+                                    console.log('Total parts:', parts.length, parts.map(p => p.type));
+
+                                    return (
+                                      <>
+                                        {parts.map((part, idx) => {
+                                          if (part.type === 'code') {
+                                            return (
+                                              <div key={idx} className="my-4 rounded-xl border border-slate-700 bg-slate-900 overflow-hidden">
+                                                <div className="flex items-center justify-between px-4 py-2 border-b border-slate-700 bg-slate-800/50">
+                                                  <div className="flex items-center gap-2">
+                                                    <div className="w-2 h-2 rounded-full bg-emerald-500"></div>
+                                                    <span className="text-xs font-semibold text-slate-300 tracking-wider uppercase">
+                                                      {part.language?.toUpperCase() || 'CODE'}
+                                                    </span>
+                                                  </div>
+                                                  <button
+                                                    onClick={() => {
+                                                      navigator.clipboard.writeText(part.content);
+                                                      setToast({ message: 'Code copied to clipboard!', type: 'success' });
+                                                    }}
+                                                    className="flex items-center gap-1.5 px-3 py-1 text-xs text-slate-300 hover:text-white bg-slate-700 hover:bg-slate-600 rounded-md transition-colors"
+                                                  >
+                                                    <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 5H6a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2v-1M8 5a2 2 0 002 2h2a2 2 0 002-2M8 5a2 2 0 012-2h2a2 2 0 012 2m0 0h2a2 2 0 012 2v3m2 4H10m0 0l3-3m-3 3l3 3" />
+                                                    </svg>
+                                                    Copy
+                                                  </button>
                                                 </div>
-                                                <button
-                                                  onClick={() => {
-                                                    navigator.clipboard.writeText(part.content);
-                                                    setToast({ message: 'Code copied to clipboard!', type: 'success' });
-                                                  }}
-                                                  className="flex items-center gap-1.5 px-3 py-1 text-xs text-slate-300 hover:text-white bg-slate-700 hover:bg-slate-600 rounded-md transition-colors"
-                                                >
-                                                  <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 5H6a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2v-1M8 5a2 2 0 002 2h2a2 2 0 002-2M8 5a2 2 0 012-2h2a2 2 0 012 2m0 0h2a2 2 0 012 2v3m2 4H10m0 0l3-3m-3 3l3 3" />
-                                                  </svg>
-                                                  Copy
-                                                </button>
+                                                <div className="text-sm">
+                                                  <SyntaxHighlighter
+                                                    language={part.language || 'text'}
+                                                    style={vscDarkPlus}
+                                                    customStyle={{ margin: 0, padding: '1rem', background: 'transparent' }}
+                                                  >
+                                                    {part.content}
+                                                  </SyntaxHighlighter>
+                                                </div>
                                               </div>
-                                              {/* Code content */}
-                                              <div className="p-4 overflow-x-auto">
-                                                <pre className="text-sm text-slate-300 font-mono m-0 whitespace-pre-wrap">
-                                                  {part.content}
-                                                </pre>
-                                              </div>
-                                            </div>
-                                          );
-                                        } else {
-                                          // Render text content with ReactMarkdown
-                                          return (
-                                            <div key={idx}>
+                                            );
+                                          } else {
+                                            // Render text parts with ReactMarkdown
+                                            return (
                                               <ReactMarkdown
+                                                key={idx}
                                                 remarkPlugins={[remarkGfm]}
                                                 className="prose prose-invert max-w-none"
                                                 components={{
-                                                  h2({ children }) {
-                                                    return (
-                                                      <h2 className="text-lg font-semibold text-slate-100 mt-6 mb-3 border-b border-slate-700 pb-1">
-                                                        {children}
-                                                      </h2>
-                                                    );
+                                                  code({ inline, children }: any) {
+                                                    // Inline code as plain span
+                                                    return <span>{children}</span>;
                                                   },
-                                                  h3({ children }) {
-                                                    return (
-                                                      <h3 className="text-sm font-semibold uppercase tracking-wide text-slate-400 mt-5 mb-2">
-                                                        {children}
-                                                      </h3>
-                                                    );
-                                                  },
-                                                  p({ children }) {
-                                                    return (
-                                                      <p className="text-slate-200 leading-relaxed">
-                                                        {children}
-                                                      </p>
-                                                    );
-                                                  },
-                                                  strong({ children }) {
-                                                    return (
-                                                      <strong className="text-slate-100 font-semibold">
-                                                        {children}
-                                                      </strong>
-                                                    );
-                                                  },
-                                                  ul({ children }) {
-                                                    return (
-                                                      <ul className="list-disc list-inside space-y-1 text-slate-200">
-                                                        {children}
-                                                      </ul>
-                                                    );
-                                                  },
-                                                  ol({ children }) {
-                                                    return (
-                                                      <ol className="list-decimal list-inside space-y-1 text-slate-200">
-                                                        {children}
-                                                      </ol>
-                                                    );
-                                                  },
-                                                  li({ children }) {
-                                                    return (
-                                                      <li className="text-slate-200">
-                                                        {children}
-                                                      </li>
-                                                    );
-                                                  },
-                                                  blockquote({ children }) {
-                                                    return (
-                                                      <blockquote className="border-l-4 border-indigo-500/60 pl-4 text-slate-300 italic">
-                                                        {children}
-                                                      </blockquote>
-                                                    );
-                                                  },
-                                                  code(props: any) {
-                                                    const { children, className } = props;
-                                                    // Inline code only
-                                                    return (
-                                                      <code className={className || "bg-slate-800 px-1.5 py-0.5 rounded text-sm text-emerald-300 font-mono"}>
-                                                        {children}
-                                                      </code>
-                                                    );
-                                                  }
+                                                  h2: ({ children }) => <h2 className="text-lg font-semibold text-slate-100 mt-6 mb-3 border-b border-slate-700 pb-1">{children}</h2>,
+                                                  h3: ({ children }) => <h3 className="text-sm font-semibold uppercase tracking-wide text-slate-400 mt-5 mb-2">{children}</h3>,
+                                                  p: ({ children }) => <p className="text-slate-200 leading-relaxed mb-4">{children}</p>,
+                                                  ul: ({ children }) => <ul className="list-disc list-inside space-y-1 text-slate-200 mb-4">{children}</ul>,
+                                                  ol: ({ children }) => <ol className="list-decimal list-inside space-y-1 text-slate-200 mb-4">{children}</ol>,
+                                                  blockquote: ({ children }) => <blockquote className="border-l-4 border-indigo-500/60 pl-4 text-slate-300 italic my-4">{children}</blockquote>,
                                                 }}
                                               >
                                                 {part.content}
                                               </ReactMarkdown>
-                                            </div>
-                                          );
-                                        }
-                                      });
-                                    };
-
-                                    return <>{renderContentWithCodeBlocks(rawContent)}</>;
+                                            );
+                                          }
+                                        })}
+                                      </>
+                                    );
                                   })()}
                                 </div>
                               )}
