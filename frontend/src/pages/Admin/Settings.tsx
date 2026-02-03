@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Database, Cpu, Network, Info, Loader2, CheckCircle, AlertCircle, PencilLine, Save, Key } from 'lucide-react';
+import { Database, Cpu, Network, Info, Loader2, CheckCircle, AlertCircle, PencilLine, Save } from 'lucide-react';
 import { api } from '../../api/client';
 import type { AgentSettings } from '../../api/client';
 
@@ -408,13 +408,7 @@ export const Settings = () => {
   const [manualModelEntry, setManualModelEntry] = useState(false);
 
 
-  // API Client Configuration state
-  const [apiBaseUrl, setApiBaseUrl] = useState(localStorage.getItem('api_base_url') || '/api/v1');
-  const [apiKey, setApiKey] = useState(localStorage.getItem('api_key') || 'dev-api-key-12345');
-  const [showApiKeyDialog, setShowApiKeyDialog] = useState(false);
-  const [apiKeyInput, setApiKeyInput] = useState('');
-  const [apiKeyDialogError, setApiKeyDialogError] = useState<string | null>(null);
-  const [apiKeySaving, setApiKeySaving] = useState(false);
+  // Removed API Client Configuration - users now authenticate with their own API keys
 
   useEffect(() => {
     initializeSettings();
@@ -422,20 +416,12 @@ export const Settings = () => {
 
   const initializeSettings = async () => {
     setLoading(true);
-    setApiKeyDialogError(null);
     try {
-      const envKeyResponse = await api.admin.getEnvApiKey();
-      if (envKeyResponse.api_key) {
-        localStorage.setItem('api_key', envKeyResponse.api_key);
-        setApiKey(envKeyResponse.api_key);
-        await Promise.all([loadSettings(), loadModels()]);
-        return;
-      }
-      setShowApiKeyDialog(true);
+      // User is already authenticated with their own API key
+      // Just load settings and models directly
+      await Promise.all([loadSettings(), loadModels()]);
     } catch (error) {
-      console.error('Failed to load API key from .env', error);
-      setApiKeyDialogError(getErrorDetail(error, 'Failed to load API key from .env'));
-      setShowApiKeyDialog(true);
+      console.error('Failed to initialize settings', error);
     } finally {
       setLoading(false);
     }
@@ -612,86 +598,7 @@ export const Settings = () => {
     }
   };
 
-  const handleSaveApiConfig = () => {
-    localStorage.setItem('api_base_url', apiBaseUrl);
-    localStorage.setItem('api_key', apiKey);
-    setSaveStatus({ type: 'success', message: 'API configuration saved! Please refresh the page for changes to take effect.' });
-
-    // Clear the message after 5 seconds
-    setTimeout(() => setSaveStatus(null), 5000);
-  };
-
-  const handleResetConfig = () => {
-    localStorage.removeItem('api_base_url');
-    localStorage.removeItem('api_key');
-    window.location.reload();
-  };
-
-  const handleApiKeySave = async () => {
-    const trimmedKey = apiKeyInput.trim();
-    if (!trimmedKey) {
-      setApiKeyDialogError('API key is required.');
-      return;
-    }
-
-    setApiKeySaving(true);
-    setApiKeyDialogError(null);
-    try {
-      await api.admin.setEnvApiKey(trimmedKey);
-      localStorage.setItem('api_key', trimmedKey);
-      setApiKey(trimmedKey);
-      setApiKeyInput('');
-      setShowApiKeyDialog(false);
-      setLoading(true);
-      await Promise.all([loadSettings(), loadModels()]);
-    } catch (error) {
-      console.error('Failed to save API key', error);
-      setApiKeyDialogError(getErrorDetail(error, 'Failed to save API key'));
-    } finally {
-      setApiKeySaving(false);
-      setLoading(false);
-    }
-  };
-
-
-
-  const apiKeyDialog = showApiKeyDialog && (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 px-4">
-      <div className="w-full max-w-lg bg-slate-950 border border-slate-800 rounded-2xl shadow-2xl p-6 space-y-4">
-        <div className="flex items-center justify-between">
-          <h3 className="text-xl font-semibold text-white">API Key Required</h3>
-        </div>
-        <p className="text-sm text-slate-400">
-          We could not find an API key in the backend <code>.env</code>. Enter one to continue.
-        </p>
-        <div>
-          <label className="block text-sm text-slate-300 mb-2">API Key</label>
-          <input
-            type="password"
-            value={apiKeyInput}
-            onChange={(e) => setApiKeyInput(e.target.value)}
-            className="w-full px-4 py-2 bg-slate-900 border border-slate-700 rounded-lg text-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500"
-            placeholder="Enter your API key"
-          />
-        </div>
-        {apiKeyDialogError && (
-          <div className="p-3 bg-red-900/20 border border-red-500/30 rounded-lg text-sm text-red-300">
-            {apiKeyDialogError}
-          </div>
-        )}
-        <div className="flex justify-end">
-          <button
-            onClick={handleApiKeySave}
-            disabled={apiKeySaving}
-            className="flex items-center gap-2 px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            {apiKeySaving ? <Loader2 size={16} className="animate-spin" /> : <Save size={16} />}
-            {apiKeySaving ? 'Saving...' : 'Save API Key'}
-          </button>
-        </div>
-      </div>
-    </div>
-  );
+  // Removed legacy API configuration handlers - users authenticate with their own API keys
 
   if (loading) {
     return (
@@ -699,10 +606,6 @@ export const Settings = () => {
         <Loader2 className="animate-spin text-indigo-400" size={32} />
       </div>
     );
-  }
-
-  if (!settings && showApiKeyDialog) {
-    return <div className="relative h-full">{apiKeyDialog}</div>;
   }
 
   if (!settings) {
@@ -721,22 +624,14 @@ export const Settings = () => {
         )}
 
         <div className="flex gap-4 mt-2">
-          <button
-            onClick={() => { setLoading(true); loadSettings(); }}
-            className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg flex items-center gap-2 transition-colors"
-          >
-            <Loader2 size={16} className={loading ? "animate-spin" : "hidden"} />
-            Retry Connection
-          </button>
-
-          <button
-            onClick={handleResetConfig}
-            className="px-4 py-2 bg-slate-700 hover:bg-slate-600 text-white rounded-lg flex items-center gap-2 transition-colors"
-          >
-            <Database size={16} />
-            Reset to Defaults
-          </button>
-        </div>
+        <button
+          onClick={() => { setLoading(true); loadSettings(); }}
+          className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg flex items-center gap-2 transition-colors"
+        >
+          <Loader2 size={16} className={loading ? "animate-spin" : "hidden"} />
+          Retry Connection
+        </button>
+      </div>
       </div>
     );
   }
@@ -1061,53 +956,6 @@ export const Settings = () => {
         </div>
       </div>
 
-      {/* API Client Configuration Card */}
-      <div className="bg-slate-900/50 border border-slate-800 rounded-xl p-6">
-        <div className="flex items-center gap-3 mb-4">
-          <Key className="text-amber-400" size={20} />
-          <h3 className="text-lg font-semibold text-white">API Client Configuration</h3>
-        </div>
-        <div className="space-y-4">
-          <div>
-            <label className="block text-sm text-slate-400 mb-2">Backend URL</label>
-            <input
-              type="text"
-              value={apiBaseUrl}
-              onChange={(e) => setApiBaseUrl(e.target.value)}
-              className="w-full px-4 py-2 bg-slate-900 border border-slate-700 rounded-lg text-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500"
-              placeholder="http://localhost:8000/api/v1"
-            />
-            <p className="text-xs text-slate-500 mt-1">The base URL of your backend API server</p>
-          </div>
-
-          <div>
-            <label className="block text-sm text-slate-400 mb-2">API Key</label>
-            <input
-              type="password"
-              value={apiKey}
-              onChange={(e) => setApiKey(e.target.value)}
-              className="w-full px-4 py-2 bg-slate-900 border border-slate-700 rounded-lg text-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500"
-              placeholder="dev-api-key-12345"
-            />
-            <p className="text-xs text-slate-500 mt-1">Authentication key for backend API access</p>
-          </div>
-
-          <button
-            onClick={handleSaveApiConfig}
-            className="flex items-center gap-2 px-4 py-2 bg-amber-600 hover:bg-amber-500 text-white rounded-lg"
-          >
-            <Save size={16} />
-            Save API Configuration
-          </button>
-
-          <div className="p-3 bg-blue-500/10 border border-blue-500/30 rounded-lg">
-            <p className="text-sm text-blue-300">
-              💡 <strong>Note:</strong> After saving, please refresh the page for the changes to take effect.
-            </p>
-          </div>
-        </div>
-      </div>
-
       {/* App Metadata Card */}
       <div className="bg-slate-900/50 border border-slate-800 rounded-xl p-6">
         <div className="flex items-center gap-3 mb-4">
@@ -1163,7 +1011,6 @@ export const Settings = () => {
           trustServerCertificate: settings?.target_db?.trust_server_certificate ?? false
         }}
       />
-      {apiKeyDialog}
     </div >
   );
 };

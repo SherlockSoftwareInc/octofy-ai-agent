@@ -31,8 +31,51 @@ import {
   generateAutoTitle
 } from './utils/conversationStorage';
 import { detectChartIntent, getChartTypeLabel, shouldTriggerRevisualization, getNewCodeReason, isExplicitChartOnlyPattern } from './utils/chartIntentDetector';
+import { useAuth } from './contexts/AuthContext';
+import { Login } from './pages/Login';
+import { UserProfile } from './components/UserProfile';
+import { ProtectedRoute } from './components/ProtectedRoute';
 
 function App() {
+  const { isAuthenticated, isLoading } = useAuth();
+  const [showProfileModal, setShowProfileModal] = useState(false);
+
+  // Show login page if not authenticated
+  if (isLoading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gray-50">
+        <div className="text-center">
+          <Loader2 className="w-8 h-8 animate-spin text-purple-600 mx-auto mb-4" />
+          <p className="text-gray-600">Loading...</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (!isAuthenticated) {
+    return <Login />;
+  }
+
+  return (
+    <ProtectedRoute>
+      <AuthenticatedApp 
+        showProfileModal={showProfileModal}
+        setShowProfileModal={setShowProfileModal}
+      />
+    </ProtectedRoute>
+  );
+}
+
+// Separate component for authenticated app to keep state management clean
+function AuthenticatedApp({ 
+  showProfileModal, 
+  setShowProfileModal 
+}: { 
+  showProfileModal: boolean; 
+  setShowProfileModal: (show: boolean) => void;
+}) {
+  const { user } = useAuth();
+  
   // Simple Router State (Hash based or state based)
   const [currentRoute, setCurrentRoute] = useState<'chat' | 'admin'>(() =>
     window.location.pathname.startsWith('/admin') ? 'admin' : 'chat'
@@ -1195,11 +1238,23 @@ function App() {
   };
 
   const navigateToAdmin = () => {
+    // Only allow admin users to navigate to admin panel
+    if (user?.role !== 'admin') {
+      return;
+    }
     window.history.pushState({}, '', '/admin');
     setCurrentRoute('admin');
   };
 
-  if (currentRoute === 'admin') {
+  // Redirect non-admin users away from admin route
+  useEffect(() => {
+    if (currentRoute === 'admin' && user?.role !== 'admin') {
+      window.history.pushState({}, '', '/');
+      setCurrentRoute('chat');
+    }
+  }, [currentRoute, user]);
+
+  if (currentRoute === 'admin' && user?.role === 'admin') {
     return (
       <ErrorBoundary>
         <AdminLayout currentPage={adminPage} onNavigate={setAdminPage} isUploading={isUploadingInAdmin}>
@@ -1225,6 +1280,7 @@ function App() {
           onNewConversation={handleNewConversation}
           onDeleteConversation={handleDeleteConversation}
           onRenameConversation={handleRenameConversation}
+          onOpenProfile={() => setShowProfileModal(true)}
         />
 
         {/* Main Chat Area */}
@@ -1240,12 +1296,14 @@ function App() {
                 )}
               </div>
               <div className="flex items-center gap-4">
-                <button
-                  onClick={navigateToAdmin}
-                  className="flex items-center gap-2 text-sm text-slate-400 hover:text-white transition-colors px-3 py-1.5 rounded-md hover:bg-slate-800"
-                >
-                  <LayoutDashboard size={16} /> Admin
-                </button>
+                {user?.role === 'admin' && (
+                  <button
+                    onClick={navigateToAdmin}
+                    className="flex items-center gap-2 text-sm text-slate-400 hover:text-white transition-colors px-3 py-1.5 rounded-md hover:bg-slate-800"
+                  >
+                    <LayoutDashboard size={16} /> Admin
+                  </button>
+                )}
                 <div className="flex items-center gap-2 text-xs font-mono text-emerald-400 bg-emerald-500/10 px-3 py-1.5 rounded-full border border-emerald-500/20">
                   <div className="w-2 h-2 bg-emerald-500 rounded-full animate-pulse" />
                   SYSTEM ONLINE
@@ -2116,6 +2174,10 @@ function App() {
                 </div>
               </div>
             </div>
+          )}
+          {/* User Profile Modal */}
+          {showProfileModal && (
+            <UserProfile onClose={() => setShowProfileModal(false)} />
           )}
           {toast && (
             <Toast

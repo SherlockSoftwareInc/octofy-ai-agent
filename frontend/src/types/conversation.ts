@@ -91,7 +91,8 @@ export interface WorkflowTemplate {
 
 export interface ChatMessage {
   id: string;
-  type: 'user' | 'ai';
+  role: 'user' | 'assistant' | 'system';  // Changed from type to role for backend compatibility
+  type?: 'user' | 'ai';  // Keep for backward compatibility
   content: string;
   timestamp: Date;
   discoveryResult?: DiscoveryResponse;
@@ -127,8 +128,11 @@ export interface ChatMessage {
 
 export interface Conversation {
   id: string;
+  backendId?: number;  // Backend conversation ID for syncing
   title: string;
-  lastModified: string;
+  lastModified?: string;  // Keep for backward compatibility
+  createdAt?: Date;
+  updatedAt?: Date;
   messages: ChatMessage[];
   lastGeneratedSQL?: string;
   queryHistory?: string;

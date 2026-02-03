@@ -37,29 +37,21 @@ async def login(
     """
     User login with username and password.
     
-    Returns JWT access token valid for 7 days.
+    Returns the user's unique API key that should be used for all subsequent requests.
+    The API key is sent in the X-API-Key header.
     """
     user = authenticate_user(db, login_request.username, login_request.password)
     
     if not user:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Incorrect username or password",
-            headers={"WWW-Authenticate": "Bearer"},
+            detail="Incorrect username or password"
         )
     
-    # Create access token
-    access_token = create_access_token(
-        data={
-            "user_id": user.id,
-            "username": user.username,
-            "role": user.role
-        }
-    )
-    
+    # Return the user's API key (no JWT token)
     return LoginResponse(
-        access_token=access_token,
-        token_type="bearer",
+        access_token=user.api_key,  # Return API key as access_token for frontend compatibility
+        token_type="api-key",
         user=UserResponse.model_validate(user)
     )
 
