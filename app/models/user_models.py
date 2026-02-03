@@ -11,6 +11,11 @@ from sqlalchemy.sql import func
 from app.core.user_database import Base
 import secrets
 
+# Import UserActivity to ensure it's registered before relationships are built
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from app.models.activity_models import UserActivity
+
 
 class User(Base):
     """
@@ -42,6 +47,7 @@ class User(Base):
     
     # Relationships
     conversations = relationship("Conversation", back_populates="user", cascade="all, delete-orphan")
+    # UserActivity relationship - lazy loaded to avoid circular imports
     activities = relationship("UserActivity", back_populates="user", cascade="all, delete-orphan", lazy="dynamic")
     
     def __repr__(self):
