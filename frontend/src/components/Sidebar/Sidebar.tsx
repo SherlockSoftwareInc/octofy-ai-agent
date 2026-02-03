@@ -51,7 +51,7 @@ export function Sidebar({
   thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
 
   filteredConversations.forEach(conv => {
-    const convDate = new Date(conv.lastModified);
+    const convDate = new Date(conv.lastModified || Date.now());
     if (convDate >= today) {
       groupedConversations.today.push(conv);
     } else if (convDate >= yesterday) {
