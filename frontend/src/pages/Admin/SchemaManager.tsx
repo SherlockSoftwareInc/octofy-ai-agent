@@ -32,7 +32,7 @@ interface SchemaManagerProps {
 }
 
 export const SchemaManager: React.FC<SchemaManagerProps> = ({ onUploadStateChange }) => {
-    const [viewMode, setViewMode] = useState<'vector' | 'skills'>('vector');
+    const [viewMode, setViewMode] = useState<'vector' | 'schema_lib'>('vector');
     const [schemas, setSchemas] = useState<AdminSchemaStatus[]>([]);
     const [loading, setLoading] = useState(false);
     const [syncing, setSyncing] = useState<string | null>(null);
@@ -358,15 +358,15 @@ export const SchemaManager: React.FC<SchemaManagerProps> = ({ onUploadStateChang
                             Vector Index
                         </button>
                         <button
-                            onClick={() => setViewMode('skills')}
+                            onClick={() => setViewMode('schema_lib')}
                             className={`px-4 py-2 rounded-md text-sm font-medium transition flex items-center gap-2 ${
-                                viewMode === 'skills'
+                                viewMode === 'schema_lib'
                                     ? 'bg-indigo-600 text-white'
                                     : 'text-slate-400 hover:text-slate-200'
                             }`}
                         >
                             <FolderTree size={16} />
-                            Skills
+                            Schema Lib
                         </button>
                     </div>
                 </div>
@@ -407,7 +407,7 @@ export const SchemaManager: React.FC<SchemaManagerProps> = ({ onUploadStateChang
             </div>
 
             {/* Conditional Rendering Based on View Mode */}
-            {viewMode === 'skills' ? (
+            {viewMode === 'schema_lib' ? (
                 <SkillsManager />
             ) : (
                 <>
