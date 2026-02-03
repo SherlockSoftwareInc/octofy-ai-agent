@@ -10,6 +10,7 @@ import { ValueManager } from './pages/Admin/ValueManager';
 import { ContributionManager } from './pages/Admin/ContributionManager';
 import { Settings } from './pages/Admin/Settings';
 import { DataSourcesManager } from './pages/Admin/DataSourcesManager';
+import { UserManager } from './pages/Admin/UserManager';
 import { Toast } from './components/Toast';
 import type { ToastType } from './components/Toast';
 import { ErrorBoundary } from './components/ErrorBoundary';
@@ -1281,6 +1282,7 @@ function AuthenticatedApp({
           {adminPage === 'fewshot' && <FewShotManager onUploadStateChange={setIsUploadingInAdmin} />}
           {adminPage === 'contributions' && <ContributionManager onUploadStateChange={setIsUploadingInAdmin} />}
           {adminPage === 'values' && <ValueManager onUploadStateChange={setIsUploadingInAdmin} />}
+          {adminPage === 'users' && <UserManager />}
           {adminPage === 'settings' && <Settings />}
         </AdminLayout>
       </ErrorBoundary>

@@ -1,19 +1,35 @@
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException, Depends, Request
 from fastapi.responses import StreamingResponse
 from app.models.schemas import GenerateSQLRequest, GenerateSQLResponse, AgentStatus
 from app.services.generation_service import generate_sql_for_request
 from app.services.code_generation_service import generate_r_for_request, generate_sas_for_request, generate_python_for_request
 from app.core.auth import verify_api_key
+from app.models.user_models import User
+from app.services.activity_service import log_sql_generation
+from app.core.user_database import get_user_db
+from sqlalchemy.orm import Session
 import traceback
 import logging
 import json
+import time
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
 @router.post("/generate-sql")
-async def generate_sql_endpoint(request: GenerateSQLRequest, api_key: str = Depends(verify_api_key)):
+async def generate_sql_endpoint(
+    request: GenerateSQLRequest, 
+    http_request: Request,
+    current_user: User = Depends(verify_api_key),
+    db: Session = Depends(get_user_db)
+):
+    start_time = time.time()
+    final_result = None
+    error_occurred = False
+    error_message = None
+    
     def event_generator():
+        nonlocal final_result, error_occurred, error_message
         try:
             for item in generate_sql_for_request(request, request.previousSQL, request.queryHistory):
                 if isinstance(item, AgentStatus):
@@ -21,12 +37,15 @@ async def generate_sql_endpoint(request: GenerateSQLRequest, api_key: str = Depe
                 elif isinstance(item, dict) and item.get("type") == "result":
                     # Payload is a GenerateSQLResponse object
                     payload = item["payload"]
+                    final_result = payload
                     data = {
                         "type": "result",
                         "payload": payload.model_dump(by_alias=True)
                     }
                     yield f"data: {json.dumps(data)}\n\n"
         except Exception as e:
+            error_occurred = True
+            error_message = str(e)
             logger.error(f"Error in generate_sql_endpoint: {str(e)}")
             logger.error(traceback.format_exc())
             error_data = {
@@ -34,6 +53,21 @@ async def generate_sql_endpoint(request: GenerateSQLRequest, api_key: str = Depe
                 "message": str(e)
             }
             yield f"data: {json.dumps(error_data)}\n\n"
+        finally:
+            # Log activity after generation completes
+            execution_time = time.time() - start_time
+            log_sql_generation(
+                db=db,
+                user_id=current_user.id,
+                user_query=request.query,
+                generated_sql=final_result.sql if final_result else None,
+                tokens_used=final_result.usage.total_tokens if final_result and hasattr(final_result, 'usage') else None,
+                execution_time=execution_time,
+                success=not error_occurred,
+                error_message=error_message,
+                ip_address=http_request.client.host if http_request.client else None,
+                user_agent=http_request.headers.get("user-agent")
+            )
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 
@@ -115,17 +149,24 @@ async def generate_python_endpoint(request: GenerateSQLRequest, api_key: str = D
 from app.models.schemas import ExecutePythonRequest, ExecutePythonResponse
 from app.services.execution_service import execute_python_code
 from app.services.code_generation_service import regenerate_python_with_error_feedback
+from app.services.activity_service import log_code_execution
 
 from app.services.visualization_service import VisualizationService
 
 @router.post("/execute-python", response_model=ExecutePythonResponse)
-async def execute_python_endpoint(request: ExecutePythonRequest, api_key: str = Depends(verify_api_key)):
+async def execute_python_endpoint(
+    request: ExecutePythonRequest, 
+    http_request: Request,
+    current_user: User = Depends(verify_api_key),
+    db: Session = Depends(get_user_db)
+):
     """
     Executes Python code and returns the output and any results.
     Automatically retries up to 5 times if execution fails, using LLM to fix errors.
     Appends a chart recommendation if a DataFrame is produced.
     """
     MAX_RETRY_ATTEMPTS = 5
+    start_time = time.time()
     
     try:
         from app.services.settings_service import load_settings, decrypt_string
@@ -271,6 +312,21 @@ async def execute_python_endpoint(request: ExecutePythonRequest, api_key: str = 
     except Exception as e:
         logger.error(f"Error in execute_python_endpoint: {str(e)}")
         logger.error(traceback.format_exc())
+        
+        # Log failed execution
+        execution_time = time.time() - start_time
+        log_code_execution(
+            db=db,
+            user_id=current_user.id,
+            code_type="python",
+            code=request.code,
+            success=False,
+            error_message=str(e),
+            execution_time=execution_time,
+            ip_address=http_request.client.host if http_request.client else None,
+            user_agent=http_request.headers.get("user-agent")
+        )
+        
         # Return error response
         return ExecutePythonResponse(
             success=False,
@@ -280,20 +336,41 @@ async def execute_python_endpoint(request: ExecutePythonRequest, api_key: str = 
             recommendation=None,
             execution_time=0.0
         )
+    finally:
+        # Log successful execution
+        if result and result.get("success"):
+            execution_time = time.time() - start_time
+            log_code_execution(
+                db=db,
+                user_id=current_user.id,
+                code_type="python",
+                code=current_code if attempt > 1 else request.code,
+                success=True,
+                execution_time=execution_time,
+                ip_address=http_request.client.host if http_request.client else None,
+                user_agent=http_request.headers.get("user-agent")
+            )
 
 
 from app.models.schemas import ExecuteSQLRequest, ExecuteSQLResponse
 from app.services.validation_service import execute_sql_query
 from app.services.generation_service import regenerate_sql_with_error_feedback
+from app.services.activity_service import log_sql_execution
 
 @router.post("/execute-sql", response_model=ExecuteSQLResponse)
-async def execute_sql_endpoint(request: ExecuteSQLRequest, api_key: str = Depends(verify_api_key)):
+async def execute_sql_endpoint(
+    request: ExecuteSQLRequest, 
+    http_request: Request,
+    current_user: User = Depends(verify_api_key),
+    db: Session = Depends(get_user_db)
+):
     """
     Executes SQL query and returns results with automatic retry on failure.
     Automatically retries up to 5 times if execution fails, using LLM to fix errors.
     Includes data profiling, insights, and chart recommendations.
     """
     MAX_RETRY_ATTEMPTS = 5
+    start_time = time.time()
     
     try:
         # Extract context for retry
@@ -408,6 +485,20 @@ async def execute_sql_endpoint(request: ExecuteSQLRequest, api_key: str = Depend
     except Exception as e:
         logger.error(f"Error in execute_sql_endpoint: {str(e)}")
         logger.error(traceback.format_exc())
+        
+        # Log failed execution
+        execution_time = time.time() - start_time
+        log_sql_execution(
+            db=db,
+            user_id=current_user.id,
+            sql=request.sql,
+            success=False,
+            error_message=str(e),
+            execution_time=execution_time,
+            ip_address=http_request.client.host if http_request.client else None,
+            user_agent=http_request.headers.get("user-agent")
+        )
+        
         # Return error response
         return ExecuteSQLResponse(
             success=False,
@@ -417,6 +508,20 @@ async def execute_sql_endpoint(request: ExecuteSQLRequest, api_key: str = Depend
             recommendation=None,
             execution_time=0.0
         )
+    finally:
+        # Log successful execution
+        if result and result.get("success"):
+            execution_time = time.time() - start_time
+            log_sql_execution(
+                db=db,
+                user_id=current_user.id,
+                sql=current_sql,
+                success=True,
+                rows_affected=result.get("rows_affected"),
+                execution_time=execution_time,
+                ip_address=http_request.client.host if http_request.client else None,
+                user_agent=http_request.headers.get("user-agent")
+            )
 
 
 @router.post("/planning-summary")

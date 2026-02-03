@@ -91,18 +91,18 @@ async def verify_api_key(
     """
     Legacy API key verification (backward compatibility).
     
-    Now validates user-specific API keys and requires admin role for admin endpoints.
+    Now validates user-specific API keys. For generation endpoints, all authenticated
+    users are allowed. Admin endpoints should use get_current_active_admin instead.
     
     Args:
         x_api_key: API key from X-API-Key header
         db: Database session
         
     Returns:
-        User object if authenticated and is admin
+        User object if authenticated
         
     Raises:
         HTTPException: 401 if API key is invalid or missing
-        HTTPException: 403 if user is not an admin
     """
     from app.services.user_service import get_user_by_api_key
     
@@ -112,13 +112,6 @@ async def verify_api_key(
         raise HTTPException(
             status_code=401,
             detail="Invalid or missing API key"
-        )
-    
-    # Admin endpoints require admin role
-    if user.role != "admin":
-        raise HTTPException(
-            status_code=403,
-            detail="Admin access required"
         )
     
     return user
