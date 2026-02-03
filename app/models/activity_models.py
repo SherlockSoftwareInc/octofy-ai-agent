@@ -52,7 +52,7 @@ class UserActivity(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False, index=True)
     
     # Relationships
-    user = relationship("User", back_populates="activities")
+    user = relationship("User", back_populates="activities", lazy="joined")
     
     def __repr__(self):
         return f"<UserActivity(id={self.id}, user_id={self.user_id}, type='{self.activity_type}', success={self.success})>"
