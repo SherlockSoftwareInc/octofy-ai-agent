@@ -536,7 +536,7 @@ class DataSourceResponse(BaseModel):
 
 class DataSourceListResponse(BaseModel):
     """Response listing all data sources"""
-    sources: List[DataSourceResponse]
+    data_sources: List[DataSourceResponse]
     primary_source_id: Optional[str] = None
     total_objects: int = 0
 

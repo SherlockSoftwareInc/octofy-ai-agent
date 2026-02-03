@@ -4,6 +4,7 @@ Data source management endpoints for multi-source schema tree.
 from fastapi import APIRouter, HTTPException, Depends
 from typing import List
 from datetime import datetime
+import re
 
 from app.models.schemas import (
     AddDataSourceRequest, DataSourceResponse, DataSourceListResponse,
@@ -11,6 +12,7 @@ from app.models.schemas import (
 )
 from app.services.settings_service import load_settings, save_settings
 from app.services.vector_store import get_vector_store
+from app.services.skills_service import SkillsService
 from app.core.auth import verify_api_key
 from app.core.database import test_connection
 import uuid
@@ -23,45 +25,76 @@ def list_data_sources(api_key: str = Depends(verify_api_key)):
     """
     List all configured data sources.
     
-    Returns data sources with metadata including object counts from vector store.
+    Returns data sources from both agent_settings.json AND skills/data-sources/_index.md.
+    Skills-based sources are read-only and represent the current skills catalog.
     """
     try:
         settings = load_settings()
+        skills_service = SkillsService()
         
-        # Check if v2 configuration
-        if not hasattr(settings, 'data_sources'):
-            # Legacy v1 config - return single source wrapped in v2 format
-            if hasattr(settings, 'target_db'):
-                # Create temporary v2 source from v1
-                source = TargetDBConfigV2(
-                    **settings.target_db.model_dump(),
-                    source_id=str(uuid.uuid4()),
-                    enabled=True
-                )
-                return DataSourceListResponse(
-                    sources=[_build_source_response(source, is_primary=True)],
-                    primary_source_id=source.source_id,
-                    total_objects=_get_object_count(source.source_id)
-                )
-            else:
-                return DataSourceListResponse(sources=[], primary_source_id=None, total_objects=0)
-        
-        # V2 configuration
         sources = []
         total_objects = 0
         
-        for source in settings.data_sources:
+        # First, add sources from skills directory (_index.md)
+        try:
+            skills_sources = skills_service.load_data_sources_index()
+            for skill_source in skills_sources:
+                # Generate a deterministic source_id from the data source name
+                source_id = f"skill_{re.sub(r'[^a-zA-Z0-9]', '_', skill_source.name.lower())}"
+                
+                # Count objects for this source (if indexed in vector store)
+                obj_count = _get_object_count_by_name(skill_source.name)
+                total_objects += obj_count
+                
+                # Build response for skills-based source
+                sources.append(DataSourceResponse(
+                    source_id=source_id,
+                    friendly_name=skill_source.name,
+                    description=skill_source.description,
+                    keywords=skill_source.keywords,
+                    server="(Defined in skills)",
+                    database_name="(Defined in skills)",
+                    db_type="mssql",  # Default assumption
+                    enabled=skill_source.status.lower() == "active",
+                    is_primary=False,  # Skills sources are not primary by default
+                    object_count=obj_count,
+                    last_synced=None
+                ))
+        except Exception as skills_error:
+            # Log but don't fail if skills directory is empty/missing
+            print(f"Warning: Could not load skills sources: {skills_error}")
+        
+        # Then, add sources from agent_settings.json (if v2 config)
+        if hasattr(settings, 'data_sources'):
+            for source in settings.data_sources:
+                obj_count = _get_object_count(source.source_id)
+                total_objects += obj_count
+                sources.append(_build_source_response(
+                    source, 
+                    is_primary=(source.source_id == settings.primary_source_id),
+                    object_count=obj_count
+                ))
+        elif hasattr(settings, 'target_db'):
+            # Legacy v1 config - return single source wrapped in v2 format
+            source = TargetDBConfigV2(
+                **settings.target_db.model_dump(),
+                source_id=str(uuid.uuid4()),
+                enabled=True
+            )
             obj_count = _get_object_count(source.source_id)
             total_objects += obj_count
-            sources.append(_build_source_response(
-                source, 
-                is_primary=(source.source_id == settings.primary_source_id),
-                object_count=obj_count
-            ))
+            sources.append(_build_source_response(source, is_primary=True, object_count=obj_count))
+        
+        # Determine primary source (prefer settings-based, fallback to first skills source)
+        primary_source_id = None
+        if hasattr(settings, 'primary_source_id'):
+            primary_source_id = settings.primary_source_id
+        elif sources:
+            primary_source_id = sources[0].source_id
         
         return DataSourceListResponse(
-            sources=sources,
-            primary_source_id=settings.primary_source_id,
+            data_sources=sources,
+            primary_source_id=primary_source_id,
             total_objects=total_objects
         )
     
@@ -437,4 +470,29 @@ def _get_object_count(source_id: str) -> int:
         objects = vector_store.get_all_objects_v2(source_id=source_id)
         return len(objects)
     except Exception:
+        return 0
+
+
+def _get_object_count_by_name(data_source_name: str) -> int:
+    """
+    Get count of indexed objects for a data source by name.
+    
+    This searches the vector store for objects that match the data source name
+    (e.g., "Northwind" matches schema descriptions with "Northwind").
+    """
+    try:
+        vector_store = get_vector_store()
+        # Get all schemas and filter by data source name
+        all_schemas = vector_store.get_all_schemas()
+        
+        # Count schemas that mention this data source name
+        # (This is a simple heuristic - could be improved with better metadata)
+        count = sum(
+            1 for schema in all_schemas 
+            if data_source_name.lower() in (schema.description or "").lower() or
+               data_source_name.lower() in schema.table_name.lower()
+        )
+        return count
+    except Exception as e:
+        print(f"Error counting objects for {data_source_name}: {e}")
         return 0

@@ -31,9 +31,10 @@ export const DataSourcesManager: React.FC = () => {
         setLoading(true);
         try {
             const response = await api.dataSources.getAll();
-            setDataSources(response.data_sources);
+            setDataSources(response.data_sources || []);
         } catch (error) {
             console.error('Failed to fetch data sources:', error);
+            setDataSources([]); // Ensure we always have an array
             alert('Failed to load data sources');
         } finally {
             setLoading(false);
@@ -108,12 +109,15 @@ export const DataSourcesManager: React.FC = () => {
         try {
             const result = await api.dataSources.testConnection(sourceId);
             setConnectionTestResult({ sourceId, result });
-        } catch (error: any) {
+        } catch (error: unknown) {
+            const errorMessage = error instanceof Error ? error.message : 
+                (error as { response?: { data?: { detail?: string } } })?.response?.data?.detail || 
+                'Connection test failed';
             setConnectionTestResult({
                 sourceId,
                 result: {
                     success: false,
-                    message: error.response?.data?.detail || error.message || 'Connection test failed'
+                    message: errorMessage
                 }
             });
         } finally {
@@ -155,9 +159,10 @@ export const DataSourcesManager: React.FC = () => {
             }
             setShowAddModal(false);
             await fetchDataSources();
-        } catch (error: any) {
+        } catch (error: unknown) {
             console.error('Failed to save data source:', error);
-            alert(error.response?.data?.detail || 'Failed to save data source');
+            const errorMessage = (error as { response?: { data?: { detail?: string } } })?.response?.data?.detail || 'Failed to save data source';
+            alert(errorMessage);
         }
     };
 
@@ -167,16 +172,17 @@ export const DataSourcesManager: React.FC = () => {
                 driver: formData.driver || 'ODBC Driver 17 for SQL Server',
                 server: formData.server,
                 database: formData.database_name,
-                auth_type: (formData.auth_type as any) || 'windows',
+                auth_type: (formData.auth_type || 'windows') as "windows" | "sql" | "ad_integrated" | "ad_password" | "ad_interactive" | "ad_service_principal",
                 username: formData.username,
                 password: '',
                 trust_server_certificate: formData.trust_server_certificate
             });
             setFormData({ ...formData, connection_string_encrypted: result.encrypted });
             alert('Connection string built and encrypted successfully!');
-        } catch (error: any) {
+        } catch (error: unknown) {
             console.error('Failed to build connection string:', error);
-            alert(error.response?.data?.detail || 'Failed to build connection string');
+            const errorMessage = (error as { response?: { data?: { detail?: string } } })?.response?.data?.detail || 'Failed to build connection string';
+            alert(errorMessage);
         }
     };
 
