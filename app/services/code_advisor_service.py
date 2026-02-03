@@ -128,3 +128,4 @@ def generate_code_advisor_for_request(request: GenerateSQLRequest) -> Generator[
     )
     
     yield {"type": "result", "payload": response}
+    yield {"type": "done"}

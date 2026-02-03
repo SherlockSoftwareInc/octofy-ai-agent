@@ -286,6 +286,9 @@ export const api = {
                                 onStatus(data as AgentStatus);
                             } else if (data.type === 'result') {
                                 finalResult = data.payload as GenerateSQLResponse;
+                            } else if (data.type === 'done') {
+                                // Stream explicitly completed
+                                return finalResult!;
                             } else if (data.type === 'error') {
                                 throw new Error(data.message);
                             }
@@ -350,6 +353,9 @@ export const api = {
                                 onStatus(data as AgentStatus);
                             } else if (data.type === 'result') {
                                 finalResult = data.payload as GenerateSQLResponse;
+                            } else if (data.type === 'done') {
+                                // Stream explicitly completed
+                                return finalResult!;
                             } else if (data.type === 'error') {
                                 throw new Error(data.message);
                             }
@@ -414,6 +420,9 @@ export const api = {
                                 onStatus(data as AgentStatus);
                             } else if (data.type === 'result') {
                                 finalResult = data.payload as GenerateSQLResponse;
+                            } else if (data.type === 'done') {
+                                // Stream explicitly completed
+                                return finalResult!;
                             } else if (data.type === 'error') {
                                 throw new Error(data.message);
                             }
@@ -478,6 +487,9 @@ export const api = {
                                 onStatus(data as AgentStatus);
                             } else if (data.type === 'result') {
                                 finalResult = data.payload as GenerateSQLResponse;
+                            } else if (data.type === 'done') {
+                                // Stream explicitly completed
+                                return finalResult!;
                             } else if (data.type === 'error') {
                                 throw new Error(data.message);
                             }
@@ -504,7 +516,7 @@ export const api = {
         if (apiKey) {
             headers['X-API-Key'] = apiKey;
         }
-        const body = JSON.stringify({ query, queryHistory });
+        const body = JSON.stringify({ query, queryHistory, queryMode: 'code_advisor' });
 
         const response = await fetch(url, {
             method: 'POST',
@@ -542,6 +554,9 @@ export const api = {
                                 onStatus(data as AgentStatus);
                             } else if (data.type === 'result') {
                                 finalResult = data.payload as GenerateSQLResponse;
+                            } else if (data.type === 'done') {
+                                // Stream explicitly completed
+                                return finalResult!;
                             } else if (data.type === 'error') {
                                 throw new Error(data.message);
                             }

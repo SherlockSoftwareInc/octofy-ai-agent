@@ -9,6 +9,15 @@ from app.api.endpoints import (
 from app.services.ingest_service import create_milvus_collections, ingest_metadata
 from app.services.vector_store import get_vector_store
 from app.services.migration_service import auto_migrate_if_needed
+
+import warnings
+
+# Filter out the specific DeprecationWarning from pkg_resources
+warnings.filterwarnings("ignore", category=UserWarning, module="pkg_resources")
+
+# Now import your milvus client
+from pymilvus import MilvusClient
+
 import logging
 
 # Setup Logger

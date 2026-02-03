@@ -1,8 +1,9 @@
-fastapi==0.109.2
+fastapi>=0.115.2
 uvicorn==0.27.1
+starlette>=0.40.0
 pydantic==2.6.1
 pydantic-settings==2.1.0
-pymilvus==2.3.7
+pymilvus==2.6.8
 openai==1.61.0
 litellm==1.61.5
 langchain==0.1.5
@@ -12,7 +13,7 @@ python-dotenv==1.0.1
 pandas>=2.2.0
 openpyxl==3.1.0
 cryptography==42.0.5
-python-multipart==0.0.6
+python-multipart>=0.0.18
 markdown==3.10.1
 psycopg2-binary==2.9.9
 python-jose[cryptography]==3.3.0
