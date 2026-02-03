@@ -412,6 +412,7 @@ export const Settings = () => {
 
   useEffect(() => {
     initializeSettings();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const initializeSettings = async () => {
@@ -669,8 +670,9 @@ export const Settings = () => {
         </div>
         <div className="space-y-4">
           <div>
-            <label className="block text-sm text-slate-400 mb-2">Friendly Name</label>
+            <label htmlFor="db-friendly-name" className="block text-sm text-slate-400 mb-2">Friendly Name</label>
             <input
+              id="db-friendly-name"
               type="text"
               value={settings.target_db.friendly_name}
               onChange={(e) => setSettings({ ...settings, target_db: { ...settings.target_db, friendly_name: e.target.value } })}
@@ -679,8 +681,9 @@ export const Settings = () => {
           </div>
 
           <div>
-            <label className="block text-sm text-slate-400 mb-2">Description</label>
+            <label htmlFor="db-description" className="block text-sm text-slate-400 mb-2">Description</label>
             <textarea
+              id="db-description"
               value={settings.target_db.description}
               onChange={(e) => setSettings({ ...settings, target_db: { ...settings.target_db, description: e.target.value } })}
               rows={2}
@@ -689,8 +692,9 @@ export const Settings = () => {
           </div>
 
           <div>
-            <label className="block text-sm text-slate-400 mb-2">Keywords (comma-separated)</label>
+            <label htmlFor="db-keywords" className="block text-sm text-slate-400 mb-2">Keywords (comma-separated)</label>
             <input
+              id="db-keywords"
               type="text"
               value={settings.target_db.keywords.join(', ')}
               onChange={(e) => setSettings({ ...settings, target_db: { ...settings.target_db, keywords: e.target.value.split(',').map(k => k.trim()).filter(k => k) } })}
@@ -701,21 +705,25 @@ export const Settings = () => {
 
           <div className="grid grid-cols-2 gap-4">
             <div>
-              <label className="block text-sm text-slate-400 mb-2">Server (read-only)</label>
+              <label htmlFor="db-server" className="block text-sm text-slate-400 mb-2">Server (read-only)</label>
               <input
+                id="db-server"
                 type="text"
                 value={settings.target_db.server || 'Not configured'}
                 className="w-full px-4 py-2 bg-slate-800/50 border border-slate-700/50 rounded-lg text-slate-400 cursor-not-allowed"
                 disabled
+                readOnly
               />
             </div>
             <div>
-              <label className="block text-sm text-slate-400 mb-2">Database (read-only)</label>
+              <label htmlFor="db-name" className="block text-sm text-slate-400 mb-2">Database (read-only)</label>
               <input
+                id="db-name"
                 type="text"
                 value={settings.target_db.database_name || 'Not configured'}
                 className="w-full px-4 py-2 bg-slate-800/50 border border-slate-700/50 rounded-lg text-slate-400 cursor-not-allowed"
                 disabled
+                readOnly
               />
             </div>
           </div>
@@ -741,8 +749,9 @@ export const Settings = () => {
         <div className="space-y-4">
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div>
-              <label className="block text-sm text-slate-400 mb-2">Endpoint URL (OpenAI Compatible)</label>
+              <label htmlFor="llm-endpoint" className="block text-sm text-slate-400 mb-2">Endpoint URL (OpenAI Compatible)</label>
               <input
+                id="llm-endpoint"
                 type="text"
                 value={settings.llm_config.llm_endpoint || ''}
                 onChange={(e) => setSettings({ ...settings, llm_config: { ...settings.llm_config, llm_endpoint: e.target.value } })}
@@ -751,8 +760,9 @@ export const Settings = () => {
               />
             </div>
             <div>
-              <label className="block text-sm text-slate-400 mb-2">API Key (Optional)</label>
+              <label htmlFor="llm-api-key" className="block text-sm text-slate-400 mb-2">API Key (Optional)</label>
               <input
+                id="llm-api-key"
                 type="password"
                 value={settings.llm_config.llm_api_key || ''}
                 onChange={(e) => setSettings({ ...settings, llm_config: { ...settings.llm_config, llm_api_key: e.target.value } })}
@@ -766,16 +776,18 @@ export const Settings = () => {
           <div className="flex items-end gap-2">
             <div className="flex-1">
               <div className="flex justify-between items-center mb-2">
-                <label className="block text-sm text-slate-400">Model</label>
+                <label htmlFor="llm-model" className="block text-sm text-slate-400">Model</label>
                 <button
                   onClick={() => setManualModelEntry(!manualModelEntry)}
                   className="text-xs text-indigo-400 hover:text-indigo-300 underline"
+                  type="button"
                 >
                   {manualModelEntry ? "Select from list" : "Enter manually"}
                 </button>
               </div>
               {manualModelEntry ? (
                 <input
+                  id="llm-model"
                   type="text"
                   value={settings.llm_config.llm_model}
                   onChange={(e) => setSettings({ ...settings, llm_config: { ...settings.llm_config, llm_model: e.target.value } })}
@@ -784,9 +796,11 @@ export const Settings = () => {
                 />
               ) : (
                 <select
+                  id="llm-model"
                   value={settings.llm_config.llm_model}
                   onChange={(e) => setSettings({ ...settings, llm_config: { ...settings.llm_config, llm_model: e.target.value } })}
                   className="w-full px-4 py-2 bg-slate-900 border border-slate-700 rounded-lg text-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                  aria-label="Select LLM Model"
                 >
                   {/* Always show current option if not in list to prevent it from disappearing */}
                   {!models.find(m => m.id === settings.llm_config.llm_model) && (
@@ -813,10 +827,11 @@ export const Settings = () => {
           )}
 
           <div>
-            <label className="block text-sm text-slate-400 mb-2">
+            <label htmlFor="llm-temperature" className="block text-sm text-slate-400 mb-2">
               Temperature: {settings.llm_config.temperature.toFixed(1)}
             </label>
             <input
+              id="llm-temperature"
               type="range"
               min="0"
               max="1"
@@ -824,6 +839,7 @@ export const Settings = () => {
               value={settings.llm_config.temperature}
               onChange={(e) => setSettings({ ...settings, llm_config: { ...settings.llm_config, temperature: parseFloat(e.target.value) } })}
               className="w-full"
+              aria-label="LLM Temperature"
             />
             <div className="flex justify-between text-xs text-slate-500 mt-1">
               <span>Deterministic (0.0)</span>
@@ -859,11 +875,13 @@ export const Settings = () => {
           <div className="space-y-4">
             <h4 className="text-sm font-medium text-slate-300 uppercase tracking-wider border-b border-slate-800 pb-2">Embedding Settings</h4>
             <div>
-              <label className="block text-sm text-slate-400 mb-2">Embedding Provider</label>
+              <label htmlFor="embedding-provider" className="block text-sm text-slate-400 mb-2">Embedding Provider</label>
               <select
+                id="embedding-provider"
                 value={settings.embedding_config?.provider || 'openai'}
                 onChange={(e) => setSettings({ ...settings, embedding_config: { ...settings.embedding_config, provider: e.target.value } })}
                 className="w-full px-4 py-2 bg-slate-900 border border-slate-700 rounded-lg text-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                aria-label="Select Embedding Provider"
               >
                 <option value="openai">OpenAI</option>
                 <option value="azure">Azure OpenAI</option>
@@ -874,8 +892,9 @@ export const Settings = () => {
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div>
-                <label className="block text-sm text-slate-400 mb-2">Embedding Model</label>
+                <label htmlFor="embedding-model" className="block text-sm text-slate-400 mb-2">Embedding Model</label>
                 <input
+                  id="embedding-model"
                   type="text"
                   value={settings.embedding_config?.model || ''}
                   onChange={(e) => setSettings({ ...settings, embedding_config: { ...settings.embedding_config, model: e.target.value } })}
@@ -884,8 +903,9 @@ export const Settings = () => {
                 />
               </div>
               <div>
-                <label className="block text-sm text-slate-400 mb-2">Dimensions</label>
+                <label htmlFor="embedding-dimensions" className="block text-sm text-slate-400 mb-2">Dimensions</label>
                 <input
+                  id="embedding-dimensions"
                   type="number"
                   value={settings.embedding_config?.dimensions || 1536}
                   onChange={(e) => setSettings({ ...settings, embedding_config: { ...settings.embedding_config, dimensions: parseInt(e.target.value) } })}
@@ -896,8 +916,9 @@ export const Settings = () => {
 
             {(settings.embedding_config?.provider === 'openai_compatible' || settings.embedding_config?.provider === 'azure') && (
               <div>
-                <label className="block text-sm text-slate-400 mb-2">Base URL / Endpoint</label>
+                <label htmlFor="embedding-base-url" className="block text-sm text-slate-400 mb-2">Base URL / Endpoint</label>
                 <input
+                  id="embedding-base-url"
                   type="text"
                   value={settings.embedding_config?.base_url || ''}
                   onChange={(e) => setSettings({ ...settings, embedding_config: { ...settings.embedding_config, base_url: e.target.value } })}
@@ -908,8 +929,9 @@ export const Settings = () => {
             )}
 
             <div>
-              <label className="block text-sm text-slate-400 mb-2">API Key</label>
+              <label htmlFor="embedding-api-key" className="block text-sm text-slate-400 mb-2">API Key</label>
               <input
+                id="embedding-api-key"
                 type="password"
                 value={settings.embedding_config?.api_key || ''}
                 onChange={(e) => setSettings({ ...settings, embedding_config: { ...settings.embedding_config, api_key: e.target.value } })}
@@ -923,8 +945,9 @@ export const Settings = () => {
           <div className="space-y-4">
             <h4 className="text-sm font-medium text-slate-300 uppercase tracking-wider border-b border-slate-800 pb-2">Vector Database Settings</h4>
             <div>
-              <label className="block text-sm text-slate-400 mb-2">Values Provider</label>
+              <label htmlFor="vector-provider" className="block text-sm text-slate-400 mb-2">Vector Provider</label>
               <input
+                id="vector-provider"
                 type="text"
                 value={settings.vector_config.provider}
                 onChange={(e) => setSettings({ ...settings, vector_config: { ...settings.vector_config, provider: e.target.value } })}
@@ -934,8 +957,9 @@ export const Settings = () => {
 
             <div className="grid grid-cols-2 gap-4">
               <div>
-                <label className="block text-sm text-slate-400 mb-2">Host</label>
+                <label htmlFor="vector-host" className="block text-sm text-slate-400 mb-2">Host</label>
                 <input
+                  id="vector-host"
                   type="text"
                   value={settings.vector_config.host}
                   onChange={(e) => setSettings({ ...settings, vector_config: { ...settings.vector_config, host: e.target.value } })}
@@ -943,8 +967,9 @@ export const Settings = () => {
                 />
               </div>
               <div>
-                <label className="block text-sm text-slate-400 mb-2">Port</label>
+                <label htmlFor="vector-port" className="block text-sm text-slate-400 mb-2">Port</label>
                 <input
+                  id="vector-port"
                   type="text"
                   value={settings.vector_config.port}
                   onChange={(e) => setSettings({ ...settings, vector_config: { ...settings.vector_config, port: e.target.value } })}
@@ -964,8 +989,9 @@ export const Settings = () => {
         </div>
         <div className="space-y-4">
           <div>
-            <label className="block text-sm text-slate-400 mb-2">Application Name</label>
+            <label htmlFor="app-name" className="block text-sm text-slate-400 mb-2">Application Name</label>
             <input
+              id="app-name"
               type="text"
               value={settings.app_meta.app_name}
               onChange={(e) => setSettings({ ...settings, app_meta: { ...settings.app_meta, app_name: e.target.value } })}
@@ -974,8 +1000,9 @@ export const Settings = () => {
           </div>
 
           <div>
-            <label className="block text-sm text-slate-400 mb-2">Version</label>
+            <label htmlFor="app-version" className="block text-sm text-slate-400 mb-2">Version</label>
             <input
+              id="app-version"
               type="text"
               value={settings.app_meta.version}
               onChange={(e) => setSettings({ ...settings, app_meta: { ...settings.app_meta, version: e.target.value } })}
@@ -984,8 +1011,9 @@ export const Settings = () => {
           </div>
 
           <div>
-            <label className="block text-sm text-slate-400 mb-2">Project Name</label>
+            <label htmlFor="project-name" className="block text-sm text-slate-400 mb-2">Project Name</label>
             <input
+              id="project-name"
               type="text"
               value={settings.app_meta.project_name}
               onChange={(e) => setSettings({ ...settings, app_meta: { ...settings.app_meta, project_name: e.target.value } })}

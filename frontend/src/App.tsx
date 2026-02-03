@@ -225,6 +225,7 @@ function AuthenticatedApp({
           // Add summary as AI message
           const summaryMessage: ChatMessage = {
             id: generateMessageId(),
+            role: 'assistant',
             type: 'ai',
             content: summaryResponse.summary,
             timestamp: new Date(),
@@ -670,6 +671,7 @@ function AuthenticatedApp({
       // Re-visualization: Always create a new AI message for the new chart
       const userMessage: ChatMessage = {
         id: generateMessageId(),
+        role: 'user',
         type: 'user',
         content: query,
         timestamp: new Date(),
@@ -691,6 +693,7 @@ function AuthenticatedApp({
         // Create a new AI message for the new chart
         const aiMessage: ChatMessage = {
           id: generateMessageId(),
+          role: 'assistant',
           type: 'ai',
           content: 'Here is the updated visualization:',
           timestamp: new Date(),
@@ -730,6 +733,7 @@ function AuthenticatedApp({
 
         const errorMessage: ChatMessage = {
           id: generateMessageId(),
+          role: 'assistant',
           type: 'ai',
           content: errorContent,
           timestamp: new Date()
@@ -748,6 +752,7 @@ function AuthenticatedApp({
       // Re-visualization: Always create a new AI message for the new chart
       const userMessage: ChatMessage = {
         id: generateMessageId(),
+        role: 'user',
         type: 'user',
         content: query,
         timestamp: new Date(),
@@ -772,6 +777,7 @@ function AuthenticatedApp({
         // Create a new AI message for the new chart
         const aiMessage: ChatMessage = {
           id: generateMessageId(),
+          role: 'assistant',
           type: 'ai',
           content: 'Here is the updated visualization:',
           timestamp: new Date(),
@@ -808,6 +814,7 @@ function AuthenticatedApp({
 
         const errorMessage: ChatMessage = {
           id: generateMessageId(),
+          role: 'assistant',
           type: 'ai',
           content: errorContent,
           timestamp: new Date()
@@ -828,6 +835,7 @@ function AuthenticatedApp({
       // User wants a chart type change, SQL exists but hasn't been executed yet
       const userMessage: ChatMessage = {
         id: generateMessageId(),
+        role: 'user',
         type: 'user',
         content: query,
         timestamp: new Date(),
@@ -852,6 +860,7 @@ function AuthenticatedApp({
         // Create a new AI message with the visualization
         const aiMessage: ChatMessage = {
           id: generateMessageId(),
+          role: 'assistant',
           type: 'ai',
           content: `Here is the ${getChartTypeLabel(chartTypeOverride || 'line')} visualization:`,
           timestamp: new Date(),
@@ -887,6 +896,7 @@ function AuthenticatedApp({
 
         const errorMessage: ChatMessage = {
           id: generateMessageId(),
+          role: 'assistant',
           type: 'ai',
           content: errorContent,
           timestamp: new Date()
@@ -915,6 +925,7 @@ function AuthenticatedApp({
 
     const userMessage: ChatMessage = {
       id: generateMessageId(),
+      role: 'user',
       type: 'user',
       content: userMessageContent,
       timestamp: new Date(),
@@ -976,6 +987,7 @@ function AuthenticatedApp({
         // Handle AI response
         const aiMessage: ChatMessage = {
           id: generateMessageId(),
+          role: 'assistant',
           type: 'ai',
           content: result.explanation || 'Planning conversation continued.',
           timestamp: new Date(),
@@ -1090,6 +1102,7 @@ function AuthenticatedApp({
 
         const aiMessage: ChatMessage = {
           id: generateMessageId(),
+          role: 'assistant',
           type: 'ai',
           content: result.explanation || (result.query_type === 'database' ?
             'Here is the query statement you need to use to query the database:' :
@@ -1120,6 +1133,7 @@ function AuthenticatedApp({
         // Code Advisor response - display advice with code
         const aiMessage: ChatMessage = {
           id: generateMessageId(),
+          role: 'assistant',
           type: 'ai',
           content: result.explanation || 'Here is my code advice:',
           timestamp: new Date(),
@@ -1146,6 +1160,7 @@ function AuthenticatedApp({
 
         const aiMessage: ChatMessage = {
           id: generateMessageId(),
+          role: 'assistant',
           type: 'ai',
           content: result.explanation || 'I need clarification on your query.',
           timestamp: new Date(),
@@ -1164,6 +1179,7 @@ function AuthenticatedApp({
         // For general queries, just show the direct answer and clear history
         const aiMessage: ChatMessage = {
           id: generateMessageId(),
+          role: 'assistant',
           type: 'ai',
           content: result.explanation || 'I apologize, but I could not process your request.',
           timestamp: new Date(),
@@ -1196,6 +1212,7 @@ function AuthenticatedApp({
       if (abortedRef.current || errorWithName.name === 'AbortError') {
         const cancelMessage: ChatMessage = {
           id: generateMessageId(),
+          role: 'assistant',
           type: 'ai',
           content: 'Request cancelled.',
           timestamp: new Date()
@@ -1216,6 +1233,7 @@ function AuthenticatedApp({
       // Add error message to chat history
       const errorMessage: ChatMessage = {
         id: generateMessageId(),
+        role: 'assistant',
         type: 'ai',
         content: errorDisplay,
         timestamp: new Date()
