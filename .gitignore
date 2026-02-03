@@ -87,6 +87,7 @@ htmlcov/
 # System files
 .DS_Store
 Thumbs.db
+NUL
 
 ### --- Custom Entries --- ###
 context_logs/
