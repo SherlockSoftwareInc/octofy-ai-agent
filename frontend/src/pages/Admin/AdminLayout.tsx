@@ -1,5 +1,5 @@
 import { useState, type ReactNode, type FC } from 'react';
-import { LayoutDashboard, Database, BookOpen, Layers, Settings, ArrowLeft, Gift, Server } from 'lucide-react';
+import { LayoutDashboard, Database, BookOpen, Layers, Settings, ArrowLeft, Gift, Server, Users } from 'lucide-react';
 
 interface AdminLayoutProps {
     children: ReactNode;
@@ -91,6 +91,15 @@ export const AdminLayout: FC<AdminLayoutProps> = ({ children, currentPage, onNav
 
                     {/* Separator */}
                     <div className="border-t border-slate-800 my-2"></div>
+
+                    <button
+                        onClick={() => handleNavigation('users')}
+                        disabled={isUploading}
+                        className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-all ${currentPage === 'users' ? 'bg-cyan-600/20 text-cyan-300 border border-cyan-500/30' : 'text-slate-400 hover:bg-slate-800 hover:text-white'} ${isUploading ? 'opacity-50 cursor-not-allowed' : ''}`}
+                    >
+                        <Users size={20} />
+                        User Management
+                    </button>
 
                     <button
                         onClick={() => handleNavigation('settings')}

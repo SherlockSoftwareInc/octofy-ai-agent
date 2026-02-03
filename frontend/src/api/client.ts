@@ -1153,6 +1153,59 @@ export const api = {
         }
     },
 
+    // User Management (Admin)
+    users: {
+        list: async (skip: number = 0, limit: number = 100): Promise<UserListResponse> => {
+            const response = await axios.get(`${API_BASE_URL}/admin/users`, {
+                params: { skip, limit }
+            });
+            return response.data;
+        },
+        get: async (userId: number): Promise<UserDetailResponse> => {
+            const response = await axios.get(`${API_BASE_URL}/admin/users/${userId}`);
+            return response.data;
+        },
+        create: async (userData: AdminUserCreate): Promise<UserResponse> => {
+            const response = await axios.post(`${API_BASE_URL}/admin/users`, userData);
+            return response.data;
+        },
+        update: async (userId: number, userData: AdminUserUpdate): Promise<UserResponse> => {
+            const response = await axios.put(`${API_BASE_URL}/admin/users/${userId}`, userData);
+            return response.data;
+        },
+        delete: async (userId: number): Promise<void> => {
+            await axios.delete(`${API_BASE_URL}/admin/users/${userId}`);
+        },
+        regenerateApiKey: async (userId: number): Promise<{ api_key: string; message: string }> => {
+            const response = await axios.post(`${API_BASE_URL}/admin/users/${userId}/regenerate-api-key`);
+            return response.data;
+        },
+        // User Statistics
+        getStats: async (userId: number, days: number = 30): Promise<UserStatistics> => {
+            const response = await axios.get(`${API_BASE_URL}/admin/users/${userId}/stats`, {
+                params: { days }
+            });
+            return response.data;
+        },
+        getActivities: async (
+            userId: number,
+            skip: number = 0,
+            limit: number = 50,
+            filters?: ActivityFilters
+        ): Promise<ActivityLogResponse> => {
+            const response = await axios.get(`${API_BASE_URL}/admin/users/${userId}/activities`, {
+                params: { skip, limit, ...filters }
+            });
+            return response.data;
+        },
+        getOverview: async (days: number = 7): Promise<UsersOverview> => {
+            const response = await axios.get(`${API_BASE_URL}/admin/users/overview`, {
+                params: { days }
+            });
+            return response.data;
+        }
+    },
+
     // Generic client for backward compatibility
     client: axios
 };
@@ -1500,3 +1553,97 @@ export const generatePlanningSummary = async (
     });
     return response.data;
 };
+
+
+// ============================================================================
+// User Management Types
+// ============================================================================
+
+export interface UserResponse {
+    id: number;
+    username: string;
+    email: string | null;
+    full_name: string | null;
+    role: 'admin' | 'user';
+    is_active: boolean;
+    created_at: string;
+    last_login_at: string | null;
+}
+
+export interface UserDetailResponse extends UserResponse {
+    api_key: string;
+}
+
+export interface UserListResponse {
+    users: UserResponse[];
+    total: number;
+}
+
+export interface AdminUserCreate {
+    username: string;
+    email?: string;
+    full_name?: string;
+    password: string;
+    role: 'admin' | 'user';
+}
+
+export interface AdminUserUpdate {
+    email?: string;
+    full_name?: string;
+    password?: string;
+    is_active?: boolean;
+    role?: 'admin' | 'user';
+}
+
+export interface UserActivity {
+    id: number;
+    user_id: number;
+    activity_type: string;
+    activity_data: any;
+    tokens_used: number | null;
+    execution_time: number | null;
+    success: boolean;
+    error_message: string | null;
+    ip_address: string | null;
+    user_agent: string | null;
+    created_at: string;
+}
+
+export interface ActivityFilters {
+    activity_type?: string;
+    success_only?: boolean;
+    start_date?: string;
+    end_date?: string;
+}
+
+export interface ActivityLogResponse {
+    activities: UserActivity[];
+    total: number;
+    skip: number;
+    limit: number;
+}
+
+export interface UserStatistics {
+    user_id: number;
+    period_days: number;
+    total_activities: number;
+    activities_by_type: Record<string, number>;
+    success_count: number;
+    failure_count: number;
+    success_rate: number;
+    total_tokens_used: number;
+    avg_execution_time: number;
+    recent_activities: UserActivity[];
+    daily_trend: Array<{ date: string; count: number }>;
+    conversation_count: number;
+    user_info: UserResponse;
+}
+
+export interface UsersOverview {
+    period_days: number;
+    total_users: number;
+    total_activities: number;
+    total_tokens_used: number;
+    top_users: Array<{ user_id: number; activity_count: number }>;
+    activity_by_type: Record<string, number>;
+}
