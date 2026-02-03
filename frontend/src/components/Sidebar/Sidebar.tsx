@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Plus, MessageSquare, Trash2, Edit2, Search, Calendar, Clock, MoreVertical, ChevronLeft, ChevronRight } from 'lucide-react';
+import { Plus, MessageSquare, Trash2, Edit2, Search, Calendar, Clock, MoreVertical, ChevronLeft, ChevronRight, User } from 'lucide-react';
 import type { Conversation } from '../../types/conversation';
 
 interface SidebarProps {
@@ -9,6 +9,7 @@ interface SidebarProps {
   onNewConversation: () => void;
   onDeleteConversation: (id: string) => void;
   onRenameConversation: (id: string, newTitle: string) => void;
+  onOpenProfile?: () => void;  // New prop for profile
 }
 
 export function Sidebar({
@@ -18,6 +19,7 @@ export function Sidebar({
   onNewConversation,
   onDeleteConversation,
   onRenameConversation,
+  onOpenProfile,
 }: SidebarProps) {
   const [searchQuery, setSearchQuery] = useState('');
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -242,7 +244,19 @@ export function Sidebar({
           </div>
 
           {/* Footer */}
-          <div className="p-3 border-t border-slate-800">
+          <div className="p-3 border-t border-slate-800 space-y-2">
+            {/* User Profile Button */}
+            {onOpenProfile && (
+              <button
+                onClick={onOpenProfile}
+                className="w-full flex items-center gap-3 px-3 py-2 hover:bg-slate-800 rounded-lg transition-colors text-slate-300 hover:text-white"
+              >
+                <div className="w-8 h-8 rounded-full bg-gradient-to-br from-purple-500 to-pink-500 flex items-center justify-center">
+                  <User size={16} className="text-white" />
+                </div>
+                <span className="text-sm font-medium">Profile</span>
+              </button>
+            )}
             <div className="text-xs text-slate-600 text-center">
               {conversations.length} conversation{conversations.length !== 1 ? 's' : ''}
             </div>

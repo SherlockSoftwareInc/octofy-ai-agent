@@ -2,7 +2,6 @@ import axios from 'axios';
 
 // Default values
 const DEFAULT_API_BASE_URL = '/api/v1';
-const DEFAULT_API_KEY = '***REMOVED***';
 
 // Get configuration from localStorage with fallbacks
 const getApiBaseUrl = () => {
@@ -10,7 +9,7 @@ const getApiBaseUrl = () => {
 };
 
 const getApiKey = () => {
-    return localStorage.getItem('api_key') || DEFAULT_API_KEY;
+    return localStorage.getItem('api_key');
 };
 
 // Use dynamic API base URL
@@ -19,8 +18,13 @@ const API_BASE_URL = getApiBaseUrl();
 // Configure axios to include API key in all requests
 axios.interceptors.request.use(
     (config) => {
-        // Add API key header to all requests (get fresh value each time)
-        config.headers['X-API-Key'] = getApiKey();
+        // Add API key if available (unless it's a login request)
+        if (!config.url?.includes('/auth/login')) {
+            const apiKey = getApiKey();
+            if (apiKey) {
+                config.headers['X-API-Key'] = apiKey;
+            }
+        }
 
         // Update base URL if it's using our API calls
         if (config.url?.startsWith('/api/v1') ||
@@ -41,6 +45,21 @@ axios.interceptors.request.use(
         return config;
     },
     (error) => {
+        return Promise.reject(error);
+    }
+);
+
+// Add response interceptor to handle 401 errors
+axios.interceptors.response.use(
+    (response) => response,
+    (error) => {
+        if (error.response?.status === 401) {
+            // API key expired or invalid, clear tokens and reload to show login
+            localStorage.removeItem('api_key');
+            localStorage.removeItem('api_key_timestamp');
+            // Reload the page to trigger AuthContext to show login screen
+            window.location.href = '/';
+        }
         return Promise.reject(error);
     }
 );
@@ -213,10 +232,13 @@ export const api = {
         planningContext?: any
     ): Promise<GenerateSQLResponse> => {
         const url = `${API_BASE_URL}/generate-sql`;
-        const headers = {
+        const apiKey = getApiKey();
+        const headers: Record<string, string> = {
             'Content-Type': 'application/json',
-            'X-API-Key': getApiKey()
         };
+        if (apiKey) {
+            headers['X-API-Key'] = apiKey;
+        }
         const body = JSON.stringify({ 
             query, 
             context, 
@@ -283,10 +305,13 @@ export const api = {
 
     generateRStream: async (query: string, onStatus: (status: AgentStatus) => void, context?: DiscoveryContext, signal?: AbortSignal): Promise<GenerateSQLResponse> => {
         const url = `${API_BASE_URL}/generate-r`;
-        const headers = {
+        const apiKey = getApiKey();
+        const headers: Record<string, string> = {
             'Content-Type': 'application/json',
-            'X-API-Key': getApiKey()
         };
+        if (apiKey) {
+            headers['X-API-Key'] = apiKey;
+        }
         const body = JSON.stringify({ query, context });
 
         const response = await fetch(url, {
@@ -344,10 +369,13 @@ export const api = {
 
     generateSASStream: async (query: string, onStatus: (status: AgentStatus) => void, context?: DiscoveryContext, signal?: AbortSignal): Promise<GenerateSQLResponse> => {
         const url = `${API_BASE_URL}/generate-sas`;
-        const headers = {
+        const apiKey = getApiKey();
+        const headers: Record<string, string> = {
             'Content-Type': 'application/json',
-            'X-API-Key': getApiKey()
         };
+        if (apiKey) {
+            headers['X-API-Key'] = apiKey;
+        }
         const body = JSON.stringify({ query, context });
 
         const response = await fetch(url, {
@@ -405,10 +433,13 @@ export const api = {
 
     generatePythonStream: async (query: string, onStatus: (status: AgentStatus) => void, context?: DiscoveryContext, signal?: AbortSignal): Promise<GenerateSQLResponse> => {
         const url = `${API_BASE_URL}/generate-python`;
-        const headers = {
+        const apiKey = getApiKey();
+        const headers: Record<string, string> = {
             'Content-Type': 'application/json',
-            'X-API-Key': getApiKey()
         };
+        if (apiKey) {
+            headers['X-API-Key'] = apiKey;
+        }
         const body = JSON.stringify({ query, context });
 
         const response = await fetch(url, {
@@ -466,10 +497,13 @@ export const api = {
 
     generateCodeAdvisorStream: async (query: string, onStatus: (status: AgentStatus) => void, signal?: AbortSignal, queryHistory?: string): Promise<GenerateSQLResponse> => {
         const url = `${getApiBaseUrl()}/code-advisor`;
-        const headers = {
+        const apiKey = getApiKey();
+        const headers: Record<string, string> = {
             'Content-Type': 'application/json',
-            'X-API-Key': getApiKey()
         };
+        if (apiKey) {
+            headers['X-API-Key'] = apiKey;
+        }
         const body = JSON.stringify({ query, queryHistory });
 
         const response = await fetch(url, {
@@ -1088,6 +1122,36 @@ export const api = {
         }
     },
 
+    // Conversation Management
+    conversations: {
+        list: async (skip: number = 0, limit: number = 50) => {
+            const response = await axios.get(`${API_BASE_URL}/conversations`, {
+                params: { skip, limit }
+            });
+            return response.data;
+        },
+        get: async (conversationId: number) => {
+            const response = await axios.get(`${API_BASE_URL}/conversations/${conversationId}`);
+            return response.data;
+        },
+        create: async (title: string | null, messages: any[]) => {
+            const response = await axios.post(`${API_BASE_URL}/conversations`, {
+                title,
+                messages
+            });
+            return response.data;
+        },
+        update: async (conversationId: number, title?: string, messages?: any[]) => {
+            const response = await axios.put(`${API_BASE_URL}/conversations/${conversationId}`, {
+                title,
+                messages
+            });
+            return response.data;
+        },
+        delete: async (conversationId: number) => {
+            await axios.delete(`${API_BASE_URL}/conversations/${conversationId}`);
+        }
+    },
 
     // Generic client for backward compatibility
     client: axios

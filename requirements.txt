@@ -12,7 +12,6 @@ pandas>=2.2.0
 openpyxl==3.1.0
 cryptography==42.0.5
 python-multipart==0.0.6
-litellm>=1.0.0
 markdown==3.10.1
 psycopg2-binary==2.9.9
 python-jose[cryptography]==3.3.0
