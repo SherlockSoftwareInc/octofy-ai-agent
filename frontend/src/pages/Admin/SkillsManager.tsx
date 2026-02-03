@@ -305,7 +305,10 @@ export const SkillsManager: React.FC = () => {
                             </>
                         ) : (
                             <>
-                                {isExpanded ? (
+                                {depth === 1 ? (
+                                    // Data sources (root level folders) use database icon
+                                    <Database size={16} className="text-blue-400" />
+                                ) : isExpanded ? (
                                     <FolderOpen size={16} className="text-amber-400" />
                                 ) : (
                                     <Folder size={16} className="text-amber-400" />
@@ -336,7 +339,7 @@ export const SkillsManager: React.FC = () => {
                     <div className="flex items-center justify-between mb-4">
                         <div className="flex items-center gap-2">
                             <FolderTree size={20} className="text-indigo-400" />
-                            <h3 className="text-lg font-medium">Skills Folder</h3>
+                            <h3 className="text-lg font-medium">Schema Library</h3>
                         </div>
                         <button
                             onClick={() => setShowCreateDataSourceModal(true)}
@@ -358,7 +361,7 @@ export const SkillsManager: React.FC = () => {
                             ) : (
                                 <div className="text-center py-8 text-slate-400">
                                     <FolderTree size={48} className="mx-auto mb-2 opacity-50" />
-                                    <p>No skills folder found</p>
+                                    <p>No schema library folder found</p>
                                 </div>
                             )}
                         </div>
