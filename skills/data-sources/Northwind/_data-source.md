@@ -1,11 +1,8 @@
 # Dbo Database
 
 **Type:** SQL Server  
-**Server:** Unknown (see settings)  
-**Database:** Unknown (see settings)  
-**Status:** Active  
-**Maintainer:** Database Administrator  
-**Last Sync:** Auto-generated from Milvus
+**Server:** Localhost
+**Database:** Northwind
 
 ## Description
 
@@ -18,8 +15,6 @@ Database schema: dbo. Contains 39 tables. Auto-generated from Milvus.
 
 ## Schema Notes
 
-This data source was auto-generated from the Milvus schema_index collection.
-Please manually enhance with:
 - Specific time ranges
 - Update frequency
 - Cross-schema references
