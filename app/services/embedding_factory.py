@@ -66,7 +66,16 @@ class EmbeddingFactory:
         client = OpenAI(api_key=api_key, base_url=base_url)
         
         def get_embedding(text: str) -> List[float]:
-            text = text.replace("\n", " ")
+            # Validate input
+            if not text or not isinstance(text, str):
+                raise ValueError(f"Invalid embedding input: text must be a non-empty string, got: {type(text).__name__}")
+            
+            text = text.replace("\n", " ").strip()
+            
+            # Additional safety check after cleaning
+            if not text:
+                raise ValueError("Embedding input is empty after cleaning")
+            
             try:
                 response = client.embeddings.create(input=[text], model=config.model)
                 return response.data[0].embedding
@@ -76,8 +85,14 @@ class EmbeddingFactory:
                 raise e
 
         def get_embeddings(texts: List[str]) -> List[List[float]]:
-            # Replace newlines
-            clean_texts = [t.replace("\n", " ") for t in texts]
+            # Validate inputs
+            if not texts or not all(isinstance(t, str) and t.strip() for t in texts):
+                invalid = [i for i, t in enumerate(texts) if not isinstance(t, str) or not t.strip()]
+                raise ValueError(f"Invalid embedding inputs at indices: {invalid}. All texts must be non-empty strings.")
+            
+            # Replace newlines and strip
+            clean_texts = [t.replace("\n", " ").strip() for t in texts]
+            
             try:
                 response = client.embeddings.create(input=clean_texts, model=config.model)
                 # Ensure order is preserved. OpenAI returns list of embedding objects with index.

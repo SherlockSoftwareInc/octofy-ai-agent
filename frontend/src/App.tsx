@@ -607,8 +607,16 @@ function AuthenticatedApp({
   };
 
   const handleSend = async () => {
-    // Allow sending if query has content OR if we have a planning summary in non-plan mode
-    if (!query.trim() && !(planningSummary && queryMode !== 'plan')) return;
+    // Allow sending if:
+    // 1. Query has content, OR
+    // 2. We have a planning summary in non-plan mode, OR
+    // 3. We're in plan mode and user has selected tables (table selection submission)
+    const hasSelectedTables = selectedObjects.length > 0;
+    const canSubmit = query.trim() || 
+                      (planningSummary && queryMode !== 'plan') ||
+                      (queryMode === 'plan' && hasSelectedTables);
+    
+    if (!canSubmit) return;
 
     // Create new conversation if none exists
     let conversationId = activeConversationId;
@@ -967,7 +975,8 @@ function AuthenticatedApp({
           'plan',
           abortControllerRef.current.signal,
           undefined,
-          planningContext
+          planningContext,
+          selectedObjects.length > 0 ? selectedObjects : undefined  // Pass selected tables for table selection submissions
         );
 
         // Update planning context from response
