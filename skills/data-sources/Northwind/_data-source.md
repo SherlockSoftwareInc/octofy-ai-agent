@@ -33,4 +33,5 @@ Sales database for imported and exported specialty foods. This database contains
 ## Physical Schemas
 
 All table schemas are stored in the `schemas/` directory, organized by database schema:
+
 - **schemas/dbo/** - Dbo schema tables

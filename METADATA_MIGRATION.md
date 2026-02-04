@@ -7,6 +7,7 @@ Database metadata (friendly name, description, and keywords) has been moved from
 ## What Changed
 
 ### Before (v1)
+
 ```json
 {
   "target_db": {
@@ -21,7 +22,9 @@ Database metadata (friendly name, description, and keywords) has been moved from
 ```
 
 ### After (v2)
+
 **agent_settings.json** - Connection settings only:
+
 ```json
 {
   "target_db": {
@@ -37,6 +40,7 @@ Database metadata (friendly name, description, and keywords) has been moved from
 ```
 
 **skills/data-sources/Northwind/_data-source.md** - Metadata and documentation:
+
 ```markdown
 # Northwind Database
 
@@ -71,6 +75,7 @@ python scripts/migrate_metadata_to_skills.py
 ```
 
 This will:
+
 1. Read metadata from `agent_settings.json`
 2. Update `_data-source.md` with the metadata
 3. Remove metadata fields from `agent_settings.json`
@@ -83,6 +88,7 @@ If you prefer to migrate manually:
 1. **Open your _data-source.md file** (e.g., `skills/data-sources/Northwind/_data-source.md`)
 
 2. **Add metadata section** after the header:
+
    ```markdown
    # [Your Database Name]
    
@@ -123,13 +129,15 @@ If you prefer to migrate manually:
 
 ## API Impact
 
-### No Breaking Changes for:
+### No Breaking Changes for
+
 - Connection testing endpoints
 - Database query execution
 - Schema synchronization
 - All other database operations
 
-### Changed Behavior:
+### Changed Behavior
+
 - `GET /api/v1/settings`: No longer returns `friendly_name`, `description`, `keywords` in `target_db`
 - SQL generation now reads metadata from skills files automatically
 - Settings UI no longer shows metadata input fields (now read-only note)
@@ -147,6 +155,7 @@ The system gracefully handles both old and new formats:
 ### Issue: "Database metadata not loading"
 
 **Check:**
+
 ```powershell
 python -c "from app.services.skills_service import get_skills_service; ds = get_skills_service().load_primary_data_source(); print(ds)"
 ```
@@ -156,6 +165,7 @@ python -c "from app.services.skills_service import get_skills_service; ds = get_
 ### Issue: "Keywords not appearing in prompts"
 
 **Check:** Verify keywords are comma-separated in the markdown file:
+
 ```markdown
 **Keywords:** sales, customers, orders
 ```
@@ -167,6 +177,7 @@ python -c "from app.services.skills_service import get_skills_service; ds = get_
 ## Files Modified
 
 ### Backend
+
 - `app/models/schemas.py`
 - `app/services/settings_service.py`
 - `app/services/generation_service.py`
@@ -174,13 +185,16 @@ python -c "from app.services.skills_service import get_skills_service; ds = get_
 - `config/agent_settings.json`
 
 ### Frontend
+
 - `frontend/src/pages/Admin/Settings.tsx`
 - `frontend/src/api/client.ts`
 
 ### Documentation
+
 - `skills/data-sources/Northwind/_data-source.md`
 
 ### Scripts
+
 - `scripts/migrate_metadata_to_skills.py` (new)
 
 ## Future Enhancements
@@ -193,6 +207,7 @@ python -c "from app.services.skills_service import get_skills_service; ds = get_
 ## Questions?
 
 If you encounter issues:
+
 1. Check `_data-source.md` formatting matches the examples above
 2. Verify skills service can load the file (see troubleshooting section)
 3. Review console output for parsing errors
