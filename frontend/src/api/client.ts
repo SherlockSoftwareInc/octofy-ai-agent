@@ -1281,9 +1281,6 @@ export interface ContributionResponse {
 
 // Settings Types
 export interface TargetDBConfig {
-    friendly_name: string;
-    description: string;
-    keywords: string[];
     db_type: string;
     server: string;
     database_name: string;
@@ -1325,7 +1322,7 @@ export interface AppMeta {
 }
 
 export interface AgentSettings {
-    target_db: TargetDBConfig;
+    target_db?: TargetDBConfig;  // Optional - connection info now from _data-source.md
     llm_config: LLMConfig;
     embedding_config: EmbeddingConfig;
     vector_config: VectorConfig;

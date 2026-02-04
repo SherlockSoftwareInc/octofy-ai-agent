@@ -22,6 +22,9 @@ def get_database_engine(source_id: Optional[str] = None) -> Engine:
     """
     Get database engine for a specific data source or the primary source.
     
+    Connection string is built from _data-source.md in skills directory.
+    Uses Windows Authentication by default.
+    
     Args:
         source_id: Optional data source identifier. If None, uses primary source.
         
@@ -31,51 +34,48 @@ def get_database_engine(source_id: Optional[str] = None) -> Engine:
     Raises:
         ValueError: If source not found or connection string not configured
     """
-    # Load settings
-    agent_settings = load_settings()
-    
-    # Determine which source to use
-    if source_id is None:
-        # Use primary source or single v1 source
-        if hasattr(agent_settings, 'data_sources'):
-            # V2 config - use primary
-            if not agent_settings.data_sources:
-                raise ValueError("No data sources configured")
-            
-            if agent_settings.primary_source_id:
-                source_id = agent_settings.primary_source_id
-            else:
-                source_id = agent_settings.data_sources[0].source_id
-        else:
-            # V1 config - use target_db (use a fixed key)
-            source_id = "legacy_v1"
-    
     # Check cache
-    if source_id in _engines:
-        return _engines[source_id]
+    cache_key = source_id or "primary"
+    if cache_key in _engines:
+        return _engines[cache_key]
     
-    # Build connection string
-    conn_str = None
+    # Build connection string from _data-source.md
+    from app.services.skills_service import get_skills_service
+    skills_service = get_skills_service()
+    data_source = skills_service.load_primary_data_source()
     
-    if source_id == "legacy_v1":
-        # V1 configuration
-        if hasattr(agent_settings, 'target_db') and agent_settings.target_db.connection_string_encrypted:
-            conn_str = decrypt_string(agent_settings.target_db.connection_string_encrypted)
-    else:
-        # V2 configuration
-        if hasattr(agent_settings, 'data_sources'):
-            source = next((s for s in agent_settings.data_sources if s.source_id == source_id), None)
-            if source and source.connection_string_encrypted:
-                conn_str = decrypt_string(source.connection_string_encrypted)
-            else:
-                raise ValueError(f"Data source {source_id} not found or not configured")
+    if not data_source:
+        raise ValueError("No data source configuration found in skills directory")
     
-    # Fallback to environment variable
-    if not conn_str:
+    # Extract server and database from data source metadata
+    # These are stored as markdown fields: **Server:** localhost, **Database:** northwind
+    import re
+    server_match = re.search(r'\*\*Server:\*\*\s*([^\n]+)', data_source.description or '')
+    database_match = re.search(r'\*\*Database:\*\*\s*([^\n]+)', data_source.description or '')
+    
+    # Also check in the raw file content for metadata at the top
+    if not server_match or not database_match:
+        # Try to load from file path directly
+        if hasattr(data_source, 'file_path') and data_source.file_path:
+            from pathlib import Path
+            file_content = Path(data_source.file_path).read_text(encoding='utf-8')
+            if not server_match:
+                server_match = re.search(r'\*\*Server:\*\*\s*([^\n]+)', file_content)
+            if not database_match:
+                database_match = re.search(r'\*\*Database:\*\*\s*([^\n]+)', file_content)
+    
+    if not server_match or not database_match:
+        # Fallback to environment variable
         conn_str = settings.SQL_SERVER_CONNECTION_STRING
-    
-    if not conn_str:
-        raise ValueError(f"Connection string not configured for source {source_id}")
+        if not conn_str:
+            raise ValueError("Could not extract Server/Database from _data-source.md and no fallback connection string available")
+    else:
+        server = server_match.group(1).strip()
+        database = database_match.group(1).strip()
+        
+        # Build connection string using Windows Authentication
+        driver = "ODBC Driver 17 for SQL Server"
+        conn_str = f"Driver={{{driver}}};Server={server};Database={database};Trusted_Connection=yes;Encrypt=yes;TrustServerCertificate=yes"
     
     # Build SQLAlchemy connection string
     if not conn_str.startswith("mssql"):
@@ -84,7 +84,7 @@ def get_database_engine(source_id: Optional[str] = None) -> Engine:
     
     # Create and cache engine
     engine = create_engine(conn_str)
-    _engines[source_id] = engine
+    _engines[cache_key] = engine
     
     return engine
 

@@ -3,6 +3,7 @@ Settings Service - Manages agent configuration with encryption for sensitive dat
 """
 import json
 import os
+import logging
 import hashlib
 from typing import Optional, Union
 from cryptography.fernet import Fernet
@@ -99,21 +100,8 @@ def build_connection_string(driver: str, server: str, database: str, auth_type: 
 
 def get_default_settings() -> AgentSettings:
     """Return default settings if no configuration exists"""
+    # Note: target_db removed - connection info now comes from _data-source.md
     return AgentSettings(
-        target_db=TargetDBConfig(
-            friendly_name="Northwind Database",
-            description="Sales database for imported and exported specialty foods",
-            keywords=["sales", "customers", "orders", "products", "employees", "shipping"],
-            db_type="mssql",
-            server="",
-            database_name="",
-            connection_string_encrypted="",
-            python_connection_string_encrypted="",
-            driver="ODBC Driver 17 for SQL Server",
-            auth_type="sql",
-            username=None,
-            trust_server_certificate=False
-        ),
         llm_config=LLMConfig(
             llm_model=app_settings.OPENAI_MODEL,
             temperature=0.0
@@ -168,6 +156,11 @@ def _apply_runtime_defaults(settings_obj: Union[AgentSettings, AgentSettingsV2])
 
 
 def _load_v1_settings(data: dict) -> AgentSettings:
+    """Load v1 settings format.
+    
+    Note: Data sources are NEVER loaded from agent_settings.json.
+    They are always loaded from skills/_data-source.md files.
+    """
     data = data.copy()
 
     # Legacy migration for embedding config
@@ -182,7 +175,10 @@ def _load_v1_settings(data: dict) -> AgentSettings:
             "base_url": None
         }
 
-    data.setdefault("target_db", {})
+    # IMPORTANT: target_db is now deprecated - connection info comes from _data-source.md
+    # Remove it from data to avoid validation errors
+    data.pop("target_db", None)
+    
     data.setdefault("llm_config", {})
     data.setdefault("embedding_config", {})
     data.setdefault("vector_config", {})
@@ -193,9 +189,15 @@ def _load_v1_settings(data: dict) -> AgentSettings:
 
 
 def _load_v2_settings(data: dict) -> AgentSettingsV2:
+    """Load v2 settings format.
+    
+    Note: Data sources are NEVER loaded from agent_settings.json.
+    They are always loaded from skills/_data-source.md files.
+    The data_sources field is deprecated and ignored.
+    """
     normalized = {
-        "data_sources": data.get("data_sources", []),
-        "primary_source_id": data.get("primary_source_id"),
+        "data_sources": [],  # Always empty - data sources come from skills directory
+        "primary_source_id": None,  # Not used when loading from skills
         "llm_config": data.get("llm_config", {}),
         "embedding_config": data.get("embedding_config", {}),
         "vector_config": data.get("vector_config", {}),
@@ -203,15 +205,16 @@ def _load_v2_settings(data: dict) -> AgentSettingsV2:
     }
 
     settings_v2 = AgentSettingsV2(**normalized)
-
-    if settings_v2.data_sources and not settings_v2.primary_source_id:
-        settings_v2.primary_source_id = settings_v2.data_sources[0].source_id
-
     return _apply_runtime_defaults(settings_v2)
 
 
 def load_settings() -> Union[AgentSettings, AgentSettingsV2]:
-    """Load settings from file, handling both v1 and v2 formats."""
+    """Load settings from file, handling both v1 and v2 formats.
+    
+    Note: Data sources are NEVER loaded from agent_settings.json.
+    The presence of 'data_sources' key is ignored - all data sources
+    are loaded from skills/_data-source.md files.
+    """
     if not os.path.exists(SETTINGS_FILE):
         return get_default_settings()
 
@@ -222,9 +225,8 @@ def load_settings() -> Union[AgentSettings, AgentSettingsV2]:
         if not isinstance(data, dict):
             raise ValueError("Settings file must be a JSON object")
 
-        if "data_sources" in data:
-            return _load_v2_settings(data)
-
+        # Always load as v1 format (skills-based data sources)
+        # The 'data_sources' key is deprecated and ignored
         return _load_v1_settings(data)
 
     except Exception as e:
@@ -252,77 +254,57 @@ def decrypt_connection_string(encrypted_string: str) -> str:
 
 def get_data_source(source_id: str) -> Optional[TargetDBConfigV2]:
     """
-    Retrieve a specific data source by ID from settings.
+    DEPRECATED: Data sources are no longer stored in agent_settings.json.
+    Use skills_service.load_data_source() instead to load from skills directory.
     
     Args:
         source_id: Data source identifier
         
     Returns:
-        TargetDBConfigV2 instance or None if not found
+        Always returns None (deprecated functionality)
     """
-    settings = load_settings()
-    
-    # Check if v2 configuration
-    if not hasattr(settings, 'data_sources'):
-        return None
-    
-    return next((s for s in settings.data_sources if s.source_id == source_id), None)
+    logger = logging.getLogger(__name__)
+    logger.warning(
+        "get_data_source() is deprecated. Data sources are only loaded from skills/_data-source.md files. "
+        "Use skills_service.load_data_source() instead."
+    )
+    return None
 
 
 def add_data_source(source: TargetDBConfigV2) -> None:
     """
-    Add a new data source to settings and save.
+    DEPRECATED: Data sources are no longer stored in agent_settings.json.
+    Use the Admin UI to add data sources via skills directory.
     
     Args:
         source: TargetDBConfigV2 instance to add
+        
+    Raises:
+        ValueError: Always raises - functionality is deprecated
     """
-    settings = load_settings()
-    
-    # Ensure v2 format
-    if not hasattr(settings, 'data_sources'):
-        raise ValueError("Configuration not in v2 format. Run migration first.")
-    
-    # Check for duplicate source_id
-    if any(s.source_id == source.source_id for s in settings.data_sources):
-        raise ValueError(f"Data source with ID {source.source_id} already exists")
-    
-    settings.data_sources.append(source)
-    
-    # If this is the first source, set as primary
-    if settings.primary_source_id is None:
-        settings.primary_source_id = source.source_id
-    
-    save_settings(settings)
+    raise ValueError(
+        "add_data_source() is deprecated. Data sources are only managed via skills/_data-source.md files. "
+        "Use the Admin > Data Sources UI to add new data sources."
+    )
 
 
 def remove_data_source(source_id: str) -> bool:
     """
-    Remove a data source from settings.
+    DEPRECATED: Data sources are no longer stored in agent_settings.json.
+    Use the Admin UI to manage data sources via skills directory.
     
     Args:
         source_id: Data source identifier
         
     Returns:
-        True if removed, False if not found
+        Always returns False (deprecated functionality)
     """
-    settings = load_settings()
-    
-    if not hasattr(settings, 'data_sources'):
-        return False
-    
-    # Find and remove
-    original_count = len(settings.data_sources)
-    settings.data_sources = [s for s in settings.data_sources if s.source_id != source_id]
-    
-    if len(settings.data_sources) == original_count:
-        return False  # Not found
-    
-    # Update primary if needed
-    if settings.primary_source_id == source_id:
-        settings.primary_source_id = settings.data_sources[0].source_id if settings.data_sources else None
-    
-    save_settings(settings)
-    return True
+    logger = logging.getLogger(__name__)
+    logger.warning(
+        "remove_data_source() is deprecated. Data sources are only managed via skills/_data-source.md files. "
+        "Use the Admin > Data Sources UI to manage data sources."
+    )
+    return False
 
 
 def set_primary_source(source_id: str) -> bool:
@@ -400,13 +382,23 @@ def update_source_object_count(source_id: str, count: int) -> bool:
 
 
 def save_settings(agent_settings: AgentSettings) -> bool:
-    """Save settings to file"""
+    """Save settings to file.
+    
+    Note: Data sources are NEVER saved to agent_settings.json.
+    They are only managed via skills/_data-source.md files.
+    """
     try:
         # Ensure config directory exists
         os.makedirs(os.path.dirname(SETTINGS_FILE), exist_ok=True)
         
         # Prepare for save - remove debug fields
         data = agent_settings.model_dump()
+        
+        # CRITICAL: Remove data_sources and primary_source_id if present
+        # Data sources are ONLY stored in skills directory, never in agent_settings.json
+        data.pop('data_sources', None)
+        data.pop('primary_source_id', None)
+        
         if 'target_db' in data:
              if 'connection_string_decrypted' in data['target_db']:
                 del data['target_db']['connection_string_decrypted']
@@ -567,33 +559,7 @@ def get_settings_for_display() -> Union[AgentSettings, AgentSettingsV2]:
         display_settings.embedding_config.api_key = _mask_api_key(display_settings.embedding_config.api_key)
         return display_settings
 
-    # Legacy single-source configuration (v1)
-    if settings.target_db.connection_string_encrypted:
-        decrypted = decrypt_string(settings.target_db.connection_string_encrypted)
-        server, database = _populate_connection_metadata(decrypted, settings.target_db.server, settings.target_db.database_name)
-
-        settings = AgentSettings(
-            target_db=TargetDBConfig(
-                friendly_name=settings.target_db.friendly_name,
-                description=settings.target_db.description,
-                keywords=settings.target_db.keywords,
-                db_type=settings.target_db.db_type,
-                server=server,
-                database_name=database,
-                connection_string_encrypted=settings.target_db.connection_string_encrypted,
-                connection_string_decrypted=None,
-                python_connection_string_encrypted=settings.target_db.python_connection_string_encrypted,
-                python_connection_string_decrypted=None,
-                driver=settings.target_db.driver,
-                auth_type=settings.target_db.auth_type,
-                username=settings.target_db.username,
-                trust_server_certificate=settings.target_db.trust_server_certificate
-            ),
-            llm_config=settings.llm_config,
-            embedding_config=settings.embedding_config,
-            vector_config=settings.vector_config,
-            app_meta=settings.app_meta
-        )
-
+    # Note: target_db handling removed - connection info now comes from _data-source.md
+    # Mask sensitive API keys for display
     settings.embedding_config.api_key = _mask_api_key(settings.embedding_config.api_key)
     return settings

@@ -1,402 +1,17 @@
-import React, { useState, useEffect } from 'react';
-import { Database, Cpu, Network, Info, Loader2, CheckCircle, AlertCircle, PencilLine, Save } from 'lucide-react';
+import { useState, useEffect } from 'react';
+import { Cpu, Network, Info, Loader2, CheckCircle, AlertCircle, Save } from 'lucide-react';
 import { api } from '../../api/client';
 import type { AgentSettings } from '../../api/client';
-
-interface ConnectionDialogProps {
-  isOpen: boolean;
-  onClose: () => void;
-  onSave: (
-    connStr: string,
-    pythonConnStr: string,
-    decryptedStr: string,
-    payload: {
-      driver: string;
-      server: string;
-      database: string;
-      authType: AuthType;
-      username?: string;
-      trustServerCertificate: boolean;
-    }
-  ) => void;
-  initialValues?: {
-    driver?: string;
-    server?: string;
-    database?: string;
-    authType?: AuthType;
-    username?: string;
-    password?: string;
-    trustServerCertificate?: boolean;
-  };
-}
-
-type AuthType =
-  | 'sql'
-  | 'windows'
-  | 'ad_integrated'
-  | 'ad_password'
-  | 'ad_interactive'
-  | 'ad_service_principal';
-
-type AuthUIState = {
-  showUsername: boolean;
-  showPassword: boolean;
-  usernameLabel: string;
-  passwordLabel: string;
-  usernameOptional: boolean;
-};
-
-const authOptions: { value: AuthType; label: string }[] = [
-  { value: 'sql', label: 'SQL Server Authentication (Legacy/Standard)' },
-  { value: 'windows', label: 'Windows Authentication (On-premise AD / Local)' },
-  { value: 'ad_integrated', label: 'Active Directory Integrated (SSO)' },
-  { value: 'ad_password', label: 'Active Directory Password' },
-  { value: 'ad_interactive', label: 'Active Directory Interactive (MFA)' },
-  { value: 'ad_service_principal', label: 'Active Directory Service Principal' }
-];
 
 const getErrorDetail = (error: unknown, fallback: string) => {
   const err = error as { response?: { data?: { detail?: string; message?: string } }; message?: string };
   return err.response?.data?.detail || err.response?.data?.message || err.message || fallback;
 };
 
-const getAuthUIState = (authType: AuthType): AuthUIState => {
-  switch (authType) {
-    case 'windows':
-    case 'ad_integrated':
-      return {
-        showUsername: false,
-        showPassword: false,
-        usernameLabel: 'Username',
-        passwordLabel: 'Password',
-        usernameOptional: false
-      };
-    case 'ad_password':
-      return {
-        showUsername: true,
-        showPassword: true,
-        usernameLabel: 'User ID',
-        passwordLabel: 'Password',
-        usernameOptional: false
-      };
-    case 'ad_interactive':
-      return {
-        showUsername: true,
-        showPassword: false,
-        usernameLabel: 'User ID',
-        passwordLabel: 'Password',
-        usernameOptional: true
-      };
-    case 'ad_service_principal':
-      return {
-        showUsername: true,
-        showPassword: true,
-        usernameLabel: 'Client ID',
-        passwordLabel: 'Secret',
-        usernameOptional: false
-      };
-    case 'sql':
-    default:
-      return {
-        showUsername: true,
-        showPassword: true,
-        usernameLabel: 'Username',
-        passwordLabel: 'Password',
-        usernameOptional: false
-      };
-  }
-};
-
-
-const ConnectionDialog: React.FC<ConnectionDialogProps> = ({ isOpen, onClose, onSave, initialValues }) => {
-  const [driver, setDriver] = useState('ODBC Driver 17 for SQL Server');
-  const [server, setServer] = useState('');
-  const [database, setDatabase] = useState('');
-  const [authType, setAuthType] = useState<AuthType>(initialValues?.authType || 'sql');
-  const [authUI, setAuthUI] = useState<AuthUIState>(getAuthUIState(initialValues?.authType || 'sql'));
-
-  // Always sync authType state with initialValues.authType when dialog opens or initialValues.authType changes
-  useEffect(() => {
-    if (isOpen) {
-      setAuthType(initialValues?.authType || 'sql');
-      setAuthUI(getAuthUIState(initialValues?.authType || 'sql'));
-    }
-  }, [isOpen, initialValues?.authType]);
-  const [username, setUsername] = useState('');
-  const [password, setPassword] = useState('');
-  const [trustServerCertificate, setTrustServerCertificate] = useState(false);
-  const [testing, setTesting] = useState(false);
-  const [testResult, setTestResult] = useState<{ success: boolean; message: string } | null>(null);
-
-  // When dialog opens, reset fields to initialValues (except authType, which is handled above)
-  React.useEffect(() => {
-    if (isOpen) {
-      setDriver(initialValues?.driver || 'ODBC Driver 17 for SQL Server');
-      setServer(initialValues?.server || '');
-      setDatabase(initialValues?.database || '');
-      setUsername(typeof initialValues?.username === 'string' ? initialValues.username : '');
-      setPassword(typeof initialValues?.password === 'string' ? initialValues.password : '');
-      setTrustServerCertificate(initialValues?.trustServerCertificate ?? false);
-      setTestResult(null);
-      setTesting(false);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isOpen]);
-
-  const UpdateUIState = (selectedIndex: number) => {
-    const selectedAuth = authOptions[selectedIndex]?.value ?? 'sql';
-    setAuthUI(getAuthUIState(selectedAuth));
-  };
-
-  const handleAuthChange = (event: React.ChangeEvent<HTMLSelectElement>) => {
-    const selectedIndex = event.target.selectedIndex;
-    const selectedAuth = authOptions[selectedIndex]?.value ?? 'sql';
-    setAuthType(selectedAuth);
-    UpdateUIState(selectedIndex);
-  };
-
-  const getCredentialValidationError = (selectedAuth: AuthType) => {
-    if (selectedAuth === 'ad_password' || selectedAuth === 'ad_service_principal') {
-      if (!username.trim() || !password.trim()) {
-        return 'Please enter both username and password for this authentication mode.';
-      }
-    }
-    return null;
-  };
-
-  const shouldSendUsername = authType === 'sql' || authType === 'ad_password' || authType === 'ad_interactive' || authType === 'ad_service_principal';
-  const shouldSendPassword = authType === 'sql' || authType === 'ad_password' || authType === 'ad_service_principal';
-  const resolvedUsername = shouldSendUsername && username.trim() ? username : undefined;
-  const resolvedPassword = shouldSendPassword && password.trim() ? password : undefined;
-
-  const handleTestConnection = async () => {
-    const validationError = getCredentialValidationError(authType);
-    if (validationError) {
-      setTestResult({ success: false, message: validationError });
-      return;
-    }
-
-    setTesting(true);
-    setTestResult(null);
-
-    try {
-      const response = await api.admin.testConnection({
-        driver,
-        server,
-        database,
-        auth_type: authType,
-        username: resolvedUsername,
-        password: resolvedPassword,
-        trust_server_certificate: trustServerCertificate
-      });
-
-      setTestResult(response);
-    } catch (error) {
-      setTestResult({
-        success: false,
-        message: getErrorDetail(error, 'Connection test failed')
-      });
-    } finally {
-      setTesting(false);
-    }
-  };
-
-  const handleSave = async () => {
-    const validationError = getCredentialValidationError(authType);
-    if (validationError) {
-      setTestResult({ success: false, message: validationError });
-      return;
-    }
-
-    try {
-      const response = await api.admin.buildConnectionString({
-        driver,
-        server,
-        database,
-        auth_type: authType,
-        username: resolvedUsername,
-        password: resolvedPassword,
-        trust_server_certificate: trustServerCertificate
-      });
-
-      onSave(
-        response.encrypted,
-        response.python_encrypted,
-        response.connection_string_masked,
-        {
-          driver,
-          server,
-          database,
-          authType,
-          username: resolvedUsername,
-          trustServerCertificate
-        }
-      );
-      onClose();
-    } catch (error) {
-      console.error('Failed to build connection string', error);
-    }
-  };
-
-  if (!isOpen) return null;
-
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 px-4">
-      <div className="w-full max-w-2xl bg-slate-950 border border-slate-800 rounded-2xl shadow-2xl p-6 space-y-4 max-h-[90vh] overflow-y-auto">
-        <div className="flex items-center justify-between mb-4">
-          <h3 className="text-xl font-semibold text-white">Change Database Connection</h3>
-          <button onClick={onClose} className="text-slate-400 hover:text-white">✕</button>
-        </div>
-
-        <div className="space-y-4">
-          <div>
-            <label className="block text-sm text-slate-300 mb-2">Driver</label>
-            <input
-              type="text"
-              value={driver}
-              onChange={(e) => setDriver(e.target.value)}
-              className="w-full px-4 py-2 bg-slate-900 border border-slate-700 rounded-lg text-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500"
-              placeholder="ODBC Driver 17 for SQL Server"
-            />
-          </div>
-
-          <div>
-            <label className="block text-sm text-slate-300 mb-2">Server</label>
-            <input
-              type="text"
-              value={server}
-              onChange={(e) => setServer(e.target.value)}
-              className="w-full px-4 py-2 bg-slate-900 border border-slate-700 rounded-lg text-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500"
-              placeholder="localhost or server.database.windows.net"
-            />
-          </div>
-
-          <div>
-            <label className="block text-sm text-slate-300 mb-2">Database</label>
-            <input
-              type="text"
-              value={database}
-              onChange={(e) => setDatabase(e.target.value)}
-              className="w-full px-4 py-2 bg-slate-900 border border-slate-700 rounded-lg text-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500"
-              placeholder="Your database name"
-            />
-          </div>
-
-          <div>
-            <label htmlFor="connection-auth" className="block text-sm text-slate-300 mb-2">Authentication</label>
-            <select
-              id="connection-auth"
-              value={authType}
-              onChange={handleAuthChange}
-              className="w-full px-4 py-2 bg-slate-900 border border-slate-700 rounded-lg text-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500"
-            >
-              {authOptions.map((option) => (
-                <option key={option.value} value={option.value}>
-                  {option.label}
-                </option>
-              ))}
-            </select>
-            {(authType === 'ad_integrated' || authType === 'ad_interactive') && (
-              <p className="text-xs text-slate-500 mt-2">
-                Note: Active Directory Integrated and Interactive require ADAL to be installed on the client machine.
-              </p>
-            )}
-          </div>
-
-          {authUI.showUsername && (
-            <div>
-              <label htmlFor="connection-username" className="block text-sm text-slate-300 mb-2">
-                {authUI.usernameLabel}
-                {authUI.usernameOptional && <span className="text-xs text-slate-500 ml-2">(Optional)</span>}
-              </label>
-              <input
-                id="connection-username"
-                type="text"
-                value={username}
-                onChange={(e) => setUsername(e.target.value)}
-                className="w-full px-4 py-2 bg-slate-900 border border-slate-700 rounded-lg text-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                placeholder={authUI.usernameLabel}
-              />
-            </div>
-          )}
-
-          {authUI.showPassword && (
-            <div>
-              <label htmlFor="connection-password" className="block text-sm text-slate-300 mb-2">{authUI.passwordLabel}</label>
-              <input
-                id="connection-password"
-                type="password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                className="w-full px-4 py-2 bg-slate-900 border border-slate-700 rounded-lg text-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                placeholder={authUI.passwordLabel}
-              />
-            </div>
-          )}
-
-          <div className="flex items-start gap-3">
-            <input
-              id="trust-server-certificate"
-              type="checkbox"
-              checked={trustServerCertificate}
-              onChange={(e) => setTrustServerCertificate(e.target.checked)}
-              className="mt-1 h-4 w-4 rounded border-slate-600 bg-slate-900 text-indigo-500 focus:ring-indigo-500"
-            />
-            <label htmlFor="trust-server-certificate" className="text-sm text-slate-300">
-              Trust server certificate (use for self-signed or internal CA certificates)
-            </label>
-          </div>
-
-          <button
-            onClick={handleTestConnection}
-            disabled={testing || !server || !database}
-            className="w-full flex items-center justify-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-lg disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            {testing ? <Loader2 className="animate-spin" size={16} /> : <Database size={16} />}
-            {testing ? 'Testing...' : 'Test Connection'}
-          </button>
-
-          {testResult && (
-            <div className={`p-4 rounded-lg flex items-start gap-3 ${testResult.success ? 'bg-green-500/10 border border-green-500/30' : 'bg-red-500/10 border border-red-500/30'}`}>
-              {testResult.success ? <CheckCircle className="text-green-400" size={20} /> : <AlertCircle className="text-red-400" size={20} />}
-              <div>
-                <p className={`font-medium ${testResult.success ? 'text-green-300' : 'text-red-300'}`}>
-                  {testResult.success ? 'Connection Successful' : 'Connection Failed'}
-                </p>
-                <p className={`text-sm ${testResult.success ? 'text-green-300/70' : 'text-red-300/70'}`}>
-                  {testResult.message}
-                </p>
-              </div>
-            </div>
-          )}
-        </div>
-
-        <div className="flex justify-end gap-3 pt-4">
-          <button
-            onClick={onClose}
-            className="px-4 py-2 text-slate-300 hover:text-white bg-slate-800/80 border border-slate-700 rounded-lg"
-          >
-            Cancel
-          </button>
-          <button
-            onClick={handleSave}
-            disabled={!testResult?.success}
-            className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            <Save size={16} />
-            Save Connection
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-};
-
 export const Settings = () => {
   const [settings, setSettings] = useState<AgentSettings | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
-  const [showConnectionDialog, setShowConnectionDialog] = useState(false);
   const [models, setModels] = useState<{ id: string; name: string }[]>([]);
   const [saveStatus, setSaveStatus] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
 
@@ -496,22 +111,21 @@ export const Settings = () => {
 
     try {
       const savedSettings = await api.admin.updateSettings(settings);
-      if (savedSettings && savedSettings.target_db) {
+      if (savedSettings) {
         setSettings(savedSettings);
         setSaveStatus({ type: 'success', message: 'Settings saved! Verifying configuration...' });
 
-        // Perform verification after save
+        // Perform verification after save (LLM and Milvus only)
         try {
           const verifyResult = await api.admin.verifySettings();
 
-          if (verifyResult.db_connected && verifyResult.llm_connected && verifyResult.milvus_connected) {
+          if (verifyResult.llm_connected && verifyResult.milvus_connected) {
             setSaveStatus({
               type: 'success',
-              message: 'Settings saved and verified! Database, LLM, and Vector Store (Milvus) are successfully connected.'
+              message: 'Settings saved and verified! LLM and Vector Store (Milvus) are successfully connected.'
             });
           } else {
             const errors: string[] = [];
-            if (!verifyResult.db_connected) errors.push(`[Database: ${verifyResult.db_message}]`);
             if (!verifyResult.llm_connected) errors.push(`[LLM: ${verifyResult.llm_message}]`);
             if (!verifyResult.milvus_connected) errors.push(`[Milvus: ${verifyResult.milvus_message}]`);
 
@@ -527,67 +141,6 @@ export const Settings = () => {
             message: 'Settings saved, but failed to perform verification check.'
           });
         }
-      } else {
-        console.error('Invalid response from server:', savedSettings);
-        setSaveStatus({ type: 'error', message: 'Saved, but received invalid response from server.' });
-      }
-    } catch (error) {
-      setSaveStatus({ type: 'error', message: getErrorDetail(error, 'Failed to save settings') });
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const handleConnectionSave = async (
-    encrypted: string,
-    pythonEncrypted: string,
-    decrypted: string,
-    payload: {
-      driver: string;
-      server: string;
-      database: string;
-      authType: AuthType;
-      username?: string;
-      trustServerCertificate: boolean;
-    }
-  ) => {
-    if (!settings) return;
-
-    const {
-      driver,
-      server,
-      database,
-      authType,
-      username,
-      trustServerCertificate
-    } = payload;
-
-    const updatedSettings = {
-      ...settings,
-      target_db: {
-        ...settings.target_db,
-        connection_string_encrypted: encrypted,
-        python_connection_string_encrypted: pythonEncrypted,
-        connection_string_decrypted: decrypted,
-        driver: driver,
-        auth_type: authType,
-        username: username,
-        trust_server_certificate: trustServerCertificate,
-        server: server,
-        database_name: database
-      }
-    };
-
-    setSettings(updatedSettings);
-
-    // Persist immediately to backend
-    setSaving(true);
-    setSaveStatus(null);
-    try {
-      const savedSettings = await api.admin.updateSettings(updatedSettings);
-      if (savedSettings && savedSettings.target_db) {
-        setSettings(savedSettings);
-        setSaveStatus({ type: 'success', message: 'Connection settings saved successfully!' });
       } else {
         console.error('Invalid response from server:', savedSettings);
         setSaveStatus({ type: 'error', message: 'Saved, but received invalid response from server.' });
@@ -661,84 +214,6 @@ export const Settings = () => {
           <p className={`${saveStatus.type === 'success' ? 'text-green-300' : 'text-red-300'}`}>{saveStatus.message}</p>
         </div>
       )}
-
-      {/* Target Database Card */}
-      <div className="bg-slate-900/50 border border-slate-800 rounded-xl p-6">
-        <div className="flex items-center gap-3 mb-4">
-          <Database className="text-indigo-400" size={20} />
-          <h3 className="text-lg font-semibold text-white">Target Database</h3>
-        </div>
-        <div className="space-y-4">
-          <div>
-            <label htmlFor="db-friendly-name" className="block text-sm text-slate-400 mb-2">Friendly Name</label>
-            <input
-              id="db-friendly-name"
-              type="text"
-              value={settings.target_db.friendly_name}
-              onChange={(e) => setSettings({ ...settings, target_db: { ...settings.target_db, friendly_name: e.target.value } })}
-              className="w-full px-4 py-2 bg-slate-900 border border-slate-700 rounded-lg text-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500"
-            />
-          </div>
-
-          <div>
-            <label htmlFor="db-description" className="block text-sm text-slate-400 mb-2">Description</label>
-            <textarea
-              id="db-description"
-              value={settings.target_db.description}
-              onChange={(e) => setSettings({ ...settings, target_db: { ...settings.target_db, description: e.target.value } })}
-              rows={2}
-              className="w-full px-4 py-2 bg-slate-900 border border-slate-700 rounded-lg text-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500"
-            />
-          </div>
-
-          <div>
-            <label htmlFor="db-keywords" className="block text-sm text-slate-400 mb-2">Keywords (comma-separated)</label>
-            <input
-              id="db-keywords"
-              type="text"
-              value={settings.target_db.keywords.join(', ')}
-              onChange={(e) => setSettings({ ...settings, target_db: { ...settings.target_db, keywords: e.target.value.split(',').map(k => k.trim()).filter(k => k) } })}
-              className="w-full px-4 py-2 bg-slate-900 border border-slate-700 rounded-lg text-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500"
-              placeholder="sales, customers, orders"
-            />
-          </div>
-
-          <div className="grid grid-cols-2 gap-4">
-            <div>
-              <label htmlFor="db-server" className="block text-sm text-slate-400 mb-2">Server (read-only)</label>
-              <input
-                id="db-server"
-                type="text"
-                value={settings.target_db.server || 'Not configured'}
-                className="w-full px-4 py-2 bg-slate-800/50 border border-slate-700/50 rounded-lg text-slate-400 cursor-not-allowed"
-                disabled
-                readOnly
-              />
-            </div>
-            <div>
-              <label htmlFor="db-name" className="block text-sm text-slate-400 mb-2">Database (read-only)</label>
-              <input
-                id="db-name"
-                type="text"
-                value={settings.target_db.database_name || 'Not configured'}
-                className="w-full px-4 py-2 bg-slate-800/50 border border-slate-700/50 rounded-lg text-slate-400 cursor-not-allowed"
-                disabled
-                readOnly
-              />
-            </div>
-          </div>
-
-
-
-          <button
-            onClick={() => setShowConnectionDialog(true)}
-            className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-lg"
-          >
-            <PencilLine size={16} />
-            Change Database Connection
-          </button>
-        </div>
-      </div>
 
       {/* LLM Configuration Card */}
       <div className="bg-slate-900/50 border border-slate-800 rounded-xl p-6">
@@ -1022,23 +497,6 @@ export const Settings = () => {
           </div>
         </div>
       </div>
-
-      <ConnectionDialog
-        isOpen={showConnectionDialog}
-        onClose={() => setShowConnectionDialog(false)}
-        onSave={handleConnectionSave}
-        initialValues={{
-          driver: settings?.target_db?.driver || settings?.target_db?.connection_string_decrypted?.match(/DRIVER=\{([^}]*)\}/)?.[1] || 'ODBC Driver 17 for SQL Server',
-          server: settings?.target_db?.server || '',
-          database: settings?.target_db?.database_name || '',
-          authType: (settings?.target_db?.auth_type as AuthType)
-            || (settings?.target_db?.connection_string_decrypted?.match(/Authentication=([^;]*)/)?.[1]?.toLowerCase() as AuthType)
-            || (settings?.target_db?.connection_string_decrypted?.match(/AUTHENTICATION=([^;]*)/)?.[1]?.toLowerCase() as AuthType)
-            || 'sql',
-          username: settings?.target_db?.username || '',
-          trustServerCertificate: settings?.target_db?.trust_server_certificate ?? false
-        }}
-      />
     </div >
   );
 };

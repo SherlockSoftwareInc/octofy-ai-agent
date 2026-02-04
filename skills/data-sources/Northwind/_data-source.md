@@ -1,12 +1,15 @@
-# Dbo Database
+# Northwind Database
 
 **Type:** SQL Server  
-**Server:** Localhost
-**Database:** Northwind
+**Server:** localhost
+**Database:** northwind
+
+**Friendly Name:** Northwind Database  
+**Keywords:** sales, customers, orders, products, employees, shipping
 
 ## Description
 
-Database schema: dbo. Contains 39 tables. Auto-generated from Milvus.
+Sales database for imported and exported specialty foods. This database contains comprehensive information about customer orders, product inventory, employee management, and international shipping operations.
 
 ## Data Coverage
 
