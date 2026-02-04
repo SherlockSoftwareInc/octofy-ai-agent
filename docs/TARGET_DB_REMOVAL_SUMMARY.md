@@ -1,44 +1,55 @@
 # Target Database Configuration Removal - Implementation Summary
 
 ## Overview
+
 This document summarizes the complete removal of database configuration from the Agent Settings system. Database connection information is now dynamically built from `_data-source.md` files in the skills directory.
 
 ## Implementation Date
+
 January 31, 2025
 
 ## Objectives Completed
 
 ### Phase 1: UI and Validation Cleanup
+
 ✅ **Removed Target Database Connection UI section** from Settings page
+
 - Removed server/database input fields
 - Removed "Change Database Connection" button
 - Removed connection string display
 
-✅ **Updated Settings Save Validation** 
+✅ **Updated Settings Save Validation**
+
 - Removed database connection verification
 - Only validates LLM and Milvus connections
 - Updated success message: "LLM and Vector Store (Milvus) are successfully connected"
 
 ### Phase 2: Backend Architecture Refactoring
+
 ✅ **Updated Database Connection Management** (`app/core/database.py`)
+
 - Removed dependency on `agent_settings.target_db`
 - Now uses `skills_service` to load `_data-source.md` metadata
 - Parses Server and Database from markdown using regex patterns:
   - Server: `\*\*Server:\*\*\s*([^\n]+)`
   - Database: `\*\*Database:\*\*\s*([^\n]+)`
 - Builds connection string with Windows Authentication:
-  ```python
+
+```python
   f"Driver={{ODBC Driver 17 for SQL Server}};Server={server};Database={database};Trusted_Connection=yes;Encrypt=yes;TrustServerCertificate=yes"
-  ```
+```
+
 - Caches engines by "primary" key instead of source_id
 - Fallback to `SQL_SERVER_CONNECTION_STRING` environment variable if parsing fails
 
 ✅ **Updated Settings Service** (`app/services/settings_service.py`)
+
 - `get_default_settings()`: No longer creates TargetDBConfig
 - `_load_v1_settings()`: Removes target_db from loaded data via `data.pop("target_db", None)`
 - `get_settings_for_display()`: Removed all target_db handling (no decryption, no server/database population)
 
 ✅ **Removed from Configuration File** (`config/agent_settings.json`)
+
 - Completely removed target_db section including:
   - connection_string_encrypted
   - python_connection_string_encrypted
@@ -50,19 +61,25 @@ January 31, 2025
   - database_name
 
 ✅ **Updated Data Schemas**
+
 - **Python** (`app/models/schemas.py`):
+
   ```python
   class AgentSettings(BaseModel):
       target_db: Optional[TargetDBConfig] = None  # Optional - connection info now from _data-source.md
   ```
+
 - **TypeScript** (`frontend/src/api/client.ts`):
+
   ```typescript
   export interface AgentSettings {
       target_db?: TargetDBConfig;  // Optional - connection info now from _data-source.md
   ```
 
 ### Phase 3: Frontend Cleanup
+
 ✅ **Removed Orphaned ConnectionDialog Code** (`frontend/src/pages/Admin/Settings.tsx`)
+
 - Removed `showConnectionDialog` state variable
 - Removed `handleConnectionSave` function (540-600 lines)
 - Removed `<ConnectionDialog>` component rendering
@@ -76,7 +93,8 @@ January 31, 2025
 ## Architecture Changes
 
 ### Old Flow
-```
+
+```code
 agent_settings.json 
   → target_db 
   → encrypted connection string 
@@ -85,7 +103,8 @@ agent_settings.json
 ```
 
 ### New Flow
-```
+
+```code
 skills/_data-source.md 
   → parse Server/Database 
   → build connection string with Windows Auth 
@@ -104,12 +123,14 @@ skills/_data-source.md
 ## Testing Results
 
 ### Database Connection Test
+
 ```bash
 ✅ Connected as: SSI01\sherl
 ✅ Database: NORTHWIND
 ```
 
 ### Settings Load Test
+
 ```bash
 ✅ Settings loaded successfully
 ✅ Has target_db: False
@@ -118,6 +139,7 @@ skills/_data-source.md
 ```
 
 ### Metadata Load Test
+
 ```bash
 ✅ Friendly Name: Northwind Database
 ✅ Description: Sales database for imported and exported specialty...
@@ -156,11 +178,13 @@ Sales database for imported and exported specialty foods...
 ## Future Considerations
 
 ### Still Using settings.target_db (To be updated if needed)
+
 - `scripts/verify_windows_auth.py`
 - `scripts/verify_python_execution_auth.py`
 - Other utility scripts in scripts/ directory
 
 ### Documentation to Update
+
 - `METADATA_MIGRATION.md` - Reflect target_db removal
 - `WINDOWS_AUTH_FLOW_DIAGRAM.md` - Update connection string flow
 - API documentation - Remove target_db references
@@ -168,16 +192,19 @@ Sales database for imported and exported specialty foods...
 ## Related Files Modified
 
 ### Backend
+
 - `app/core/database.py` - Connection string building from markdown
 - `app/services/settings_service.py` - Removed target_db handling
 - `config/agent_settings.json` - Removed target_db section
 - `app/models/schemas.py` - Made target_db optional
 
 ### Frontend
+
 - `frontend/src/pages/Admin/Settings.tsx` - Removed UI section and ConnectionDialog
 - `frontend/src/api/client.ts` - Made target_db optional
 
 ### Skills
+
 - `skills/data-sources/Northwind/_data-source.md` - Primary metadata source
 
 ## Conclusion
