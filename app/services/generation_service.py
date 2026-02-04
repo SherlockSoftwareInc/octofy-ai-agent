@@ -412,6 +412,110 @@ def search_data_objects(query: str) -> GenerateSQLResponse:
         )
 
 
+def _detect_turn_type_fast(query: str, planning_context: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """
+    Fast turn-type detection using keyword-based heuristics.
+    
+    Detects conversation turn types:
+    - confirmation: User agrees to proceed ("yes", "ok", "sounds good")
+    - correction: User changes specific details ("no, I meant...", "actually...")
+    - pivot: User switches topics (low keyword overlap + signal words)
+    - refinement: User adds details to existing goal (high overlap + signal words)
+    
+    Args:
+        query: User's current message
+        planning_context: Current planning state with "goal" field
+    
+    Returns:
+        Dict with turn_type, confidence, reasoning, topic_similarity, or None if no clear pattern
+    """
+    query_lower = query.lower().strip()
+    goal = planning_context.get("goal", "")
+    
+    # 1. CONFIRMATION SIGNALS (highest priority)
+    confirmation_signals = [
+        r'\b(yes|yeah|yep|yup|sure|ok|okay|sounds good|looks good|correct|right|perfect|go ahead|proceed)\b',
+        r'^(y|k)\b',  # Short affirmatives
+    ]
+    for pattern in confirmation_signals:
+        if re.search(pattern, query_lower):
+            return {
+                "turn_type": "confirmation",
+                "confidence": 0.95,
+                "reasoning": "User confirmed with affirmative language",
+                "topic_similarity": 1.0
+            }
+    
+    # 2. CORRECTION SIGNALS (2+ signals required)
+    correction_signals = [
+        r'\b(no|not|nope|incorrect|wrong|actually|instead|rather)\b',
+        r'\b(i\s+\w+\s+meant|meant|should be|change)\b',  # "i meant", "i actually meant", etc.
+        r'\b(different|other|another)\b',
+    ]
+    correction_count = sum(1 for pattern in correction_signals if re.search(pattern, query_lower))
+    
+    if correction_count >= 2:
+        return {
+            "turn_type": "correction",
+            "confidence": 0.85,
+            "reasoning": f"Multiple correction signals detected ({correction_count})",
+            "topic_similarity": 0.5
+        }
+    
+    # 3. KEYWORD OVERLAP CALCULATION (for pivot vs refinement)
+    def extract_keywords(text: str) -> set:
+        """Extract 4+ character words as keywords."""
+        if not text:
+            return set()
+        words = re.findall(r'\b\w{4,}\b', text.lower())
+        return set(words)
+    
+    query_keywords = extract_keywords(query)
+    goal_keywords = extract_keywords(goal)
+    
+    # Calculate Jaccard index
+    if not query_keywords or not goal_keywords:
+        topic_similarity = 0.0
+    else:
+        intersection = query_keywords & goal_keywords
+        union = query_keywords | goal_keywords
+        topic_similarity = len(intersection) / len(union) if union else 0.0
+    
+    # 4. PIVOT DETECTION (low overlap + pivot signals)
+    pivot_signals = [
+        r'\b(instead|now|new|different|switch|change to)\b',
+        r'\b(forget|ignore|nevermind|scratch that)\b',
+    ]
+    pivot_signal_count = sum(1 for pattern in pivot_signals if re.search(pattern, query_lower))
+    
+    if pivot_signal_count > 0 and topic_similarity < 0.3:
+        return {
+            "turn_type": "pivot",
+            "confidence": 0.85,
+            "reasoning": f"Pivot signals detected ({pivot_signal_count}) with low topic overlap ({topic_similarity:.2f})",
+            "topic_similarity": topic_similarity
+        }
+    
+    # 5. REFINEMENT DETECTION (refinement signals + higher overlap)
+    refinement_signals = [
+        r'\b(also|too|additionally|furthermore|plus|and)\b',
+        r'\b(add|include|show|break down|filter|only)\b',
+        r'\b(more|specifically|detailed|by)\b',
+    ]
+    refinement_signal_count = sum(1 for pattern in refinement_signals if re.search(pattern, query_lower))
+    
+    if refinement_signal_count >= 2:
+        return {
+            "turn_type": "refinement",
+            "confidence": 0.80,
+            "reasoning": f"Multiple refinement signals detected ({refinement_signal_count})",
+            "topic_similarity": topic_similarity
+        }
+    
+    # No clear pattern detected
+    return None
+
+
 def planning_conversation(query: str, planning_context: Optional[Dict[str, Any]] = None) -> GenerateSQLResponse:
     """
     Intelligent planning mode with LLM-driven conversation and smart clarification detection.
