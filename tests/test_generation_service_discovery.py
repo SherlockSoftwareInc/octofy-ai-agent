@@ -1,7 +1,7 @@
 import pytest
 import re
 from unittest.mock import MagicMock, patch
-from app.services.generation_service import generate_sql_for_request
+from app.services.generation_service import generate_sql_for_request, planning_conversation
 from app.models.schemas import GenerateSQLRequest, DiscoveryContext, TableSchema, ColumnInfo, DiscoveryResponse
 from app.services.discovery_service import perform_discovery, DiscoveryRequest
 
@@ -95,3 +95,80 @@ def test_retry_instruction_content(mock_llm_service, mock_discovery_service, ini
     second_call_context = mock_llm_service.generate_sql_with_context.call_args_list[1][0][1]
     expected_instruction = "IMPORTANT: If the column you are looking for does not exist, check if you can use standard SQL functions (SUM, COUNT, AVG, MAX, MIN)"
     assert expected_instruction in second_call_context
+
+
+# Task 6: Tests for context initialization with new fields
+class TestPlanningContextInitialization:
+    """Test planning_conversation context initialization with intent tracking fields."""
+    
+    @patch('app.services.generation_service.get_llm_service')
+    @patch('app.services.generation_service.get_vector_store')
+    @patch('app.services.generation_service.search_data_objects')
+    def test_initializes_new_fields_for_empty_context(self, mock_search, mock_vector, mock_llm):
+        """Initializes new intent tracking fields when starting fresh."""
+        # Setup mocks
+        mock_llm_instance = MagicMock()
+        mock_llm_instance.chat.return_value = '{"goal_clear": true, "goal_statement": "Test", "critical_ambiguities": [], "ready_for_search": false, "required_questions": [], "requirements_extracted": []}'
+        mock_llm.return_value = mock_llm_instance
+        
+        # Execute with no planning_context
+        response = planning_conversation("Show sales", planning_context=None)
+        
+        # Parse the returned context
+        import json
+        context = json.loads(response.context_text)
+        
+        # Verify new fields are initialized
+        assert "goal_history" in context
+        assert "rejected_tables" in context
+        assert "confirmed_tables" in context
+        assert "adjustments" in context
+        assert "last_auto_checked" in context
+        
+        # Verify they're initialized as empty lists (serialized from sets)
+        assert context["goal_history"] == []
+        assert context["rejected_tables"] == []
+        assert context["confirmed_tables"] == []
+        assert context["adjustments"] == []
+        assert context["last_auto_checked"] == []
+    
+    @patch('app.services.generation_service.get_llm_service')
+    @patch('app.services.generation_service.get_vector_store')
+    @patch('app.services.generation_service.search_data_objects')
+    def test_converts_lists_to_sets_for_backward_compatibility(self, mock_search, mock_vector, mock_llm):
+        """Converts list fields to sets when loading existing context (backward compatibility)."""
+        # Setup mocks
+        mock_llm_instance = MagicMock()
+        mock_llm_instance.chat.return_value = '{"goal_clear": true, "goal_statement": "Test", "critical_ambiguities": [], "ready_for_search": false, "required_questions": [], "requirements_extracted": []}'
+        mock_llm.return_value = mock_llm_instance
+        
+        # Create context with lists (old format)
+        existing_context = {
+            "goal": "Show sales",
+            "selected_tables": [],
+            "suggested_tables": [],
+            "requirements": [],
+            "conversation_history": [],
+            "turn_count": 1,
+            "rejected_tables": ["table1", "table2"],  # List format (old)
+            "confirmed_tables": ["table3"],  # List format (old)
+            "last_auto_checked": ["table4"]  # List format (old)
+        }
+        
+        # Execute
+        response = planning_conversation("Add filter", planning_context=existing_context)
+        
+        # Parse returned context
+        import json
+        context = json.loads(response.context_text)
+        
+        # Verify they're still lists in JSON output (sets converted back to lists)
+        assert isinstance(context["rejected_tables"], list)
+        assert isinstance(context["confirmed_tables"], list)
+        assert isinstance(context["last_auto_checked"], list)
+        
+        # Verify content is preserved
+        assert set(context["rejected_tables"]) == {"table1", "table2"}
+        assert set(context["confirmed_tables"]) == {"table3"}
+        assert set(context["last_auto_checked"]) == {"table4"}
+
