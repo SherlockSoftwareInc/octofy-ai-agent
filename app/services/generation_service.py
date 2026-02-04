@@ -722,14 +722,24 @@ def generate_sql_for_request(request: GenerateSQLRequest, previous_sql: Optional
         # Get fresh LLM service instance to ensure latest settings
         llm_service = get_llm_service()
         
-        settings = get_settings_for_display()
-        friendly_name = settings.target_db.friendly_name
-        db_description = settings.target_db.description
-        db_keywords = settings.target_db.keywords
+        # Load database metadata from skills data source instead of settings
+        from app.services.skills_service import get_skills_service
+        skills_service = get_skills_service()
+        data_source = skills_service.load_primary_data_source()
+        
+        if data_source:
+            friendly_name = data_source.name
+            db_description = data_source.description
+            db_keywords = data_source.keywords
+        else:
+            # Fallback to defaults if skills not available
+            friendly_name = "Database"
+            db_description = "Primary database"
+            db_keywords = []
     except Exception as e:
-        print(f"Failed to load settings, using defaults: {e}")
-        friendly_name = "Northwind"
-        db_description = "Sales database for specialty foods"
+        print(f"Failed to load database metadata, using defaults: {e}")
+        friendly_name = "Database"
+        db_description = "Primary database"
         db_keywords = []
     
     # Stage 1: Query Analysis & Intent

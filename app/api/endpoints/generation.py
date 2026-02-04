@@ -62,8 +62,8 @@ async def generate_sql_endpoint(
             log_sql_generation(
                 db=db,
                 user_id=current_user.id,
-                user_query=request.query,
-                generated_sql=final_result.sql if final_result else None,
+                query=request.query,
+                sql=final_result.sql if final_result else None,
                 tokens_used=final_result.usage.total_tokens if final_result and hasattr(final_result, 'usage') else None,
                 execution_time=execution_time,
                 success=not error_occurred,

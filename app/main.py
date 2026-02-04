@@ -93,17 +93,19 @@ async def startup_event():
         logger.warning(f"User database initialization skipped: {e}")
     
     # Run configuration migration if needed
-    logger.info("Checking for configuration migration...")
+    logger.info("Checking configuration format...")
     try:
         migration_result = auto_migrate_if_needed()
-        if migration_result == "migrated":
-            logger.info("✅ Configuration migrated from v1 to v2 successfully!")
+        if migration_result == "v1":
+            logger.info("✅ Configuration is valid. Data sources loaded from skills directory.")
         elif migration_result == "v2":
-            logger.info("Configuration is already v2 format.")
+            logger.warning("⚠️ Configuration has deprecated fields (will be ignored).")
+        elif migration_result == "migrated":
+            logger.info("✅ Configuration migrated successfully!")
         elif migration_result == "error":
-            logger.warning("⚠️ Configuration migration encountered an error. Check logs.")
+            logger.warning("⚠️ Configuration check encountered an error. Check logs.")
     except Exception as e:
-        logger.error(f"Migration check failed: {e}")
+        logger.error(f"Configuration check failed: {e}")
     
     if not settings.VECTOR_DB_ENABLED:
         logger.info("Vector DB disabled. Skipping startup ingestion.")

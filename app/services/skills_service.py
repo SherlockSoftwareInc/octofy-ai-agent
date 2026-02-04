@@ -146,6 +146,69 @@ class SkillsService:
         
         return groups
     
+    def load_primary_data_source(self) -> Optional[DataSource]:
+        """
+        Load the primary data source from _data-source.md file
+        
+        Returns:
+            DataSource object or None if not found
+        """
+        # Look for _data-source.md in any subdirectory
+        data_source_files = list(self.skills_path.rglob("_data-source.md"))
+        
+        if not data_source_files:
+            return None
+        
+        # For now, return the first one found (could be enhanced to support multiple)
+        return self._parse_data_source_file(data_source_files[0])
+    
+    def _parse_data_source_file(self, file_path: Path) -> Optional[DataSource]:
+        """
+        Parse a _data-source.md file to extract metadata
+        
+        Args:
+            file_path: Path to the _data-source.md file
+            
+        Returns:
+            DataSource object or None if parsing fails
+        """
+        if not file_path.exists():
+            return None
+        
+        content = file_path.read_text(encoding='utf-8')
+        
+        # Extract metadata
+        name_match = re.search(r'^#\s+(.+?)$', content, re.MULTILINE)
+        type_match = re.search(r'\*\*Type:\*\*\s*(.+)', content)
+        server_match = re.search(r'\*\*Server:\*\*\s*(.+)', content)
+        database_match = re.search(r'\*\*Database:\*\*\s*(.+)', content)
+        friendly_name_match = re.search(r'\*\*Friendly Name:\*\*\s*(.+)', content)
+        keywords_match = re.search(r'\*\*Keywords:\*\*\s*(.+)', content)
+        desc_section = re.search(r'## Description\s*\n(.*?)(?=\n##|\Z)', content, re.DOTALL)
+        
+        # Parse keywords
+        keywords = []
+        if keywords_match:
+            keywords_str = keywords_match.group(1)
+            keywords = [k.strip() for k in keywords_str.split(',')]
+        
+        # Build connection info
+        connection_info = {}
+        if server_match:
+            connection_info['server'] = server_match.group(1).strip()
+        if database_match:
+            connection_info['database'] = database_match.group(1).strip()
+        
+        return DataSource(
+            name=friendly_name_match.group(1).strip() if friendly_name_match else (name_match.group(1).strip() if name_match else "Unknown"),
+            type=type_match.group(1).strip() if type_match else "Unknown",
+            description=desc_section.group(1).strip() if desc_section else "",
+            keywords=keywords,
+            status="Active",
+            connection_info=connection_info if connection_info else None,
+            file_path=str(file_path)
+        )
+    
     def _parse_data_group_file(self, file_path: Path) -> Optional[DataGroup]:
         """
         Parse a single _data-group.md file
