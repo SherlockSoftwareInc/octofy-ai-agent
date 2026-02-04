@@ -167,6 +167,9 @@ def execute_python_code(
         local_scope['pd'] = pd
     
     # Log the DB_CONNECTION_STRING if present for debugging
+    # NOTE: This connection string uses Windows Authentication (Trusted_Connection=yes)
+    # It is injected from settings.target_db.python_connection_string_encrypted
+    # which was configured to use Windows auth (no UID/PWD credentials)
     if 'DB_CONNECTION_STRING' in local_scope:
         # Mask the actual connection string for security in logs
         conn_str = local_scope['DB_CONNECTION_STRING']

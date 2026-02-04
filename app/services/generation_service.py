@@ -702,6 +702,7 @@ def generate_sql_for_request(request: GenerateSQLRequest, previous_sql: Optional
         yield AgentStatus(step_id=1, message="Thinking about your data needs...")
         result = planning_conversation(request.query, request.planning_context)
         yield {"type": "result", "payload": result}
+        yield {"type": "done"}
         return
     
     # Check for search mode - user explicitly chose to search objects
@@ -709,6 +710,7 @@ def generate_sql_for_request(request: GenerateSQLRequest, previous_sql: Optional
         yield AgentStatus(step_id=1, message="Searching database objects...")
         result = search_data_objects(request.query)
         yield {"type": "result", "payload": result}
+        yield {"type": "done"}
         return
     
     yield AgentStatus(step_id=1, message="Initializing agent and loading settings...")
@@ -720,14 +722,24 @@ def generate_sql_for_request(request: GenerateSQLRequest, previous_sql: Optional
         # Get fresh LLM service instance to ensure latest settings
         llm_service = get_llm_service()
         
-        settings = get_settings_for_display()
-        friendly_name = settings.target_db.friendly_name
-        db_description = settings.target_db.description
-        db_keywords = settings.target_db.keywords
+        # Load database metadata from skills data source instead of settings
+        from app.services.skills_service import get_skills_service
+        skills_service = get_skills_service()
+        data_source = skills_service.load_primary_data_source()
+        
+        if data_source:
+            friendly_name = data_source.name
+            db_description = data_source.description
+            db_keywords = data_source.keywords
+        else:
+            # Fallback to defaults if skills not available
+            friendly_name = "Database"
+            db_description = "Primary database"
+            db_keywords = []
     except Exception as e:
-        print(f"Failed to load settings, using defaults: {e}")
-        friendly_name = "Northwind"
-        db_description = "Sales database for specialty foods"
+        print(f"Failed to load database metadata, using defaults: {e}")
+        friendly_name = "Database"
+        db_description = "Primary database"
         db_keywords = []
     
     # Stage 1: Query Analysis & Intent
@@ -738,6 +750,7 @@ def generate_sql_for_request(request: GenerateSQLRequest, previous_sql: Optional
         yield AgentStatus(step_id=3, message="Processing general query...")
         result = _handle_general_query(request, llm_service)
         yield {"type": "result", "payload": result}
+        yield {"type": "done"}
         return
 
     # Classification removed: Always assume 'database' query unless forceGeneral is set
@@ -765,6 +778,7 @@ def generate_sql_for_request(request: GenerateSQLRequest, previous_sql: Optional
                 context_text="Selected tables not found"
             )
             yield {"type": "result", "payload": result}
+            yield {"type": "done"}
             return
     elif request.context:
         # If context is explicitly provided, use it
@@ -888,6 +902,7 @@ Alternatively, if these table references are incorrect, please rephrase your que
                     context_text=f"Missing schemas: {', '.join(tables_not_found)}"
                 )
                 yield {"type": "result", "payload": result}
+                yield {"type": "done"}
                 return
             
             # Log successful auto-discovery
@@ -1135,6 +1150,7 @@ Extracted Entities: {', '.join(entities) if entities else 'None'}
                 context_history=current_context_history
             )
             yield {"type": "result", "payload": result}
+            yield {"type": "done"}
             return
 
         # Stage 3.5: Intelligent Recovery Logic
@@ -1177,6 +1193,7 @@ Extracted Entities: {', '.join(entities) if entities else 'None'}
                     context_history=current_context_history
                 )
                 yield {"type": "result", "payload": result}
+                yield {"type": "done"}
                 return
         elif not use_table_override and missing_cols:
             # Database validation error with missing objects
@@ -1226,6 +1243,7 @@ Extracted Entities: {', '.join(entities) if entities else 'None'}
         context_history=current_context_history
     )
     yield {"type": "result", "payload": result}
+    yield {"type": "done"}
 
 def _handle_general_query(request, llm_service):
     # (Helper function logic for general classification to keep main function clean)

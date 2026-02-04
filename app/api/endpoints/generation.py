@@ -43,6 +43,9 @@ async def generate_sql_endpoint(
                         "payload": payload.model_dump(by_alias=True)
                     }
                     yield f"data: {json.dumps(data)}\n\n"
+                elif isinstance(item, dict) and item.get("type") == "done":
+                    # Forward done signal to frontend
+                    yield f"data: {json.dumps({'type': 'done'})}\n\n"
         except Exception as e:
             error_occurred = True
             error_message = str(e)
@@ -59,8 +62,8 @@ async def generate_sql_endpoint(
             log_sql_generation(
                 db=db,
                 user_id=current_user.id,
-                user_query=request.query,
-                generated_sql=final_result.sql if final_result else None,
+                query=request.query,
+                sql=final_result.sql if final_result else None,
                 tokens_used=final_result.usage.total_tokens if final_result and hasattr(final_result, 'usage') else None,
                 execution_time=execution_time,
                 success=not error_occurred,
@@ -85,6 +88,9 @@ async def generate_r_endpoint(request: GenerateSQLRequest, api_key: str = Depend
                         "payload": payload.model_dump(by_alias=True)
                     }
                     yield f"data: {json.dumps(data)}\n\n"
+                elif isinstance(item, dict) and item.get("type") == "done":
+                    # Forward done signal to frontend
+                    yield f"data: {json.dumps({'type': 'done'})}\n\n"
         except Exception as e:
             logger.error(f"Error in generate_r_endpoint: {str(e)}")
             logger.error(traceback.format_exc())
@@ -110,6 +116,9 @@ async def generate_sas_endpoint(request: GenerateSQLRequest, api_key: str = Depe
                         "payload": payload.model_dump(by_alias=True)
                     }
                     yield f"data: {json.dumps(data)}\n\n"
+                elif isinstance(item, dict) and item.get("type") == "done":
+                    # Forward done signal to frontend
+                    yield f"data: {json.dumps({'type': 'done'})}\n\n"
         except Exception as e:
             logger.error(f"Error in generate_sas_endpoint: {str(e)}")
             logger.error(traceback.format_exc())
@@ -135,6 +144,9 @@ async def generate_python_endpoint(request: GenerateSQLRequest, api_key: str = D
                         "payload": payload.model_dump(by_alias=True)
                     }
                     yield f"data: {json.dumps(data)}\n\n"
+                elif isinstance(item, dict) and item.get("type") == "done":
+                    # Forward done signal to frontend
+                    yield f"data: {json.dumps({'type': 'done'})}\n\n"
         except Exception as e:
             logger.error(f"Error in generate_python_endpoint: {str(e)}")
             logger.error(traceback.format_exc())
@@ -553,7 +565,7 @@ async def generate_planning_summary_endpoint(
 
 
 @router.post("/code-advisor")
-async def code_advisor_endpoint(request: GenerateSQLRequest, api_key: str = Depends(verify_api_key)):
+async def code_advisor_endpoint(request: GenerateSQLRequest, current_user: User = Depends(verify_api_key)):
     """
     Code Advisor - Get advice on SQL/R/SAS/Python code.
     
@@ -566,7 +578,7 @@ async def code_advisor_endpoint(request: GenerateSQLRequest, api_key: str = Depe
     from app.services.code_advisor_service import generate_code_advisor_for_request
     
     # Check rate limit
-    is_allowed, message = code_advisor_rate_limiter.is_allowed(api_key)
+    is_allowed, message = code_advisor_rate_limiter.is_allowed(current_user.api_key)
     
     if not is_allowed:
         raise HTTPException(
@@ -575,7 +587,7 @@ async def code_advisor_endpoint(request: GenerateSQLRequest, api_key: str = Depe
         )
     
     # Log rate limit info
-    logger.info(f"Code Advisor request from {api_key[:8]}... - {message}")
+    logger.info(f"Code Advisor request from {current_user.api_key[:8]}... - {message}")
     
     def event_generator():
         try:
@@ -589,6 +601,9 @@ async def code_advisor_endpoint(request: GenerateSQLRequest, api_key: str = Depe
                         "payload": payload.model_dump(by_alias=True)
                     }
                     yield f"data: {json.dumps(data)}\n\n"
+                elif isinstance(item, dict) and item.get("type") == "done":
+                    # Forward done signal to frontend
+                    yield f"data: {json.dumps({'type': 'done'})}\n\n"
         except Exception as e:
             logger.error(f"Error in code_advisor_endpoint: {str(e)}")
             logger.error(traceback.format_exc())

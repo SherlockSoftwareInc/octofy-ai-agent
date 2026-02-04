@@ -293,16 +293,13 @@ AuthType = Literal[
 # --- Settings / Configuration Models ---
 
 class TargetDBConfig(BaseModel):
-    friendly_name: str = "Northwind Database"
-    description: str = "Sales database for imported and exported specialty foods"
-    keywords: List[str] = ["sales", "customers", "orders", "products", "employees", "shipping"]
     db_type: str = "mssql"  # mssql, postgresql, mysql, etc.
     server: str = ""
     database_name: str = ""
     connection_string_encrypted: str = ""  # AES encrypted connection string
     connection_string_decrypted: Optional[str] = None # Debug field, not persisted
     driver: str = "ODBC Driver 17 for SQL Server"
-    auth_type: AuthType = "sql"
+    auth_type: AuthType = "windows"
     username: Optional[str] = None
     trust_server_certificate: Optional[bool] = False
     python_connection_string_encrypted: Optional[str] = None
@@ -354,7 +351,7 @@ class AppMeta(BaseModel):
     project_name: str = "Database AI Agent"
 
 class AgentSettings(BaseModel):
-    target_db: TargetDBConfig
+    target_db: Optional[TargetDBConfig] = None  # Optional - connection info now from _data-source.md
     llm_config: LLMConfig
     embedding_config: EmbeddingConfig
     vector_config: VectorConfig
@@ -380,7 +377,7 @@ class ConnectionTestRequest(BaseModel):
     driver: str = "ODBC Driver 17 for SQL Server"
     server: str
     database: str
-    auth_type: AuthType = "sql"
+    auth_type: AuthType = "windows"
     username: Optional[str] = None
     password: Optional[str] = None
     trust_server_certificate: Optional[bool] = False
@@ -514,7 +511,7 @@ class AddDataSourceRequest(BaseModel):
     keywords: List[str] = []
     server: str
     database_name: str
-    auth_type: AuthType = "sql"
+    auth_type: AuthType = "windows"
     username: Optional[str] = None
     password: Optional[str] = None
     driver: str = "ODBC Driver 17 for SQL Server"

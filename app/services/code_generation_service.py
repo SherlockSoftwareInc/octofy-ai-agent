@@ -132,6 +132,7 @@ def generate_r_for_request(request: GenerateSQLRequest) -> Generator[Union[Agent
         yield AgentStatus(step_id=1, message="Searching database objects...")
         result = search_data_objects(request.query)
         yield {"type": "result", "payload": result}
+        yield {"type": "done"}
         return
 
     yield AgentStatus(step_id=1, message="Initializing agent and loading settings...")
@@ -160,6 +161,7 @@ def generate_r_for_request(request: GenerateSQLRequest) -> Generator[Union[Agent
         yield AgentStatus(step_id=3, message="Processing general query...")
         result = _handle_general_query(request, llm_service)
         yield {"type": "result", "payload": result}
+        yield {"type": "done"}
         return
 
     entities, date_ranges = extract_entities(request.query)
@@ -184,6 +186,7 @@ def generate_r_for_request(request: GenerateSQLRequest) -> Generator[Union[Agent
                 context_text="Selected tables not found"
             )
             yield {"type": "result", "payload": result}
+            yield {"type": "done"}
             return
     elif request.context:
         context = request.context
@@ -279,6 +282,7 @@ def generate_r_for_request(request: GenerateSQLRequest) -> Generator[Union[Agent
                     context_text=f"Missing schemas: {', '.join(tables_not_found)}"
                 )
                  yield {"type": "result", "payload": result}
+                 yield {"type": "done"}
                  return
 
             if tables_added:
@@ -400,6 +404,7 @@ Entities: {', '.join(entities) if entities else 'None'}
         context_text=prompt
     )
     yield {"type": "result", "payload": response}
+    yield {"type": "done"}
 
 
 def generate_sas_for_request(request: GenerateSQLRequest) -> Generator[Union[AgentStatus, Dict[str, Any]], None, None]:
@@ -418,6 +423,7 @@ def generate_sas_for_request(request: GenerateSQLRequest) -> Generator[Union[Age
         yield AgentStatus(step_id=1, message="Searching database objects...")
         result = search_data_objects(request.query)
         yield {"type": "result", "payload": result}
+        yield {"type": "done"}
         return
 
     yield AgentStatus(step_id=1, message="Initializing agent and loading settings...")
@@ -446,6 +452,7 @@ def generate_sas_for_request(request: GenerateSQLRequest) -> Generator[Union[Age
         yield AgentStatus(step_id=3, message="Processing general query...")
         result = _handle_general_query(request, llm_service)
         yield {"type": "result", "payload": result}
+        yield {"type": "done"}
         return
 
     entities, date_ranges = extract_entities(request.query)
@@ -470,6 +477,7 @@ def generate_sas_for_request(request: GenerateSQLRequest) -> Generator[Union[Age
                 context_text="Selected tables not found"
             )
             yield {"type": "result", "payload": result}
+            yield {"type": "done"}
             return
     elif request.context:
         context = request.context
@@ -566,6 +574,7 @@ def generate_sas_for_request(request: GenerateSQLRequest) -> Generator[Union[Age
                     context_text=f"Missing schemas: {', '.join(tables_not_found)}"
                 )
                  yield {"type": "result", "payload": result}
+                 yield {"type": "done"}
                  return
 
             if tables_added:
@@ -682,6 +691,7 @@ Entities: {', '.join(entities) if entities else 'None'}
         context_text=prompt
     )
     yield {"type": "result", "payload": response}
+    yield {"type": "done"}
 
 
 def generate_python_for_request(request: GenerateSQLRequest) -> Generator[Union[AgentStatus, Dict[str, Any]], None, None]:
@@ -700,6 +710,7 @@ def generate_python_for_request(request: GenerateSQLRequest) -> Generator[Union[
         yield AgentStatus(step_id=1, message="Searching database objects...")
         result = search_data_objects(request.query)
         yield {"type": "result", "payload": result}
+        yield {"type": "done"}
         return
 
     yield AgentStatus(step_id=1, message="Initializing agent and loading settings...")
@@ -729,6 +740,7 @@ def generate_python_for_request(request: GenerateSQLRequest) -> Generator[Union[
         yield AgentStatus(step_id=3, message="Processing general query...")
         result = _handle_general_query(request, llm_service)
         yield {"type": "result", "payload": result}
+        yield {"type": "done"}
         return
 
     entities, date_ranges = extract_entities(request.query)
@@ -753,6 +765,7 @@ def generate_python_for_request(request: GenerateSQLRequest) -> Generator[Union[
                 context_text="Selected tables not found"
             )
             yield {"type": "result", "payload": result}
+            yield {"type": "done"}
             return
     elif request.context:
         # If context is explicitly provided, use it
@@ -859,6 +872,7 @@ def generate_python_for_request(request: GenerateSQLRequest) -> Generator[Union[
                     context_text=f"Missing schemas: {', '.join(tables_not_found)}"
                 )
                  yield {"type": "result", "payload": result}
+                 yield {"type": "done"}
                  return
 
             if tables_added:
@@ -1039,6 +1053,7 @@ import sqlalchemy
         context_text=prompt
     )
     yield {"type": "result", "payload": response}
+    yield {"type": "done"}
 
 
 def regenerate_python_with_error_feedback(
