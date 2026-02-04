@@ -686,7 +686,11 @@ def _serialize_planning_context(planning_context: Dict[str, Any]) -> str:
     return json.dumps(serializable_context)
 
 
-def planning_conversation(query: str, planning_context: Optional[Dict[str, Any]] = None) -> GenerateSQLResponse:
+def planning_conversation(
+    query: str, 
+    planning_context: Optional[Dict[str, Any]] = None,
+    user_selected_tables: Optional[List[str]] = None
+) -> GenerateSQLResponse:
     """
     Intelligent planning mode with LLM-driven conversation and smart clarification detection.
     
@@ -748,8 +752,7 @@ def planning_conversation(query: str, planning_context: Optional[Dict[str, Any]]
                 elif isinstance(planning_context[field], list):
                     planning_context[field] = set(planning_context[field])
         
-        # Step 1: Turn-type classification and intent analysis
-        # Serialize context for JSON (convert sets to lists)
+        # Serialize context for JSON (convert sets to lists) - do this early for all paths
         context_for_prompt = {}
         for key, value in planning_context.items():
             if isinstance(value, set):
@@ -757,12 +760,66 @@ def planning_conversation(query: str, planning_context: Optional[Dict[str, Any]]
             else:
                 context_for_prompt[key] = value
         
-        # Classify turn type using fast detection first, fallback to LLM
-        turn_classification = _detect_turn_type_fast(query, planning_context)
-        if not turn_classification:
-            turn_classification = _classify_turn_type_llm(query, planning_context)
+        # Step 0: Detect table selection changes (user-only action without text input)
+        query_is_empty = not query or query.strip() == ""
+        # User submitted the form (user_selected_tables is not None) without typing anything
+        has_table_selection_submission = user_selected_tables is not None
         
-        turn_type = turn_classification["turn_type"]
+        # If user submitted table selection form without typing anything, treat as TABLE_SELECTION turn type
+        if query_is_empty and has_table_selection_submission:
+            # Update selected_tables in context
+            previous_selected = set(planning_context.get("selected_tables", []))
+            new_selected = set(user_selected_tables or [])  # Type safety: handle None case
+            
+            # Track confirmed and rejected tables
+            newly_added = new_selected - previous_selected
+            newly_removed = previous_selected - new_selected
+            
+            if newly_added:
+                planning_context["confirmed_tables"].update(newly_added)
+            if newly_removed:
+                planning_context["rejected_tables"].update(newly_removed)
+            
+            # Update context
+            planning_context["selected_tables"] = list(new_selected)
+            
+            # Generate a synthetic query for processing
+            if newly_added and newly_removed:
+                query = f"I've updated my table selection (added {len(newly_added)}, removed {len(newly_removed)} tables)."
+            elif newly_added:
+                added_names = ", ".join([t.split('.')[-1] for t in list(newly_added)[:3]])
+                if len(newly_added) > 3:
+                    added_names += f" and {len(newly_added) - 3} more"
+                query = f"I've selected {added_names}."
+            elif newly_removed:
+                removed_names = ", ".join([t.split('.')[-1] for t in list(newly_removed)[:3]])
+                if len(newly_removed) > 3:
+                    removed_names += f" and {len(newly_removed) - 3} more"
+                query = f"I've deselected {removed_names}."
+            else:
+                query = "I've confirmed my table selection."
+            
+            # Override turn type
+            turn_type = "table_selection"
+            turn_classification = {
+                "turn_type": "table_selection",
+                "confidence": 1.0,
+                "topic_similarity": 1.0,
+                "reasoning": "User selected/deselected tables without text input"
+            }
+        else:
+            # Normal turn-type classification
+            turn_classification = None
+            turn_type = None
+        
+        # Step 1: Turn-type classification and intent analysis (skip if already classified)
+        if not turn_classification:
+            # Classify turn type using fast detection first, fallback to LLM
+            turn_classification = _detect_turn_type_fast(query, planning_context)
+            if not turn_classification:
+                turn_classification = _classify_turn_type_llm(query, planning_context)
+            
+            turn_type = turn_classification["turn_type"]
         
         # Handle pivot with confirmation
         if turn_type == "pivot":
@@ -810,6 +867,40 @@ Would you like to start fresh with this new topic? (This will clear your current
             # Reprocess with new query
             query = new_goal
             turn_type = "refinement"  # Treat as fresh start
+        
+        # Handle TABLE_SELECTION (user modified table selection without text input)
+        if turn_type == "table_selection":
+            # Skip intent analysis - directly prepare response about table selection
+            selected_count = len(planning_context.get("selected_tables", []))
+            
+            if selected_count == 0:
+                response_text = "I notice you've deselected all tables. Please select at least one table to continue, or describe what data you're looking for."
+            elif selected_count == 1:
+                table_name = planning_context["selected_tables"][0].split('.')[-1]
+                response_text = f"Got it! You've selected the **{table_name}** table. What would you like to analyze from this table?"
+            else:
+                response_text = f"Perfect! You've selected {selected_count} tables. What analysis would you like to perform with these tables?"
+            
+            # Add turn to conversation history
+            planning_context["conversation_history"].append({
+                "role": "user",
+                "content": query,  # synthetic query describing the action
+                "turn": planning_context.get("turn_count", 0)
+            })
+            planning_context["conversation_history"].append({
+                "role": "assistant",
+                "content": response_text,
+                "turn": planning_context.get("turn_count", 0)
+            })
+            planning_context["turn_count"] = planning_context.get("turn_count", 0) + 1
+            
+            return GenerateSQLResponse(
+                sql="",
+                explanation=response_text,
+                objects=[],
+                query_type="plan",
+                context_text=_serialize_planning_context(planning_context)
+            )
         
         # Run intent analysis
         intent_prompt = f"""You are a data analysis planning assistant. Analyze the user's message:
@@ -1082,7 +1173,11 @@ def generate_sql_for_request(request: GenerateSQLRequest, previous_sql: Optional
     # Check for plan mode first - conversational planning
     if request.queryMode == "plan":
         yield AgentStatus(step_id=1, message="Thinking about your data needs...")
-        result = planning_conversation(request.query, request.planning_context)
+        result = planning_conversation(
+            request.query, 
+            request.planning_context,
+            user_selected_tables=request.user_selected_tables
+        )
         yield {"type": "result", "payload": result}
         yield {"type": "done"}
         return
