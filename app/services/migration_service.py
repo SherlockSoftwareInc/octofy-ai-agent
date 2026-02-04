@@ -20,17 +20,29 @@ def detect_config_version(config_dict: Dict[str, Any]) -> Literal["v1", "v2", "u
     """
     Detect configuration version.
     
+    Note: As of the skills-based architecture, data sources are NEVER stored in
+    agent_settings.json. They are always loaded from skills/_data-source.md files.
+    
     Returns:
-        "v1" if single-database format (has 'target_db')
-        "v2" if multi-source format (has 'data_sources')
-        "unknown" if neither format is detected
+        "v1" if skills-based format (no 'target_db', no 'data_sources', or has deprecated fields)
+        "v2" if legacy multi-source format (has 'data_sources' - deprecated)
+        "unknown" if unrecognized format
     """
-    if "target_db" in config_dict and "data_sources" not in config_dict:
+    # If has target_db (old v1), treat as v1 needing cleanup
+    if "target_db" in config_dict:
         return "v1"
-    elif "data_sources" in config_dict:
+    
+    # If has data_sources (old v2), treat as v2 (deprecated)
+    # Note: This is now deprecated - data sources come from skills
+    if "data_sources" in config_dict:
         return "v2"
-    else:
-        return "unknown"
+    
+    # If has neither, it's the correct skills-based format (treat as v1)
+    # This is the expected state: no database config in settings file
+    if "llm_config" in config_dict and "vector_config" in config_dict:
+        return "v1"
+    
+    return "unknown"
 
 
 def migrate_v1_to_v2(settings: AgentSettings) -> AgentSettingsV2:
@@ -117,10 +129,13 @@ def auto_migrate_if_needed() -> Literal["v1", "v2", "migrated", "error"]:
     
     This function should be called on application startup.
     
+    Note: As of the skills-based architecture, data sources are NEVER stored in
+    agent_settings.json. They are always loaded from skills/_data-source.md files.
+    
     Returns:
-        "v1": Config is v1 format but migration was skipped (manual intervention needed)
-        "v2": Config is already v2 format, no migration needed
-        "migrated": Config was successfully migrated from v1 to v2
+        "v1": Config is in skills-based format (correct state) - no migration needed
+        "v2": Config has deprecated data_sources field (legacy v2)
+        "migrated": Config was successfully migrated
         "error": Migration failed
     """
     if not os.path.exists(CONFIG_PATH):
@@ -134,37 +149,25 @@ def auto_migrate_if_needed() -> Literal["v1", "v2", "migrated", "error"]:
         
         version = detect_config_version(config_dict)
         
-        if version == "v2":
-            logger.info("Configuration is already v2 format. No migration needed.")
-            return "v2"
-        
-        elif version == "v1":
-            logger.info("Detected v1 configuration. Auto-migration is DISABLED.")
-            logger.info("⚠️ Configuration will remain in v1 format. Manual migration required if needed.")
-            
-            # DISABLED: Automatic migration to prevent unwanted config modifications
-            # To re-enable, uncomment the code below:
-            
-            # # Parse as v1
-            # settings_v1 = AgentSettings(**config_dict)
-            # 
-            # # Migrate to v2
-            # settings_v2 = migrate_v1_to_v2(settings_v1)
-            # 
-            # # Save migrated config with backup
-            # save_migrated_config(settings_v2, backup_original=True)
-            # 
-            # logger.info("✅ Configuration migration completed successfully!")
-            # return "migrated"
-            
+        if version == "v1":
+            # This is the CORRECT state - skills-based configuration
+            # No target_db, no data_sources - all data sources from skills directory
+            logger.info("✅ Configuration is in skills-based format (v1). Data sources loaded from skills directory.")
             return "v1"
         
+        elif version == "v2":
+            # Legacy v2 with data_sources - warn but don't fail
+            logger.warning("⚠️ Configuration has deprecated 'data_sources' field. This will be ignored.")
+            logger.warning("Data sources are always loaded from skills/_data-source.md files.")
+            return "v2"
+        
         else:
-            logger.error("Unknown configuration format. Manual migration required.")
+            logger.error("Unknown configuration format. Manual intervention required.")
+            logger.error("Expected format: llm_config, embedding_config, vector_config, app_meta")
             return "error"
     
     except Exception as e:
-        logger.error(f"Migration failed: {str(e)}", exc_info=True)
+        logger.error(f"Configuration check failed: {str(e)}", exc_info=True)
         return "error"
 
 
