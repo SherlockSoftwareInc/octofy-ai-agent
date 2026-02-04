@@ -748,7 +748,7 @@ def planning_conversation(query: str, planning_context: Optional[Dict[str, Any]]
                 elif isinstance(planning_context[field], list):
                     planning_context[field] = set(planning_context[field])
         
-        # Step 1: Use LLM to analyze user intent with smart clarification detection
+        # Step 1: Turn-type classification and intent analysis
         # Serialize context for JSON (convert sets to lists)
         context_for_prompt = {}
         for key, value in planning_context.items():
@@ -757,6 +757,61 @@ def planning_conversation(query: str, planning_context: Optional[Dict[str, Any]]
             else:
                 context_for_prompt[key] = value
         
+        # Classify turn type using fast detection first, fallback to LLM
+        turn_classification = _detect_turn_type_fast(query, planning_context)
+        if not turn_classification:
+            turn_classification = _classify_turn_type_llm(query, planning_context)
+        
+        turn_type = turn_classification["turn_type"]
+        
+        # Handle pivot with confirmation
+        if turn_type == "pivot":
+            if not planning_context.get("pending_pivot"):
+                # First pivot detection - ask for confirmation
+                planning_context["pending_pivot"] = {
+                    "new_goal": query,
+                    "previous_goal": planning_context.get("goal", "")
+                }
+                
+                response_text = f"""It looks like you want to switch from "{planning_context.get('goal', 'your current analysis')}" to "{query}". 
+
+Would you like to start fresh with this new topic? (This will clear your current table selections and requirements)"""
+                
+                return GenerateSQLResponse(
+                    sql="",
+                    explanation=response_text,
+                    objects=[],
+                    query_type="plan",
+                    context_text=_serialize_planning_context(planning_context)
+                )
+        
+        # Handle pending pivot confirmation
+        if planning_context.get("pending_pivot") and turn_type == "confirmation":
+            # User confirmed the pivot - switch topics
+            old_goal = planning_context["goal"]
+            new_goal = planning_context["pending_pivot"]["new_goal"]
+            
+            # Archive old goal
+            if old_goal:
+                planning_context["goal_history"].append(old_goal)
+            
+            # Reset for new topic
+            planning_context["goal"] = ""
+            planning_context["selected_tables"] = []
+            planning_context["suggested_tables"] = []
+            planning_context.setdefault("requirements", [])
+            planning_context["rejected_tables"] = set()
+            planning_context["confirmed_tables"] = set()
+            planning_context["last_auto_checked"] = set()
+            
+            # Clear pending pivot
+            del planning_context["pending_pivot"]
+            
+            # Reprocess with new query
+            query = new_goal
+            turn_type = "refinement"  # Treat as fresh start
+        
+        # Run intent analysis
         intent_prompt = f"""You are a data analysis planning assistant. Analyze the user's message:
 
 Previous Context: {json.dumps(context_for_prompt, indent=2)}
@@ -806,19 +861,39 @@ Be helpful, not interrogative."""
                 "requirements_extracted": []
             }
         
-        # Step 2: Update planning context
+        # Step 2: Update planning context based on turn type
+        old_goal = planning_context.get("goal", "")
+        
         if intent_data.get("goal_statement"):
-            planning_context["goal"] = intent_data["goal_statement"]
+            new_goal = intent_data["goal_statement"]
+            
+            # Track goal evolution for corrections and refinements
+            if turn_type in ["correction", "refinement"] and old_goal and new_goal != old_goal:
+                planning_context["goal_history"].append(old_goal)
+                
+                # Record adjustment
+                planning_context["adjustments"].append({
+                    "type": turn_type,
+                    "from": old_goal,
+                    "to": new_goal,
+                    "turn": planning_context.get("turn_count", 0)
+                })
+            
+            planning_context["goal"] = new_goal
+        
+        # Ensure requirements field exists
+        planning_context.setdefault("requirements", [])
         
         for req in intent_data.get("requirements_extracted", []):
             planning_context["requirements"].append(req)
         
         planning_context["conversation_history"].append({
-            "turn": planning_context["turn_count"],
+            "turn": planning_context.get("turn_count", 0),
             "user": query,
-            "intent": intent_data
+            "intent": intent_data,
+            "turn_type": turn_type
         })
-        planning_context["turn_count"] += 1
+        planning_context["turn_count"] = planning_context.get("turn_count", 0) + 1
         
         # Step 3: Perform semantic search if ready
         suggested_objects = []
