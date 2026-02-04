@@ -657,6 +657,35 @@ IMPORTANT: Only return the JSON object, no additional text."""
         }
 
 
+def _serialize_planning_context(planning_context: Dict[str, Any]) -> str:
+    """
+    Serialize planning context to JSON, converting sets to lists.
+    
+    Planning context uses sets for rejected_tables, confirmed_tables, and
+    last_auto_checked to efficiently track table state. This function converts
+    those sets to lists for JSON serialization.
+    
+    Args:
+        planning_context: Planning state dictionary potentially containing set fields
+    
+    Returns:
+        JSON string representation of planning context with sets converted to lists
+    """
+    import json
+    
+    # Create a shallow copy to avoid modifying the original
+    serializable_context = {}
+    
+    for key, value in planning_context.items():
+        # Convert sets to lists for JSON serialization
+        if isinstance(value, set):
+            serializable_context[key] = list(value)
+        else:
+            serializable_context[key] = value
+    
+    return json.dumps(serializable_context)
+
+
 def planning_conversation(query: str, planning_context: Optional[Dict[str, Any]] = None) -> GenerateSQLResponse:
     """
     Intelligent planning mode with LLM-driven conversation and smart clarification detection.
