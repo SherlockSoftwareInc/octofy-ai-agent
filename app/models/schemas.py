@@ -79,6 +79,7 @@ class TurnType(str, Enum):
     PIVOT = "pivot"                # Switching topics
     CONFIRMATION = "confirmation"  # Agreeing to proceed
     CLARIFICATION = "clarification" # Answering system questions
+    TABLE_SELECTION = "table_selection"  # User selected/deselected tables without text input
 
 
 class IntentData(BaseModel):
