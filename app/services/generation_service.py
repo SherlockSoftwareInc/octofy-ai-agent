@@ -934,11 +934,18 @@ Be helpful, not interrogative."""
 
         try:
             intent_response = llm_service.chat(intent_prompt)
-            # Clean up response - remove markdown code blocks if present
+            # Clean up response - remove markdown code blocks and extra prefixes
             intent_response_clean = intent_response.strip()
+            
+            # Remove markdown code blocks
             if intent_response_clean.startswith("```"):
                 intent_response_clean = re.sub(r'^```(?:json)?\s*\n', '', intent_response_clean)
                 intent_response_clean = re.sub(r'\n```\s*$', '', intent_response_clean)
+            
+            # Remove standalone "json" prefix if present (LLM sometimes adds this)
+            if intent_response_clean.startswith("json"):
+                intent_response_clean = intent_response_clean[4:].strip()
+            
             intent_data = json.loads(intent_response_clean)
         except json.JSONDecodeError as e:
             logging.error(f"Failed to parse intent JSON: {e}. Response: {intent_response}")
@@ -1022,13 +1029,20 @@ Maximum 3 essential tables."""
                     confidence_response = llm_service.chat(confidence_prompt)
                     # Clean up response
                     confidence_response_clean = confidence_response.strip()
+                    
+                    # Remove markdown code blocks
                     if confidence_response_clean.startswith("```"):
                         confidence_response_clean = re.sub(r'^```(?:json)?\s*\n', '', confidence_response_clean)
                         confidence_response_clean = re.sub(r'\n```\s*$', '', confidence_response_clean)
+                    
+                    # Remove standalone "json" prefix if present
+                    if confidence_response_clean.startswith("json"):
+                        confidence_response_clean = confidence_response_clean[4:].strip()
+                    
                     confidence_data = json.loads(confidence_response_clean)
                     auto_checked_tables = confidence_data.get("essential_tables", [])
                 except (json.JSONDecodeError, Exception) as e:
-                    logging.error(f"Failed to parse confidence JSON: {e}")
+                    logging.error(f"Failed to parse confidence JSON: {e}. Response: {confidence_response if 'confidence_response' in locals() else 'N/A'}")
                     # Fallback: auto-check top 1 table
                     if suggested_objects:
                         auto_checked_tables = [f"[{suggested_objects[0].schema_name}].[{suggested_objects[0].name}]"]

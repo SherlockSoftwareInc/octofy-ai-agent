@@ -356,7 +356,18 @@ class MilvusVectorStore(VectorStoreBase):
             print(f"Failed to ensure few-shot collection: {e}")
 
     def _get_embedding(self, text: str) -> List[float]:
-        text = text.replace("\n", " ")
+        # Validate input before processing
+        if not text or not isinstance(text, str):
+            print(f"Warning: Invalid embedding input (type: {type(text).__name__}), using fallback")
+            return self._fallback_embedding("empty_input_fallback")
+        
+        text = text.replace("\n", " ").strip()
+        
+        # Check if text is empty after cleaning
+        if not text:
+            print("Warning: Empty text after cleaning, using fallback")
+            return self._fallback_embedding("empty_text_fallback")
+        
         if not self._embedding_ready or self.embedding_client is None:
             # Try to re-init if ready (maybe key was added)
             # For now just fall back
@@ -375,12 +386,23 @@ class MilvusVectorStore(VectorStoreBase):
             return self._fallback_embedding(text)
 
     def _get_embeddings_batch(self, texts: List[str]) -> List[List[float]]:
-        # Remove newlines for consistency
-        texts = [t.replace("\n", " ") for t in texts]
+        # Validate and clean inputs
+        if not texts:
+            return []
+        
+        # Filter out invalid texts and clean valid ones
+        clean_texts = []
+        for i, t in enumerate(texts):
+            if not t or not isinstance(t, str):
+                print(f"Warning: Invalid text at index {i} (type: {type(t).__name__}), using fallback")
+                clean_texts.append("empty_input_fallback")
+            else:
+                cleaned = t.replace("\n", " ").strip()
+                clean_texts.append(cleaned if cleaned else "empty_text_fallback")
         
         if not self._embedding_ready or self.embedding_client is None:
             print("Embedding client not ready, using fallback batch.")
-            return [self._fallback_embedding(t) for t in texts]
+            return [self._fallback_embedding(t) for t in clean_texts]
             
         try:
             return self.embedding_client.embed_documents(texts)

@@ -229,7 +229,8 @@ export const api = {
         queryMode: 'generate' | 'search' | 'plan' = 'generate',
         signal?: AbortSignal,
         tableOverride?: string[],
-        planningContext?: any
+        planningContext?: any,
+        userSelectedTables?: string[]
     ): Promise<GenerateSQLResponse> => {
         const url = `${API_BASE_URL}/generate-sql`;
         const apiKey = getApiKey();
@@ -247,7 +248,8 @@ export const api = {
             forceGeneral, 
             queryMode, 
             table_override: tableOverride,
-            planning_context: planningContext
+            planning_context: planningContext,
+            user_selected_tables: userSelectedTables
         });
 
         const response = await fetch(url, {
