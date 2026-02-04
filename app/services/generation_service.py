@@ -463,23 +463,7 @@ def _detect_turn_type_fast(query: str, planning_context: Dict[str, Any]) -> Opti
         }
     
     # 3. KEYWORD OVERLAP CALCULATION (for pivot vs refinement)
-    def extract_keywords(text: str) -> set:
-        """Extract 4+ character words as keywords."""
-        if not text:
-            return set()
-        words = re.findall(r'\b\w{4,}\b', text.lower())
-        return set(words)
-    
-    query_keywords = extract_keywords(query)
-    goal_keywords = extract_keywords(goal)
-    
-    # Calculate Jaccard index
-    if not query_keywords or not goal_keywords:
-        topic_similarity = 0.0
-    else:
-        intersection = query_keywords & goal_keywords
-        union = query_keywords | goal_keywords
-        topic_similarity = len(intersection) / len(union) if union else 0.0
+    topic_similarity = _compute_topic_similarity(query, goal)
     
     # 4. PIVOT DETECTION (low overlap + pivot signals)
     pivot_signals = [
@@ -514,6 +498,52 @@ def _detect_turn_type_fast(query: str, planning_context: Dict[str, Any]) -> Opti
     
     # No clear pattern detected
     return None
+
+
+def _compute_topic_similarity(query: str, goal: str) -> float:
+    """
+    Compute topic similarity between two strings using Jaccard index.
+    
+    Extracts keywords (4+ character words) from both strings and calculates
+    the Jaccard similarity coefficient: |intersection| / |union|.
+    
+    This is used by pivot detection to determine if the user is switching topics
+    or refining the current goal.
+    
+    Args:
+        query: Current user query string
+        goal: Previous goal or context string
+    
+    Returns:
+        float: Similarity score from 0.0 (no overlap) to 1.0 (identical)
+    
+    Examples:
+        >>> _compute_topic_similarity("show sales data", "show sales data")
+        1.0
+        >>> _compute_topic_similarity("show sales", "show revenue")
+        0.5
+        >>> _compute_topic_similarity("show sales", "employee count")
+        0.0
+    """
+    def extract_keywords(text: str) -> set:
+        """Extract 4+ character words as keywords."""
+        if not text:
+            return set()
+        words = re.findall(r'\b\w{4,}\b', text.lower())
+        return set(words)
+    
+    query_keywords = extract_keywords(query)
+    goal_keywords = extract_keywords(goal)
+    
+    # Handle edge cases: empty keyword sets
+    if not query_keywords or not goal_keywords:
+        return 0.0
+    
+    # Calculate Jaccard index: intersection / union
+    intersection = query_keywords & goal_keywords
+    union = query_keywords | goal_keywords
+    
+    return len(intersection) / len(union) if union else 0.0
 
 
 def planning_conversation(query: str, planning_context: Optional[Dict[str, Any]] = None) -> GenerateSQLResponse:
