@@ -69,6 +69,39 @@ class GenerateSQLRequest(BaseModel):
     user_selected_tables: Optional[List[str]] = None  # User's checkbox selections from threshold prompt
     planning_context: Optional[Dict[str, Any]] = None  # Structured planning state for conversational exploration
 
+
+# --- Turn-Type Classification Models ---
+
+class TurnType(str, Enum):
+    """Classification of user message intent relative to planning context"""
+    REFINEMENT = "refinement"      # Adding detail to existing goal
+    CORRECTION = "correction"      # Changing a specific detail
+    PIVOT = "pivot"                # Switching topics
+    CONFIRMATION = "confirmation"  # Agreeing to proceed
+    CLARIFICATION = "clarification" # Answering system questions
+
+
+class IntentData(BaseModel):
+    """Enhanced intent analysis with turn-type classification"""
+    # Existing fields (preserve backward compatibility)
+    goal_clear: bool
+    goal_statement: str
+    critical_ambiguities: List[str] = []
+    ready_for_search: bool
+    required_questions: List[Dict[str, Any]] = []
+    requirements_extracted: List[Dict[str, Any]] = []
+    
+    # NEW: Turn-type classification fields
+    turn_type: TurnType
+    topic_similarity: float = Field(ge=0.0, le=1.0, description="Similarity to previous goal (0-1)")
+    confidence_in_classification: float = Field(ge=0.0, le=1.0)
+    reasoning: str = ""
+    changed_requirements: List[str] = []
+    new_requirements: List[str] = []
+    removed_requirements: List[str] = []
+    needs_pivot_confirmation: bool = False
+
+
 class SearchObject(BaseModel):
     schema_name: str = Field(..., alias="schema")
     name: str
