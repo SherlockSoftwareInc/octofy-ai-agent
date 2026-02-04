@@ -728,13 +728,38 @@ def planning_conversation(query: str, planning_context: Optional[Dict[str, Any]]
                 "suggested_tables": [],
                 "requirements": [],
                 "conversation_history": [],
-                "turn_count": 0
+                "turn_count": 0,
+                # NEW: Intent evolution tracking fields
+                "goal_history": [],  # List of previous goals (for pivot detection)
+                "rejected_tables": set(),  # Tables user explicitly rejected
+                "confirmed_tables": set(),  # Tables user explicitly confirmed
+                "adjustments": [],  # List of corrections/refinements made
+                "last_auto_checked": set()  # Tables that were auto-checked in previous turn
             }
+        else:
+            # Ensure new fields exist for backward compatibility
+            planning_context.setdefault("goal_history", [])
+            planning_context.setdefault("adjustments", [])
+            
+            # Convert list fields to sets for efficient lookups (backward compatibility)
+            for field in ["rejected_tables", "confirmed_tables", "last_auto_checked"]:
+                if field not in planning_context:
+                    planning_context[field] = set()
+                elif isinstance(planning_context[field], list):
+                    planning_context[field] = set(planning_context[field])
         
         # Step 1: Use LLM to analyze user intent with smart clarification detection
+        # Serialize context for JSON (convert sets to lists)
+        context_for_prompt = {}
+        for key, value in planning_context.items():
+            if isinstance(value, set):
+                context_for_prompt[key] = list(value)
+            else:
+                context_for_prompt[key] = value
+        
         intent_prompt = f"""You are a data analysis planning assistant. Analyze the user's message:
 
-Previous Context: {json.dumps(planning_context, indent=2)}
+Previous Context: {json.dumps(context_for_prompt, indent=2)}
 User Message: {query}
 
 Determine:
@@ -862,7 +887,7 @@ Maximum 3 essential tables."""
         # Step 5: Generate conversational response
         response_prompt = f"""Generate a helpful response for this planning conversation.
 
-Context: {json.dumps(planning_context, indent=2)}
+Context: {json.dumps(context_for_prompt, indent=2)}
 Intent Analysis: {json.dumps(intent_data, indent=2)}
 Number of Suggested Tables: {len(suggested_objects)}
 Auto-Checked Tables: {json.dumps(auto_checked_tables, indent=2)}
@@ -884,7 +909,7 @@ Format as markdown. Be concise but friendly. Maximum 4 sentences."""
             explanation=ai_response,
             objects=suggested_objects,
             query_type="plan",
-            context_text=json.dumps(planning_context)
+            context_text=_serialize_planning_context(planning_context)
         )
         
     except Exception as e:
@@ -893,7 +918,7 @@ Format as markdown. Be concise but friendly. Maximum 4 sentences."""
             sql="",
             explanation=f"I encountered an issue during planning. Let's try again: {str(e)}",
             query_type="plan",
-            context_text=json.dumps(planning_context) if planning_context else "{}"
+            context_text=_serialize_planning_context(planning_context) if planning_context else "{}"
         )
 
 
@@ -912,6 +937,14 @@ def generate_planning_summary(planning_context: Dict[str, Any]) -> str:
     try:
         llm_service = get_llm_service()
         
+        # Serialize context for JSON (convert sets to lists)
+        context_for_prompt = {}
+        for key, value in planning_context.items():
+            if isinstance(value, set):
+                context_for_prompt[key] = list(value)
+            else:
+                context_for_prompt[key] = value
+        
         # Extract user's original request from conversation history
         user_messages = [turn.get("user", "") for turn in planning_context.get("conversation_history", [])]
         original_request = user_messages[0] if user_messages else planning_context.get("goal", "")
@@ -920,7 +953,7 @@ def generate_planning_summary(planning_context: Dict[str, Any]) -> str:
 
 **User's Primary Request:** {original_request}
 
-**Full Planning Context:** {json.dumps(planning_context, indent=2)}
+**Full Planning Context:** {json.dumps(context_for_prompt, indent=2)}
 
 CRITICAL: The summary must focus on WHAT THE USER WANTS TO ACHIEVE (their primary analysis request), NOT just list tables.
 
