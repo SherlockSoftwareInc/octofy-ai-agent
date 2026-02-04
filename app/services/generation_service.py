@@ -546,6 +546,117 @@ def _compute_topic_similarity(query: str, goal: str) -> float:
     return len(intersection) / len(union) if union else 0.0
 
 
+def _classify_turn_type_llm(query: str, planning_context: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    LLM-based turn-type classification fallback for ambiguous cases.
+    
+    Uses an LLM to analyze conversation context and classify the user's turn type
+    when fast pattern matching is insufficient. Includes conversation history for
+    better context understanding.
+    
+    Args:
+        query: Current user message
+        planning_context: Planning state including goal, conversation_history, etc.
+    
+    Returns:
+        Dict with fields:
+            - turn_type: One of "refinement", "correction", "pivot", "confirmation", "clarification"
+            - confidence: Float in [0.0, 1.0]
+            - reasoning: Explanation of classification
+            - topic_similarity: Float in [0.0, 1.0]
+            - changed_requirements: List of requirement keys that changed (for corrections)
+            - new_requirements: List of new requirements added (for refinements)
+        
+        On error, returns fallback REFINEMENT classification with confidence=0.5
+    """
+    import json
+    
+    try:
+        llm_service = get_llm_service()
+        
+        # Build conversation history string
+        history_text = ""
+        for turn in planning_context.get("conversation_history", []):
+            user_msg = turn.get("user", "")
+            assistant_msg = turn.get("assistant", "")
+            history_text += f"User: {user_msg}\nAssistant: {assistant_msg}\n"
+        
+        # Build classification prompt
+        prompt = f"""You are analyzing a planning conversation to classify the user's latest message.
+
+Current Goal: {planning_context.get("goal", "Not yet established")}
+
+Conversation History:
+{history_text if history_text else "No previous conversation"}
+
+Latest User Message: {query}
+
+Classify this message as one of the following turn types:
+1. **refinement**: User is adding details or constraints to the existing goal (e.g., "also filter by region")
+2. **correction**: User is changing a specific detail they previously stated (e.g., "no, I meant 2023, not 2022")
+3. **pivot**: User is switching to a completely different topic (e.g., from sales to employees)
+4. **confirmation**: User is agreeing to proceed (e.g., "yes", "ok", "sounds good")
+5. **clarification**: User is answering a specific question the assistant asked
+
+Respond with JSON:
+{{
+    "turn_type": "refinement|correction|pivot|confirmation|clarification",
+    "confidence": 0.0-1.0,
+    "reasoning": "Brief explanation of why this classification",
+    "topic_similarity": 0.0-1.0,
+    "changed_requirements": ["list", "of", "changed", "keys"],
+    "new_requirements": ["list", "of", "new", "requirements"]
+}}
+
+IMPORTANT: Only return the JSON object, no additional text."""
+        
+        # Call LLM with temperature=0.3 for consistent but slightly flexible responses
+        response = llm_service.chat(prompt, temperature=0.3)
+        
+        # Clean markdown code blocks if present
+        response_clean = response.strip()
+        if response_clean.startswith("```"):
+            response_clean = re.sub(r'^```(?:json)?\s*\n', '', response_clean)
+            response_clean = re.sub(r'\n```\s*$', '', response_clean)
+        
+        # Parse JSON
+        result = json.loads(response_clean)
+        
+        # Validate required fields
+        required_fields = ["turn_type", "confidence", "reasoning", "topic_similarity"]
+        if not all(field in result for field in required_fields):
+            raise ValueError(f"Missing required fields. Got: {list(result.keys())}")
+        
+        # Validate turn_type is valid enum value
+        valid_turn_types = ["refinement", "correction", "pivot", "confirmation", "clarification"]
+        if result["turn_type"] not in valid_turn_types:
+            raise ValueError(f"Invalid turn_type: {result['turn_type']}")
+        
+        # Validate confidence and topic_similarity are in [0, 1]
+        if not (0.0 <= result["confidence"] <= 1.0):
+            raise ValueError(f"Confidence out of bounds: {result['confidence']}")
+        if not (0.0 <= result["topic_similarity"] <= 1.0):
+            raise ValueError(f"Topic similarity out of bounds: {result['topic_similarity']}")
+        
+        # Ensure optional fields exist with defaults
+        result.setdefault("changed_requirements", [])
+        result.setdefault("new_requirements", [])
+        
+        return result
+        
+    except Exception as e:
+        # Log error and return fallback
+        logging.error(f"LLM turn-type classification failed: {e}")
+        return {
+            "turn_type": "refinement",
+            "confidence": 0.5,
+            "reasoning": f"Fallback classification due to error: {str(e)}",
+            "topic_similarity": 0.5,
+            "changed_requirements": [],
+            "new_requirements": []
+        }
+
+
 def planning_conversation(query: str, planning_context: Optional[Dict[str, Any]] = None) -> GenerateSQLResponse:
     """
     Intelligent planning mode with LLM-driven conversation and smart clarification detection.
