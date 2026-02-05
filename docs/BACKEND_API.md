@@ -164,7 +164,7 @@ Generate SQL or code with real-time status updates via Server-Sent Events.
   "forceGeneral": false,
   "queryMode": "generate",
   "table_override": ["dbo.Customers", "dbo.Orders"],
-  "chart_type_override": "bar"
+  "chart_type_override": "column"
 }
 ```
 
@@ -246,7 +246,7 @@ POST /api/v1/execute-python
 {
   "code": "import pandas as pd\ndf = pd.read_sql(...)",
   "context": {"user_query": "Top customers"},
-  "chart_type_override": "bar"
+  "chart_type_override": "column"
 }
 ```
 
@@ -265,13 +265,13 @@ POST /api/v1/execute-python
       "columns": ["Name", "Revenue"],
       "viz_config": {
         "category": "2d_data",
-        "allowed_charts": ["bar", "column", "pie"],
+        "allowed_charts": ["column", "pie"],
         "message": "Recommended for categorical comparison"
       }
     }
   ],
   "recommendation": {
-    "chart_type": "bar",
+    "chart_type": "column",
     "x_axis": "Name",
     "y_axis": ["Revenue"],
     "title": "Top Customers by Revenue"
@@ -299,7 +299,7 @@ POST /api/v1/summarize-results
 {
   "user_request": "Top customers by revenue",
   "data_preview": [{"Name": "Customer A", "Revenue": 50000}],
-  "chart_type": "bar"
+  "chart_type": "column"
 }
 ```
 

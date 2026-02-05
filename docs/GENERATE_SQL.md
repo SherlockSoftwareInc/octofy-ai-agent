@@ -581,7 +581,7 @@ Content-Type: application/json
   },
   "timeout_seconds": 30,
   "max_rows": 10000,
-  "chart_type_override": "bar"
+  "chart_type_override": "column"
 }
 ```
 
@@ -820,11 +820,11 @@ recommendation = viz_service.get_chart_recommendation(
 **Example Output**:
 ```json
 {
-  "chart_type": "bar",
+  "chart_type": "column",
   "x_axis": "ProductName",
   "y_axis": ["Price"],
   "title": "Product Prices",
-  "explanation": "A bar chart is ideal for comparing prices across products",
+  "explanation": "A column chart is ideal for comparing prices across products",
   "colors": ["#4CAF50"]
 }
 ```
@@ -852,11 +852,11 @@ recommendation = viz_service.get_chart_recommendation(
     }
   ],
   "recommendation": {
-    "chart_type": "bar",
+    "chart_type": "column",
     "x_axis": "ProductName",
     "y_axis": ["Price"],
     "title": "Product Prices",
-    "explanation": "Bar chart shows price comparison clearly"
+    "explanation": "Column chart shows price comparison clearly"
   },
   "execution_time": 0.42,
   "rows_affected": 10,
@@ -1089,7 +1089,7 @@ X-API-Key: your-api-key
   },
   "timeout_seconds": 30,
   "max_rows": 10000,
-  "chart_type_override": "bar"
+  "chart_type_override": "column"
 }
 ```
 
@@ -1106,7 +1106,7 @@ X-API-Key: your-api-key
   },
   "results": [...],
   "recommendation": {
-    "chart_type": "bar",
+    "chart_type": "column",
     "x_axis": "ProductName",
     "y_axis": ["Price"]
   },

@@ -72,12 +72,10 @@ const SUPPORTED_CHART_TYPES: readonly DisplayableChartType[] = ['line', 'pie', '
 
 // Chart type labels for UI display
 const CHART_TYPE_LABELS: Record<DisplayableChartType, string> = {
-    bar: 'Bar',
     line: 'Line',
     pie: 'Pie',
     scatter: 'Scatter',
     column: 'Column',
-    stackedBar: 'Stacked Bar',
     stackedColumn: 'Stacked Column',
     clusteredColumn: 'Clustered Column',
     area: 'Area',
@@ -168,7 +166,7 @@ const extractRows = (result?: ExecutePythonResult): Array<Record<string, unknown
  */
 function recommendationToMetadata(rec: ChartRecommendation): ChartMetadata {
     // Determine if this is a stacked chart type
-    const isStacked = rec.chart_type === 'stackedBar' || rec.chart_type === 'stackedColumn';
+    const isStacked = rec.chart_type === 'stackedColumn';
 
     return {
         type: rec.chart_type as ChartMetadata['type'],

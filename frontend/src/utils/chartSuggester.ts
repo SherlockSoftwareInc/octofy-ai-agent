@@ -1,6 +1,6 @@
 
 export interface ChartSuggestion {
-    type: 'line' | 'bar' | 'pie' | 'scatter' | 'column' | 'stackedBar' | 'stackedColumn' | 'clusteredColumn' | 'area' | 'radar' | 'treemap' | 'funnel' | 'none';
+    type: 'line' | 'pie' | 'scatter' | 'column' | 'stackedColumn' | 'clusteredColumn' | 'area' | 'radar' | 'treemap' | 'funnel' | 'none';
     xAxisKey?: string;
     seriesKeys?: string[];
     reason?: string;
@@ -19,7 +19,7 @@ export const suggestChart = (data: any[]): ChartSuggestion => {
 
     // Heuristics:
     // 1. Identify "Label" column (String/Date) and "Value" columns (Number)
-    // 2. If 1 Label + 1+ Values => Bar Chart (if distinct labels) or Line Chart (if Date/Time)
+    // 2. If 1 Label + 1+ Values => Column Chart (if distinct labels) or Line Chart (if Date/Time)
     // 3. If mostly numbers => Scatter? (Maybe too complex for MVP)
 
     // Analyze first 5 rows to guess types
@@ -73,13 +73,12 @@ export const suggestChart = (data: any[]): ChartSuggestion => {
         };
     }
 
-    // Priority 2: String on X-axis with few unique values => Bar Chart
+    // Priority 2: String on X-axis with few unique values => Column Chart
     // (We don't check unique values here deeply, but assume string is categorical)
     const stringKey = potentialXKeys.find(k => typeMap[k] === 'string');
     if (stringKey) {
-        // If too many points, maybe bar chart is crowded, but let's stick to bar for categorical
         return {
-            type: 'bar',
+            type: 'column',
             xAxisKey: stringKey,
             seriesKeys: potentialSeriesKeys,
             reason: 'Categorical data detected'

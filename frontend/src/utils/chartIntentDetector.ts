@@ -5,7 +5,7 @@
  * Mirrors the backend chart_intent_service.py for consistent behavior.
  */
 
-export type ChartType = 'bar' | 'line' | 'pie' | 'scatter' | 'column' | 'stackedBar' | 'stackedColumn' | 'clusteredColumn' | 'area' | 'radar' | 'treemap' | 'funnel' | 'none';
+export type ChartType = 'line' | 'pie' | 'scatter' | 'column' | 'stackedColumn' | 'clusteredColumn' | 'area' | 'radar' | 'treemap' | 'funnel' | 'none';
 
 export interface ChartIntent {
     chartType: ChartType;
@@ -24,10 +24,8 @@ const CHART_ONLY_PATTERNS = [
 
 // Chart type patterns - order matters (more specific patterns first)
 const CHART_PATTERNS: Array<{ pattern: RegExp; chartType: ChartType }> = [
-    // Stacked patterns (must come before basic bar/column to be more specific)
-    { pattern: /\b(stacked\s*bar|bar\s*stacked)\b/i, chartType: 'stackedBar' },
-    { pattern: /\b(stacked\s*column|column\s*stacked)\b/i, chartType: 'stackedColumn' },
-    
+    // Stacked patterns (must come before basic column to be more specific)
+    { pattern: /\b(stacked\s*column|column\s*stacked|stacked\s*bar|bar\s*stacked)\b/i, chartType: 'stackedColumn' },
     // Clustered patterns
     { pattern: /\b(clustered\s*column|grouped\s*column|clustered\s*bar|grouped\s*bar)\b/i, chartType: 'clusteredColumn' },
     
@@ -48,12 +46,12 @@ const CHART_PATTERNS: Array<{ pattern: RegExp; chartType: ChartType }> = [
     { pattern: /\b(line\s*(chart|graph|plot)?|trend\s*line)\b/i, chartType: 'line' },
     { pattern: /\b(time\s*series|over\s*time)\b/i, chartType: 'line' },
     
-    // Column chart patterns (must come before bar)
+    // Column chart patterns
     { pattern: /\bcolumn\s*(chart|graph)?\b/i, chartType: 'column' },
-    
-    // Bar chart patterns  
-    { pattern: /\b(bar\s*(chart|graph)?|horizontal\s*bar)\b/i, chartType: 'bar' },
     { pattern: /\bhistogram\b/i, chartType: 'column' },
+    
+    // Bar chart patterns (map to column)  
+    { pattern: /\b(bar\s*(chart|graph)?|horizontal\s*bar)\b/i, chartType: 'column' },
     
     // Scatter plot patterns
     { pattern: /\b(scatter\s*(plot|chart)?|x\s*y\s*plot|correlation)\b/i, chartType: 'scatter' },
@@ -151,12 +149,10 @@ export function isRevisualizationRequest(query: string): boolean {
  */
 export function getChartTypeLabel(chartType: ChartType): string {
     const labels: Record<ChartType, string> = {
-        bar: 'Bar Chart',
         line: 'Line Chart',
         pie: 'Pie Chart',
         scatter: 'Scatter Plot',
         column: 'Column Chart',
-        stackedBar: 'Stacked Bar Chart',
         stackedColumn: 'Stacked Column Chart',
         clusteredColumn: 'Clustered Column Chart',
         area: 'Area Chart',
@@ -244,11 +240,11 @@ const EXPLICIT_CHART_ONLY_PATTERNS = [
     /^(switch|change|convert)\s+(to|this\s+to)\s+/i,
     /^make\s+(this|it)\s+a\s+/i,
     /^(use|try)\s+a\s+\w+\s*(chart|graph|plot)/i,
-    /^as\s+a?\s*(line|bar|pie|scatter|column|area|radar|treemap|funnel)/i,
-    // Match simple chart requests like "line chart", "bar chart please", "pie chart pls"
-    /^(line|bar|pie|scatter|column|area|radar|treemap|funnel)\s*(chart|graph|plot)?\s*(please|pls|plz|thanks|thx)?\s*$/i,
-    // Match stacked and clustered variants
-    /^(stacked|clustered)\s*(bar|column)\s*(chart|graph)?\s*(please|pls|plz|thanks|thx)?\s*$/i,
+    /^as\s+a?\s*(line|pie|scatter|column|area|radar|treemap|funnel)/i,
+    // Match simple chart requests like "line chart", "column chart please", "pie chart pls"
+    /^(line|pie|scatter|column|area|radar|treemap|funnel)\s*(chart|graph|plot)?\s*(please|pls|plz|thanks|thx)?\s*$/i,
+    // Match stacked and clustered variants (bar maps to column)
+    /^(stacked|clustered)\s*column\s*(chart|graph)?\s*(please|pls|plz|thanks|thx)?\s*$/i,
 ];
 
 /**

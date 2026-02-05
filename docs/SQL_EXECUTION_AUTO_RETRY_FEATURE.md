@@ -179,7 +179,7 @@ while attempt <= MAX_RETRY_ATTEMPTS:
   },
   "results": [...],
   "recommendation": {
-    "chart_type": "bar",
+    "chart_type": "column",
     "x_axis": "ProductName",
     "y_axis": ["Price"]
   },

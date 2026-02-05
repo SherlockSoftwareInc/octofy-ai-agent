@@ -313,9 +313,9 @@ JSON object:"""
             True if this is a chart type change request
         """
         chart_patterns = [
-            r"\b(show|display|make|create|change to|as)\s+(a\s+)?(bar|line|pie|scatter)\s+(chart|graph|plot)\b",
-            r"\b(bar|line|pie|scatter)\s+(chart|graph|plot)\b",
-            r"\b(visualize|plot)\s+(as|with)\s+(bar|line|pie|scatter)\b",
+            r"\b(show|display|make|create|change to|as)\s+(a\s+)?(column|line|pie|scatter)\s+(chart|graph|plot)\b",
+            r"\b(column|line|pie|scatter)\s+(chart|graph|plot)\b",
+            r"\b(visualize|plot)\s+(as|with)\s+(column|line|pie|scatter)\b",
         ]
         
         query_lower = query.lower()

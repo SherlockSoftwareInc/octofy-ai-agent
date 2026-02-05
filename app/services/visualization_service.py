@@ -82,7 +82,7 @@ class VisualizationService:
         chart_type = rec.chart_type
         
         # Chart types that need categorical X, numeric Y
-        categorical_x_charts = ['bar', 'column', 'stackedBar', 'stackedColumn', 'clusteredColumn', 'pie', 'treemap', 'funnel']
+        categorical_x_charts = ['column', 'stackedColumn', 'clusteredColumn', 'pie', 'treemap', 'funnel']
         
         if chart_type not in categorical_x_charts:
             return rec  # Don't modify line, scatter, area, radar, etc.
@@ -177,13 +177,11 @@ User Question: "{user_query}"
 ### INSTRUCTIONS
 1. Analyze the user's intent and the data structure.
 2. Select the most appropriate chart type from this list:
-   - 'bar': Horizontal bar chart for comparisons among categories.
    - 'line': Line chart for trends over time or continuous data.
    - 'pie': Pie chart for part-to-whole (only if < 10 categories).
    - 'scatter': Scatter plot for relationship between two numerical variables.
    - 'column': Vertical column chart for comparisons among categories.
    - 'area': Area chart for cumulative trends over time.
-   - 'stackedBar': Stacked horizontal bar chart for multi-series comparisons.
    - 'stackedColumn': Stacked vertical column chart for multi-series comparisons.
    - 'clusteredColumn': Grouped vertical columns for side-by-side comparisons.
    - 'treemap': Treemap for hierarchical part-to-whole relationships.
@@ -192,11 +190,11 @@ User Question: "{user_query}"
    - 'none': If no visualization is appropriate (e.g. text/table data only).
 
 3. Determine the X-Axis and Y-Axis columns using these STRICT conventions:
-   - **Bar/Column/StackedBar/StackedColumn/ClusteredColumn**: X-axis MUST be the categorical/label column, Y-axis MUST be the numeric value column(s).
+   - **Column/StackedColumn/ClusteredColumn**: X-axis MUST be the categorical/label column, Y-axis MUST be the numeric value column(s).
    - **Line/Area**: X-axis is time/date column (preferred) or categorical, Y-axis is numeric.
    - **Scatter**: Both X and Y are numeric columns.
    - **Pie/Treemap/Funnel**: X is the label/category column, Y is the single numeric value column.
-   - **AXIS RULE**: For bar-type charts, ALWAYS put the category/label column (e.g., ProductName, Country, Status) on X-axis and the numeric measure (e.g., TotalSales, Count, Revenue) on Y-axis.
+   - **AXIS RULE**: For column-type charts, ALWAYS put the category/label column (e.g., ProductName, Country, Status) on X-axis and the numeric measure (e.g., TotalSales, Count, Revenue) on Y-axis.
    - **STRICT CONSTRAINT**: You MUST use columns EXACTLY as listed in "DATA PROFILE - Columns". Do NOT invent columns (e.g., if 'country' is not in the list, do not use it). If the desired column is missing, choose the best alternative or return "none".
 
 4. Provide a Chart Title that summarizes the insight.
@@ -206,7 +204,7 @@ User Question: "{user_query}"
 Return valid JSON ONLY. No markdown, no explanations outside the JSON.
 
 {{
-  "chart_type": "bar" | "line" | "pie" | "scatter" | "column" | "area" | "stackedBar" | "stackedColumn" | "clusteredColumn" | "treemap" | "radar" | "funnel" | "none",
+  "chart_type": "line" | "pie" | "scatter" | "column" | "area" | "stackedColumn" | "clusteredColumn" | "treemap" | "radar" | "funnel" | "none",
   "x_axis": "column_name", 
   "y_axis": ["column_name1", ...],
   "title": "Chart Title",
@@ -376,21 +374,7 @@ Return valid JSON ONLY. No markdown, no explanations outside the JSON.
             if datetime_cols and numeric_cols:
                 explanation = "Time-based data detected. Line chart shows trends over time."
             
-        elif chart_type == 'bar':
-            # Bar charts: categorical on X-axis, numeric on Y-axis
-            if categorical_cols:
-                x_axis = categorical_cols[0]
-            elif columns:
-                x_axis = columns[0]
-            y_axis = numeric_cols[:3] if numeric_cols else []
-            
-            if x_axis and not y_axis:
-                remaining = [c for c in columns if c != x_axis]
-                y_axis = remaining[:3]
-            
-            if categorical_cols:
-                cardinality = df[categorical_cols[0]].nunique()
-                explanation = f"Bar chart with {cardinality} categories for comparison."
+        # Note: 'bar' chart type removed - use 'column' instead
             
         elif chart_type == 'column':
             # Vertical column charts: categorical on X-axis, numeric on Y-axis
@@ -421,22 +405,7 @@ Return valid JSON ONLY. No markdown, no explanations outside the JSON.
             chart_label = "Stacked" if chart_type == 'stackedColumn' else "Clustered"
             explanation = f"{chart_label} column chart for multi-series comparison."
             
-        elif chart_type == 'stackedBar':
-            # Stacked bar: categorical on X-axis, multiple numeric on Y-axis
-            if categorical_cols:
-                x_axis = categorical_cols[0]
-            elif columns:
-                x_axis = columns[0]
-            y_axis = numeric_cols[:5] if numeric_cols else []
-            
-            if x_axis and not y_axis:
-                remaining = [c for c in columns if c != x_axis]
-                y_axis = remaining[:5]
-            
-            if len(numeric_cols) > 1:
-                explanation = f"Stacked bar chart with {len(numeric_cols)} numeric series."
-            else:
-                explanation = "Stacked bar chart for multi-series comparison."
+        # Note: 'stackedBar' chart type removed - use 'stackedColumn' instead
             
         elif chart_type == 'pie':
             # Pie charts: categorical label, single numeric value
@@ -444,7 +413,7 @@ Return valid JSON ONLY. No markdown, no explanations outside the JSON.
                 x_axis = categorical_cols[0]
                 cardinality = df[categorical_cols[0]].nunique()
                 if cardinality > 10:
-                    explanation = f"Pie chart with {cardinality} slices. Consider using bar chart for better readability."
+                    explanation = f"Pie chart with {cardinality} slices. Consider using column chart for better readability."
                 else:
                     explanation = "Pie chart showing part-to-whole relationship."
             elif columns:

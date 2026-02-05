@@ -101,8 +101,8 @@ export const ResultChart: React.FC<ResultChartProps> = ({ data, metadata }) => {
             return top7;
         }
 
-        // For bar charts, aggregate to Top 10 + "Others" if more than 15 categories
-        if ((metadata.type === 'bar' || metadata.type === 'stackedBar' || metadata.type === 'column' || metadata.type === 'stackedColumn') && data.length > 15 && metadata.x_axis) {
+        // For column charts, aggregate to Top 10 + "Others" if more than 15 categories
+        if ((metadata.type === 'column' || metadata.type === 'stackedColumn') && data.length > 15 && metadata.x_axis) {
             const xAxisKey = metadata.x_axis;
             const sortMetric = metadata.y_axes[0];
 
@@ -132,57 +132,45 @@ export const ResultChart: React.FC<ResultChartProps> = ({ data, metadata }) => {
     }, [data, metadata]);
 
     // --- Layout Logic ---
-    const useHorizontalLayout = metadata.type === 'bar' && processedData.length > 20;
     const rotateLabels = processedData.length > 10;
     const isStacked = metadata.is_stacked;
 
-    // --- Render Bar Chart ---
+    // --- Render Bar Chart (used for column charts) ---
     const renderBarChart = () => (
         <BarChart
             data={processedData}
-            layout={useHorizontalLayout ? 'vertical' : 'horizontal'}
             margin={{
                 top: 20,
                 right: 30,
                 left: 20,
-                bottom: useHorizontalLayout ? 5 : (rotateLabels ? 60 : 20),
+                bottom: rotateLabels ? 60 : 20,
             }}
         >
-            <CartesianGrid strokeDasharray="3 3" stroke="#334155" opacity={0.3} horizontal={!useHorizontalLayout} vertical={useHorizontalLayout} />
+            <CartesianGrid strokeDasharray="3 3" stroke="#334155" opacity={0.3} />
 
-            {useHorizontalLayout ? (
-                <>
-                    <XAxis type="number" stroke="#94a3b8" fontSize={12} tickLine={false} axisLine={false}
-                        tickFormatter={formatCompact} />
-                    <YAxis type="category" dataKey={metadata.x_axis!} stroke="#94a3b8" fontSize={12} tickLine={false} axisLine={{ stroke: '#475569' }} width={100} />
-                </>
-            ) : (
-                <>
-                    <XAxis
-                        dataKey={metadata.x_axis!}
-                        stroke="#94a3b8"
-                        fontSize={12}
-                        tickLine={false}
-                        axisLine={{ stroke: '#475569' }}
-                        tickFormatter={(value) => {
-                            if (typeof value === 'string') {
-                                return value.length > 15 ? `${value.substring(0, 15)}...` : value;
-                            }
-                            return value;
-                        }}
-                        angle={rotateLabels ? -45 : 0}
-                        textAnchor={rotateLabels ? "end" : "middle"}
-                        height={rotateLabels ? 70 : 30}
-                    />
-                    <YAxis
-                        stroke="#94a3b8"
-                        fontSize={12}
-                        tickLine={false}
-                        axisLine={false}
-                        tickFormatter={formatCompact}
-                    />
-                </>
-            )}
+            <XAxis
+                dataKey={metadata.x_axis!}
+                stroke="#94a3b8"
+                fontSize={12}
+                tickLine={false}
+                axisLine={{ stroke: '#475569' }}
+                tickFormatter={(value) => {
+                    if (typeof value === 'string') {
+                        return value.length > 15 ? `${value.substring(0, 15)}...` : value;
+                    }
+                    return value;
+                }}
+                angle={rotateLabels ? -45 : 0}
+                textAnchor={rotateLabels ? "end" : "middle"}
+                height={rotateLabels ? 70 : 30}
+            />
+            <YAxis
+                stroke="#94a3b8"
+                fontSize={12}
+                tickLine={false}
+                axisLine={false}
+                tickFormatter={formatCompact}
+            />
 
             <Tooltip {...TOOLTIP_STYLE} formatter={formatNumber} />
             <Legend wrapperStyle={{ paddingTop: '10px' }} />
@@ -193,7 +181,7 @@ export const ResultChart: React.FC<ResultChartProps> = ({ data, metadata }) => {
                     name={col}
                     stackId={isStacked ? "a" : undefined}
                     fill={COLORS[index % COLORS.length]}
-                    radius={useHorizontalLayout ? [0, 4, 4, 0] : (isStacked ? [0, 0, 0, 0] : [4, 4, 0, 0])}
+                    radius={isStacked ? [0, 0, 0, 0] : [4, 4, 0, 0]}
                     animationDuration={1500}
                 />
             ))}
@@ -502,13 +490,10 @@ export const ResultChart: React.FC<ResultChartProps> = ({ data, metadata }) => {
     // --- Select Chart Type ---
     const renderChart = () => {
         switch (metadata.type) {
-            case 'bar':
-            case 'stackedBar':
-                return renderBarChart();
             case 'column':
             case 'stackedColumn':
             case 'clusteredColumn':
-                return renderBarChart(); // Column is vertical bar
+                return renderBarChart();
             case 'line':
                 return renderLineChart();
             case 'area':
@@ -530,8 +515,6 @@ export const ResultChart: React.FC<ResultChartProps> = ({ data, metadata }) => {
 
     // Chart type labels for display
     const chartTypeLabels: Record<string, string> = {
-        'bar': 'Bar Chart',
-        'stackedBar': 'Stacked Bar Chart',
         'column': 'Column Chart',
         'stackedColumn': 'Stacked Column Chart',
         'clusteredColumn': 'Clustered Column Chart',

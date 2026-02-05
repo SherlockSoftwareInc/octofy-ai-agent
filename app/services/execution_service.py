@@ -102,7 +102,7 @@ def get_chart_category(df: pd.DataFrame) -> tuple:
     if len(text_columns) == 1 and len(numeric_columns) == 1:
         return (
             "2d_data",
-            ["bar", "line", "column", "pie", "treemap", "funnel"],
+            ["column", "line", "pie", "treemap", "funnel"],
             ""
         )
     
@@ -110,7 +110,7 @@ def get_chart_category(df: pd.DataFrame) -> tuple:
     if len(text_columns) == 1 and len(numeric_columns) > 1:
         return (
             "3d_data",
-            ["clustered column", "stacked column", "100% stacked bar", "line"],
+            ["clustered column", "stacked column", "line"],
             ""
         )
     
@@ -277,9 +277,9 @@ def execute_python_code(
                             except:
                                 pass
                         
-                        # Bar chart: categorical X, numeric Y
+                        # Column chart: categorical X, numeric Y
                         if len(categorical_cols) >= 1 and len(numeric_cols) >= 1:
-                            chart_metadata["type"] = "bar"
+                            chart_metadata["type"] = "column"
                             chart_metadata["x_axis"] = categorical_cols[0]
                             chart_metadata["y_axes"] = numeric_cols[:3]
                         elif len(datetime_cols) >= 1 and len(numeric_cols) >= 1:
@@ -371,9 +371,9 @@ def execute_python_code(
                                 except:
                                     pass
                             
-                            # Bar chart: categorical X, numeric Y
+                            # Column chart: categorical X, numeric Y
                             if len(categorical_cols) >= 1 and len(numeric_cols) >= 1:
-                                chart_metadata["type"] = "bar"
+                                chart_metadata["type"] = "column"
                                 chart_metadata["x_axis"] = categorical_cols[0]
                                 chart_metadata["y_axes"] = numeric_cols[:3]
                             elif len(datetime_cols) >= 1 and len(numeric_cols) >= 1:
