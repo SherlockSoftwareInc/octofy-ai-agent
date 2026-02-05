@@ -55,7 +55,7 @@ class DiscoveryResponse(BaseModel):
     context: DiscoveryContext
 
 # Define chart types as a reusable type alias for consistency
-ChartTypeLiteral = Literal['bar', 'line', 'pie', 'scatter', 'column', 'stackedBar', 'stackedColumn', 'clusteredColumn', 'area', 'radar', 'treemap', 'funnel', 'none']
+ChartTypeLiteral = Literal['line', 'pie', 'scatter', 'column', 'stackedColumn', 'clusteredColumn', 'area', 'radar', 'treemap', 'funnel', 'none']
 
 class GenerateSQLRequest(BaseModel):
     query: str

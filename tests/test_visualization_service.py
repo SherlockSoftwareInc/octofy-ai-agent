@@ -61,12 +61,12 @@ class TestVisualizationServiceOverride:
         assert result.x_axis == "category"  # First categorical column
         assert "value" in result.y_axis or "count" in result.y_axis
     
-    def test_chart_type_override_bar(self, service, sample_df):
-        """When chart_type_override='bar', should return bar chart"""
-        result = service.get_chart_recommendation(sample_df, "test query", chart_type_override="bar")
+    def test_chart_type_override_column(self, service, sample_df):
+        """When chart_type_override='column', should return column chart"""
+        result = service.get_chart_recommendation(sample_df, "test query", chart_type_override="column")
         
         assert result is not None
-        assert result.chart_type == "bar"
+        assert result.chart_type == "column"
         assert result.x_axis == "category"
     
     def test_chart_type_override_pie(self, service, sample_df):
@@ -89,10 +89,10 @@ class TestVisualizationServiceOverride:
     
     def test_chart_type_override_none_uses_llm(self, service, sample_df):
         """When chart_type_override is None, should call LLM"""
-        # Setup mock LLM to return a bar chart recommendation
+        # Setup mock LLM to return a column chart recommendation
         service.llm_service.chat.return_value = '''
         {
-            "chart_type": "bar",
+            "chart_type": "column",
             "x_axis": "category",
             "y_axis": ["value"],
             "title": "Test Chart",
@@ -133,13 +133,13 @@ class TestVisualizationServiceOverride:
     
     def test_recommendation_has_title_and_explanation(self, service, sample_df):
         """Override recommendation should include title and explanation"""
-        result = service.get_chart_recommendation(sample_df, "test query", chart_type_override="bar")
+        result = service.get_chart_recommendation(sample_df, "test query", chart_type_override="column")
         
         assert result is not None
         assert result.title is not None
-        assert "bar" in result.title.lower()
+        assert "column" in result.title.lower()
         assert result.explanation is not None
-        assert "bar" in result.explanation.lower()
+        assert "column" in result.explanation.lower()
     
     def test_string_numeric_values_detected(self, service):
         """Numeric values stored as strings should still be used for Y axis"""
@@ -169,10 +169,10 @@ class TestVisualizationServiceOverride:
             'label2': ['P', 'Q', 'R']
         })
         
-        result = service.get_chart_recommendation(df, "test query", chart_type_override="bar")
+        result = service.get_chart_recommendation(df, "test query", chart_type_override="column")
         
         assert result is not None
-        assert result.chart_type == "bar"
+        assert result.chart_type == "column"
         assert result.x_axis is not None
         # Should use remaining columns for Y axis as fallback
         assert result.y_axis is not None

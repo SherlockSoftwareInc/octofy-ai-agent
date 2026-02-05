@@ -212,8 +212,8 @@ System configuration:
 
 ```typescript
 type ChartTypeOption = 
-  | 'bar' | 'line' | 'pie' | 'scatter' | 'column'
-  | 'stackedBar' | 'stackedColumn' | 'clusteredColumn'
+  | 'line' | 'pie' | 'scatter' | 'column'
+  | 'stackedColumn' | 'clusteredColumn'
   | 'area' | 'radar' | 'treemap' | 'funnel' | 'none';
 ```
 

@@ -16,10 +16,10 @@ class TestChartIntentDetection:
         assert result.chart_type == "line"
         assert result.is_chart_only_request == True
     
-    def test_detect_bar_chart_intent(self):
-        result = detect_chart_intent("can you make that a bar chart instead")
+    def test_detect_column_chart_intent(self):
+        result = detect_chart_intent("can you make that a column chart instead")
         assert result is not None
-        assert result.chart_type == "bar"
+        assert result.chart_type == "column"
     
     def test_detect_pie_chart_intent(self):
         result = detect_chart_intent("display this as a pie chart")
@@ -51,15 +51,15 @@ class TestChartIntentDetection:
         assert result is not None
         assert result.chart_type == "line"
     
-    def test_bar_graph_variant(self):
-        result = detect_chart_intent("show it as a bar graph")
+    def test_column_graph_variant(self):
+        result = detect_chart_intent("show it as a column graph")
         assert result is not None
-        assert result.chart_type == "bar"
+        assert result.chart_type == "column"
     
-    def test_column_chart_maps_to_bar(self):
-        result = detect_chart_intent("make it a column chart")
+    def test_bar_graph_maps_to_column(self):
+        result = detect_chart_intent("make it a bar chart")
         assert result is not None
-        assert result.chart_type == "bar"
+        assert result.chart_type == "column"
     
     def test_doughnut_chart_maps_to_pie(self):
         result = detect_chart_intent("show as doughnut chart")
@@ -72,9 +72,9 @@ class TestChartIntentDetection:
         assert result.chart_type == "scatter"
     
     def test_switch_to_pattern(self):
-        result = detect_chart_intent("switch to bar chart")
+        result = detect_chart_intent("switch to column chart")
         assert result is not None
-        assert result.chart_type == "bar"
+        assert result.chart_type == "column"
         assert result.is_chart_only_request == True
     
     def test_change_to_pattern(self):
@@ -107,7 +107,7 @@ class TestExtractDataQuery:
         assert "revenue" in result.lower()
     
     def test_extract_returns_original_for_chart_only(self):
-        query = "show it as a bar chart"
+        query = "show it as a column chart"
         intent = detect_chart_intent(query)
         # For chart-only requests, the original query is returned
         result = extract_data_query(query, intent)
@@ -136,9 +136,9 @@ class TestSchemaChartIntent:
     def test_execute_python_request_has_chart_type_override(self):
         request = ExecutePythonRequest(
             code="print('hello')",
-            chart_type_override="bar"
+            chart_type_override="column"
         )
-        assert request.chart_type_override == "bar"
+        assert request.chart_type_override == "column"
     
     def test_execute_python_request_chart_override_default_none(self):
         request = ExecutePythonRequest(code="print('hello')")

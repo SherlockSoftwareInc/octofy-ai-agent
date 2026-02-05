@@ -9,7 +9,7 @@ import re
 from dataclasses import dataclass
 from typing import Optional, Literal
 
-ChartType = Literal['bar', 'line', 'pie', 'scatter', 'column', 'stackedBar', 'stackedColumn', 'clusteredColumn', 'area', 'radar', 'treemap', 'funnel', 'none']
+ChartType = Literal['line', 'pie', 'scatter', 'column', 'stackedColumn', 'clusteredColumn', 'area', 'radar', 'treemap', 'funnel', 'none']
 
 @dataclass
 class ChartIntent:
@@ -29,10 +29,12 @@ CHART_TYPE_PATTERNS = {
         r'\btrend\s*line\b',
         r'\btime\s*series\b',
     ],
-    'bar': [
-        r'\bbar\s*chart\b',
-        r'\bas\s+a?\s*bar\b',
-        r'\bbar\s*graph\b',
+    'column': [
+        r'\bcolumn\s*chart\b',
+        r'\bcolumn\s*graph\b',
+        r'\bbar\s*chart\b',  # Map bar to column
+        r'\bas\s+a?\s*bar\b',  # Map bar to column
+        r'\bbar\s*graph\b',  # Map bar to column
         r'\bhistogram\b',
     ],
     'scatter': [
@@ -66,17 +68,11 @@ CHART_TYPE_PATTERNS = {
         r'\bweb\s*chart\b',
         r'\bas\s+a?\s*radar\b',
     ],
-    'column': [
-        r'\bcolumn\s*chart\b',
-        r'\bcolumn\s*graph\b',
-    ],
-    'stackedBar': [
-        r'\bstacked\s*bar\b',
-        r'\bbar\s*stacked\b',
-    ],
     'stackedColumn': [
         r'\bstacked\s*column\b',
         r'\bcolumn\s*stacked\b',
+        r'\bstacked\s*bar\b',  # Map stacked bar to stacked column
+        r'\bbar\s*stacked\b',  # Map stacked bar to stacked column
     ],
     'clusteredColumn': [
         r'\bclustered\s*column\b',
@@ -122,8 +118,8 @@ def detect_chart_intent(query: str) -> Optional[ChartIntent]:
         >>> detect_chart_intent("show me the results as a line chart")
         ChartIntent(chart_type='line', is_chart_only_request=True, ...)
         
-        >>> detect_chart_intent("show monthly revenue as a bar chart")
-        ChartIntent(chart_type='bar', is_chart_only_request=False, ...)
+        >>> detect_chart_intent("show monthly revenue as a column chart")
+        ChartIntent(chart_type='column', is_chart_only_request=False, ...)
         
         >>> detect_chart_intent("show me sales by region")
         None
