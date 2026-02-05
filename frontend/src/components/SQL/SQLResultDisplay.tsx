@@ -334,7 +334,7 @@ interface SQLResultDisplayProps {
     /** LLM summary of the SQL execution result, if available */
     sqlSummary?: string;
     /** Reference to the user input textarea for focus management */
-    textareaRef?: React.RefObject<HTMLTextAreaElement>;
+    textareaRef?: React.RefObject<HTMLTextAreaElement | null>;
 }
 
 export const SQLResultDisplay: React.FC<SQLResultDisplayProps> = ({
