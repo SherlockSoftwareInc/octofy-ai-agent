@@ -168,8 +168,8 @@ def execute_python_code(
     
     # Log the DB_CONNECTION_STRING if present for debugging
     # NOTE: This connection string uses Windows Authentication (Trusted_Connection=yes)
-    # It is injected from settings.target_db.python_connection_string_encrypted
-    # which was configured to use Windows auth (no UID/PWD credentials)
+    # It is dynamically built from _data-source.md in the skills directory
+    # Connection format: mssql+pyodbc:///?odbc_connect=Driver={...};Server=...;Database=...;Trusted_Connection=yes
     if 'DB_CONNECTION_STRING' in local_scope:
         # Mask the actual connection string for security in logs
         conn_str = local_scope['DB_CONNECTION_STRING']

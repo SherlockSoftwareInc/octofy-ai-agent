@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useMemo, useState, useRef, useEffect } from 'react';
 import { Copy, Check, Loader2, Gift, Play, CheckCircle, Sparkles, BarChart3 } from 'lucide-react';
 import { Toast } from '../Toast';
 import type { ToastType } from '../Toast';
@@ -333,6 +333,8 @@ interface SQLResultDisplayProps {
     pythonSummary?: string;
     /** LLM summary of the SQL execution result, if available */
     sqlSummary?: string;
+    /** Reference to the user input textarea for focus management */
+    textareaRef?: React.RefObject<HTMLTextAreaElement>;
 }
 
 export const SQLResultDisplay: React.FC<SQLResultDisplayProps> = ({
@@ -346,11 +348,15 @@ export const SQLResultDisplay: React.FC<SQLResultDisplayProps> = ({
     onSQLExecutionComplete,
     chartOnly = false,
     pythonSummary,
-    sqlSummary
+    sqlSummary,
+    textareaRef
 }) => {
     const [copied, setCopied] = useState(false);
     const [toast, setToast] = useState<{ message: string; type: ToastType } | null>(null);
     const [showDialog, setShowDialog] = useState(false);
+    const aiSummaryRef = useRef<HTMLDivElement>(null);
+    const datasetAnalysisRef = useRef<HTMLDivElement>(null);
+    const dataProfileRef = useRef<HTMLDivElement>(null);
     const [draftQuestion, setDraftQuestion] = useState('');
     const [draftSQL, setDraftSQL] = useState(sql);
     const [existingFewShots, setExistingFewShots] = useState<FewShotItem[]>([]);
@@ -367,6 +373,51 @@ export const SQLResultDisplay: React.FC<SQLResultDisplayProps> = ({
     const [showDataProfile, setShowDataProfile] = useState(false);
     const [isChangingChartType, setIsChangingChartType] = useState(false);
     const chartRefs = React.useRef<Map<number, HTMLDivElement | null>>(new Map());
+
+    // Scroll to AI summary panel and focus textarea after AI summary is generated
+    useEffect(() => {
+        if (showAISummary && analysisData?.insights && analysisData.insights.length > 0 && aiSummaryRef.current) {
+            // Scroll to AI summary panel
+            aiSummaryRef.current.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+            
+            // Focus textarea after a short delay to ensure scroll completes
+            setTimeout(() => {
+                if (textareaRef?.current) {
+                    textareaRef.current.focus();
+                }
+            }, 600);
+        }
+    }, [showAISummary, analysisData?.insights, textareaRef]);
+
+    // Scroll to Dataset Analysis panel and focus textarea after full analysis is generated
+    useEffect(() => {
+        if (showFullAnalysis && analysisData?.insights && analysisData.insights.length > 0 && datasetAnalysisRef.current) {
+            // Scroll to Dataset Analysis panel
+            datasetAnalysisRef.current.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+            
+            // Focus textarea after a short delay to ensure scroll completes
+            setTimeout(() => {
+                if (textareaRef?.current) {
+                    textareaRef.current.focus();
+                }
+            }, 600);
+        }
+    }, [showFullAnalysis, analysisData?.insights, textareaRef]);
+
+    // Scroll to Data Profile panel and focus textarea after data profile is generated
+    useEffect(() => {
+        if (showDataProfile && analysisData?.data_profile && dataProfileRef.current) {
+            // Scroll to Data Profile panel
+            dataProfileRef.current.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+            
+            // Focus textarea after a short delay to ensure scroll completes
+            setTimeout(() => {
+                if (textareaRef?.current) {
+                    textareaRef.current.focus();
+                }
+            }, 600);
+        }
+    }, [showDataProfile, analysisData?.data_profile, textareaRef]);
 
 
 
@@ -972,13 +1023,19 @@ export const SQLResultDisplay: React.FC<SQLResultDisplayProps> = ({
                                     {analysisData && (
                                         <div className="mt-4 space-y-3">
                                             {showAISummary && analysisData.insights && analysisData.insights.length > 0 && (
-                                                <InsightsPanel insights={analysisData.insights} />
+                                                <div ref={aiSummaryRef}>
+                                                    <InsightsPanel insights={analysisData.insights} />
+                                                </div>
                                             )}
                                             {showFullAnalysis && analysisData.insights && analysisData.insights.length > 0 && (
-                                                <InsightsPanel insights={analysisData.insights} />
+                                                <div ref={datasetAnalysisRef}>
+                                                    <InsightsPanel insights={analysisData.insights} />
+                                                </div>
                                             )}
                                             {showDataProfile && analysisData.data_profile && (
-                                                <DataProfileCard profile={analysisData.data_profile} />
+                                                <div ref={dataProfileRef}>
+                                                    <DataProfileCard profile={analysisData.data_profile} />
+                                                </div>
                                             )}
                                         </div>
                                     )}
@@ -1179,13 +1236,19 @@ export const SQLResultDisplay: React.FC<SQLResultDisplayProps> = ({
                                     {analysisData && (
                                         <div className="mt-4 space-y-3">
                                             {showAISummary && analysisData.insights && analysisData.insights.length > 0 && (
-                                                <InsightsPanel insights={analysisData.insights} />
+                                                <div ref={aiSummaryRef}>
+                                                    <InsightsPanel insights={analysisData.insights} />
+                                                </div>
                                             )}
                                             {showFullAnalysis && analysisData.insights && analysisData.insights.length > 0 && (
-                                                <InsightsPanel insights={analysisData.insights} />
+                                                <div ref={datasetAnalysisRef}>
+                                                    <InsightsPanel insights={analysisData.insights} />
+                                                </div>
                                             )}
                                             {showDataProfile && analysisData.data_profile && (
-                                                <DataProfileCard profile={analysisData.data_profile} />
+                                                <div ref={dataProfileRef}>
+                                                    <DataProfileCard profile={analysisData.data_profile} />
+                                                </div>
                                             )}
                                         </div>
                                     )}
