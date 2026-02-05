@@ -187,29 +187,56 @@ async def execute_python_endpoint(
         if "sqlalchemy.create_engine(" in request.code and "DB_CONNECTION_STRING" not in request.code:
              logger.warning("User code contains create_engine but does not appear to use DB_CONNECTION_STRING")
 
-        # 1. Retrieve & Decrypt Connection String
-        settings = load_settings()
-        encrypted_conn_str = settings.target_db.python_connection_string_encrypted
+        # 1. Build Windows Authentication Connection String
+        # Get connection info from _data-source.md
+        from app.services.skills_service import get_skills_service
+        import re
+        import urllib.parse
+        
+        skills_service = get_skills_service()
+        data_source = skills_service.load_primary_data_source()
         
         # Create execution context if not exists
         exec_context = request.context or {}
         
-        # Inject DB_CONNECTION_STRING if available
+        # Build connection string using Windows Authentication
         decrypted_conn_str = None
-        if encrypted_conn_str:
+        if data_source:
             try:
-                decrypted_conn_str = decrypt_string(encrypted_conn_str)
-                if decrypted_conn_str:
-                    # Python connection string is already in SQLAlchemy URL format
-                    # (e.g., mssql+pyodbc://user:pass@server,port/database?driver=...&param=value)
-                    # No conversion needed!
+                # Extract server and database from data source metadata
+                server_match = re.search(r'\*\*Server:\*\*\s*([^\n]+)', data_source.description or '')
+                database_match = re.search(r'\*\*Database:\*\*\s*([^\n]+)', data_source.description or '')
+                
+                # Also check in the raw file content
+                if not server_match or not database_match:
+                    if hasattr(data_source, 'file_path') and data_source.file_path:
+                        from pathlib import Path
+                        file_content = Path(data_source.file_path).read_text(encoding='utf-8')
+                        if not server_match:
+                            server_match = re.search(r'\*\*Server:\*\*\s*([^\n]+)', file_content)
+                        if not database_match:
+                            database_match = re.search(r'\*\*Database:\*\*\s*([^\n]+)', file_content)
+                
+                if server_match and database_match:
+                    server = server_match.group(1).strip()
+                    database = database_match.group(1).strip()
                     
-                    # Inject as a variable in the local scope instead of string replacement 
-                    # This is safer and cleaner than string concatenation
+                    # Build ODBC connection string with Windows Authentication
+                    driver = "ODBC Driver 17 for SQL Server"
+                    odbc_conn_str = f"Driver={{{driver}}};Server={server};Database={database};Trusted_Connection=yes;Encrypt=yes;TrustServerCertificate=yes"
+                    
+                    # Convert to SQLAlchemy URL format for Python code
+                    params = urllib.parse.quote_plus(odbc_conn_str)
+                    decrypted_conn_str = f"mssql+pyodbc:///?odbc_connect={params}"
+                    
+                    # Inject as a variable in the local scope
                     exec_context['DB_CONNECTION_STRING'] = decrypted_conn_str
+                    logger.info(f"Injected Windows Authentication connection string for Python execution")
+                else:
+                    logger.warning("Could not extract Server/Database from _data-source.md")
                         
             except Exception as e:
-                logger.error(f"Failed to decrypt python connection string: {e}")
+                logger.error(f"Failed to build Windows Authentication connection string: {e}")
         
         # Extract user_query and schema_context from context (needed for retry)
         user_query = exec_context.get("user_query", "") if exec_context else ""

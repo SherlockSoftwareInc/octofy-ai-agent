@@ -1442,6 +1442,7 @@ function AuthenticatedApp({
                                       onSQLExecutionComplete={(result) => handleSQLExecutionComplete(message.id, result)}
                                       pythonSummary={message.pythonSummary || ''}
                                       sqlSummary={message.sqlSummary || ''}
+                                      textareaRef={textareaRef}
                                     />
                                   ) : (
                                     // Show explanation when no SQL was generated
