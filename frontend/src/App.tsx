@@ -1070,7 +1070,17 @@ function AuthenticatedApp({
                   </p>
 
                   <div className="mt-8 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 max-w-5xl mx-auto">
-                    {['Which countries supply the highest‑volume or highest‑value imports?', 'Which product categories are growing the fastest year‑over‑year?', 'What is the total value of imports for each country?', 'Which product categories have the highest import values?', 'What is the total value of imports for each country?', 'Who are the top customers by revenue, volume, or order frequency?', 'Show me all users', 'Count orders by status', 'Find top selling products'].map(q => (
+                    {['Which of our specialty food products generate the highest revenue in foreign markets?', 
+                    'Which international product categories or regions are growing the fastest year-over-year?',
+                    'Which target countries represent our highest-volume or highest-value export destinations?', 
+                    'Which regions have the highest customs rejection or shipment delay rates?', 
+                    'Who are our top international wholesalers or retailers by revenue and order frequency?', 
+                    'What is the average export order value, and how does it fluctuate with currency exchange rates?', 
+                    'What are the total costs of export logistics vs. domestic distribution over time?', 
+                    'What is the gross margin per product when adjusted for export rebates or subsidies?', 
+                    'What are our projected export sales for the next fiscal year based on global market volatility and historical data?', 
+                    'What are the total costs of export logistics vs. domestic distribution over time?',
+                    'Find top selling products'].map(q => (
                       <button key={q} onClick={() => setQuery(q)} className="text-sm p-4 rounded-xl bg-slate-900 border border-slate-800 hover:border-indigo-500/50 hover:bg-slate-800 hover:text-indigo-300 transition-all text-left">
                         {q}
                       </button>
