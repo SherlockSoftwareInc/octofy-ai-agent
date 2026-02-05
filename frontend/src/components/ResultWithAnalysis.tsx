@@ -18,8 +18,6 @@ interface ResultWithAnalysisProps {
   cachedAnalysis?: AnalysisContext;
   /** Callback when analysis is fetched */
   onAnalysisFetched?: (analysis: AnalysisContext, resultIndex?: number) => void;
-  /** Chart type override if needed */
-  chartTypeOverride?: any;
   /** Children to render (the actual result display) */
   children: React.ReactNode;
 }
@@ -34,7 +32,6 @@ const ResultWithAnalysis: React.FC<ResultWithAnalysisProps> = ({
   resultIndex = 0,
   cachedAnalysis,
   onAnalysisFetched,
-  chartTypeOverride,
   children,
 }) => {
   const [aiSummaryLoading, setAISummaryLoading] = useState(false);
@@ -59,7 +56,7 @@ const ResultWithAnalysis: React.FC<ResultWithAnalysisProps> = ({
         result = await api.executeSQL(
           sql,
           executionContext,
-          chartTypeOverride,
+          undefined,
           undefined,
           undefined,
           true // enable_profiling
@@ -68,7 +65,7 @@ const ResultWithAnalysis: React.FC<ResultWithAnalysisProps> = ({
         result = await api.executePython(
           pythonCode,
           executionContext,
-          chartTypeOverride,
+          undefined,
           true // enable_profiling
         );
       } else {

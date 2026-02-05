@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { Send, Loader2, Sparkles, LayoutDashboard, User, Bot, Square, Eye, X, CheckCircle, FileText, RotateCcw, Edit } from 'lucide-react';
+import { Send, Loader2, Sparkles, LayoutDashboard, User, Bot, Square, Eye, X, FileText, RotateCcw, Edit } from 'lucide-react';
 import { api, generatePlanningSummary } from './api/client';
 import type { GenerateSQLResponse, AgentStatus, ExecutePythonResponse, ExecuteSQLResponse } from './api/client';
 import { SQLResultDisplay } from './components/SQL/SQLResultDisplay';
@@ -31,7 +31,6 @@ import {
   generateInitialTitle,
   generateAutoTitle
 } from './utils/conversationStorage';
-import { detectChartIntent, getChartTypeLabel, shouldTriggerRevisualization, getNewCodeReason, isExplicitChartOnlyPattern } from './utils/chartIntentDetector';
 import { useAuth } from './contexts/AuthContext';
 import { Login } from './pages/Login';
 import { UserProfile } from './components/UserProfile';
@@ -101,7 +100,7 @@ function AuthenticatedApp({
   const abortControllerRef = useRef<AbortController | null>(null);
   const abortedRef = useRef(false);
   const [selectedObjects, setSelectedObjects] = useState<string[]>([]);
-  const [planningContext, setPlanningContext] = useState<any>(null);
+  const [planningContext, setPlanningContext] = useState<Record<string, unknown> | null>(null);
   const [planningSummary, setPlanningSummary] = useState<string | null>(null);
   const [isSchemaModalOpen, setIsSchemaModalOpen] = useState(false);
   const [schemaPreviewName, setSchemaPreviewName] = useState<string | null>(null);
@@ -195,11 +194,18 @@ function AuthenticatedApp({
   }, [activeConversationId, activeConversation]);
 
   // Auto-scroll to bottom when conversation changes or new messages arrive
+  // Track message count to only scroll on new messages, not on message updates
+  const messageCountRef = useRef(0);
   useEffect(() => {
-    if (messagesEndRef.current) {
-      messagesEndRef.current.scrollIntoView({ behavior: 'smooth' });
+    const currentMessageCount = activeConversation?.messages.length || 0;
+    // Only scroll if message count increased (new message) or conversation changed
+    if (currentMessageCount > messageCountRef.current || messageCountRef.current === 0) {
+      if (messagesEndRef.current) {
+        messagesEndRef.current.scrollIntoView({ behavior: 'smooth' });
+      }
     }
-  }, [activeConversationId, activeConversation?.messages]);
+    messageCountRef.current = currentMessageCount;
+  }, [activeConversationId, activeConversation?.messages.length]);
 
   // Auto-resize textarea
   useEffect(() => {
@@ -240,10 +246,16 @@ function AuthenticatedApp({
           };
 
           const currentMessages = activeConversation?.messages || [];
-          updateConversation(activeConversationId, {
-            messages: [...currentMessages, summaryMessage],
-            planningSummary: summaryResponse.summary
-          });
+          setConversations(prev =>
+            prev.map(conv =>
+              conv.id === activeConversationId
+                ? { ...conv, messages: [...currentMessages, summaryMessage], planningSummary: summaryResponse.summary, lastModified: new Date().toISOString() }
+                : conv
+            )
+          );
+
+          // Set focus to textarea after planning summary is generated
+          setTimeout(() => textareaRef.current?.focus(), 100);
 
         } catch (error) {
           console.error('Failed to generate planning summary:', error);
@@ -252,7 +264,7 @@ function AuthenticatedApp({
     };
 
     generateSummary();
-  }, [queryMode, planningContext, planningSummary, activeConversationId]);
+  }, [queryMode, planningContext, planningSummary, activeConversationId, activeConversation?.messages]);
 
   // Update a conversation
   const updateConversation = (conversationId: string, updates: Partial<Conversation>) => {
@@ -627,306 +639,6 @@ function AuthenticatedApp({
 
     if (!conversationId) return;
 
-    // Detect chart intent from user query
-    const chartIntent = detectChartIntent(query);
-    const chartTypeOverride = chartIntent?.chartType;
-
-    // Find the last AI message with Python/R/SAS code execution results
-    const lastCodeExecutionMessage = [...chatHistory].reverse().find(
-      msg => msg.type === 'ai' &&
-        (msg.queryType === 'python_code' || msg.queryType === 'r_code' || msg.queryType === 'sas_code') &&
-        msg.sqlResult?.sql &&
-        msg.executionResult
-    );
-
-    // Find the last AI message with SQL execution results
-    const lastSQLMessage = [...chatHistory].reverse().find(
-      msg => msg.type === 'ai' &&
-        msg.queryType === 'database' &&
-        msg.sqlResult?.sql &&
-        msg.sqlExecutionResult
-    );
-
-    // Find the last AI message with generated SQL (but not yet executed)
-    const lastGeneratedSQLMessage = [...chatHistory].reverse().find(
-      msg => msg.type === 'ai' &&
-        msg.queryType === 'database' &&
-        msg.sqlResult?.sql &&
-        !msg.sqlExecutionResult
-    );
-
-    // Get the source query from the last executed message for comparison
-    const lastExecutedQuery = lastCodeExecutionMessage?.sourceQuery || lastSQLMessage?.sourceQuery;
-
-    // Check if we should re-visualize code execution (Python/R/SAS vs generate new code)
-    const shouldRevisualizeCode = chartIntent &&
-      lastCodeExecutionMessage?.sqlResult?.sql &&
-      lastCodeExecutionMessage?.executionResult &&
-      shouldTriggerRevisualization(chartIntent, query, lastCodeExecutionMessage?.sourceQuery);
-
-    // Check if we should re-visualize SQL execution (vs generate new SQL)
-    const shouldRevisualizeSQL = chartIntent &&
-      lastSQLMessage?.sqlResult?.sql &&
-      lastSQLMessage?.sqlExecutionResult &&
-      shouldTriggerRevisualization(chartIntent, query, lastSQLMessage?.sourceQuery);
-
-    // #region agent log
-    if (chartIntent) {
-      fetch('http://127.0.0.1:7242/ingest/46ec3597-91be-4ee3-bc4e-4aece9c658e1', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'App.tsx:handleSend', message: 'Chart intent and re-visualization', data: { query, chartType: chartIntent.chartType, isChartOnly: chartIntent.isChartOnlyRequest, foundCodeMessage: !!lastCodeExecutionMessage, codeHasResult: !!lastCodeExecutionMessage?.executionResult, foundSQLMessage: !!lastSQLMessage, sqlHasResult: !!lastSQLMessage?.sqlExecutionResult, shouldRevisualizeCode, shouldRevisualizeSQL }, timestamp: Date.now(), sessionId: 'debug-session', hypothesisId: 'C' }) }).catch(() => { });
-    }
-    // #endregion
-
-    if (shouldRevisualizeCode && lastCodeExecutionMessage) {
-      // Re-visualization: Always create a new AI message for the new chart
-      const userMessage: ChatMessage = {
-        id: generateMessageId(),
-        role: 'user',
-        type: 'user',
-        content: query,
-        timestamp: new Date(),
-        chartTypeOverride: chartTypeOverride
-      };
-
-      setQuery('');
-      setIsLoading(true);
-
-      try {
-        // Re-execute the same code (Python/R/SAS) with the new chart type override
-        const sourceQuery = lastCodeExecutionMessage.sourceQuery || lastCodeExecutionMessage.content || '';
-        const result = await api.executePython(
-          lastCodeExecutionMessage.sqlResult!.sql,
-          { user_query: sourceQuery },
-          chartTypeOverride
-        );
-
-        // Create a new AI message for the new chart
-        const aiMessage: ChatMessage = {
-          id: generateMessageId(),
-          role: 'assistant',
-          type: 'ai',
-          content: 'Here is the updated visualization:',
-          timestamp: new Date(),
-          sqlResult: lastCodeExecutionMessage.sqlResult,
-          executionResult: result,
-          queryType: lastCodeExecutionMessage.queryType, // Preserve original type (python_code/r_code/sas_code)
-          sourceQuery: lastCodeExecutionMessage.sourceQuery,
-          chartTypeOverride: chartTypeOverride
-        };
-
-        // Prepare initial analysis context if available in the result - DISABLED: Now on-demand
-        // This avoids flickering before handleExecutionComplete runs
-        // if (result.data_profile || result.insights) {
-        //   aiMessage.analysisContext = {
-        //     data_profile: result.data_profile,
-        //     insights: result.insights || [],
-        //     refinement_history: lastCodeExecutionMessage.analysisContext?.refinement_history || [],
-        //     suggested_refinements: result.suggested_refinements || []
-        //   };
-        // }
-
-        // Add both user message and new AI message to the chat
-        const updatedMessages = [...chatHistory, userMessage, aiMessage];
-        updateConversation(conversationId, { messages: updatedMessages });
-
-        // Fetch summary for new visualization (non-blocking) - analysis is now on-demand
-        await handleExecutionComplete(aiMessage.id, result);
-
-      } catch (error) {
-        console.error('Re-visualization failed:', error);
-        // Build helpful error message with supported chart types
-        const supportedCharts = ['Bar', 'Line', 'Pie', 'Scatter', 'Column', 'Area', 'Treemap', 'Radar', 'Funnel', 'Stacked Bar', 'Stacked Column', 'Clustered Column'];
-        const requestedChartLabel = chartTypeOverride ? getChartTypeLabel(chartTypeOverride) : 'the requested chart';
-        const codeType = lastCodeExecutionMessage.queryType === 'r_code' ? 'R' :
-          lastCodeExecutionMessage.queryType === 'sas_code' ? 'SAS' : 'Python';
-        const errorContent = `Sorry, I couldn't update the ${codeType} visualization to ${requestedChartLabel}. This may be due to incompatible data structure for this chart type.\n\n**Supported chart types:** ${supportedCharts.join(', ')}.\n\nPlease try a different chart type or ensure your data has the required columns.`;
-
-        const errorMessage: ChatMessage = {
-          id: generateMessageId(),
-          role: 'assistant',
-          type: 'ai',
-          content: errorContent,
-          timestamp: new Date()
-        };
-        const updatedMessages = [...chatHistory, userMessage, errorMessage];
-        updateConversation(conversationId, { messages: updatedMessages });
-      } finally {
-        setIsLoading(false);
-        setTimeout(() => textareaRef.current?.focus(), 0);
-      }
-      return;
-    }
-
-    // Handle SQL re-visualization (for executed SQL queries with results)
-    if (shouldRevisualizeSQL && lastSQLMessage) {
-      // Re-visualization: Always create a new AI message for the new chart
-      const userMessage: ChatMessage = {
-        id: generateMessageId(),
-        role: 'user',
-        type: 'user',
-        content: query,
-        timestamp: new Date(),
-        chartTypeOverride: chartTypeOverride
-      };
-
-      setQuery('');
-      setIsLoading(true);
-
-      try {
-        // Re-execute the same SQL query with the new chart type override
-        const sourceQuery = lastSQLMessage.sourceQuery || lastSQLMessage.content || '';
-        const result = await api.executeSQL(
-          lastSQLMessage.sqlResult!.sql,
-          {
-            user_query: sourceQuery,
-            schema_context: 'Re-visualization request'
-          },
-          chartTypeOverride
-        );
-
-        // Create a new AI message for the new chart
-        const aiMessage: ChatMessage = {
-          id: generateMessageId(),
-          role: 'assistant',
-          type: 'ai',
-          content: 'Here is the updated visualization:',
-          timestamp: new Date(),
-          sqlResult: lastSQLMessage.sqlResult,
-          sqlExecutionResult: result,
-          queryType: 'database',
-          sourceQuery: lastSQLMessage.sourceQuery,
-          chartTypeOverride: chartTypeOverride
-        };
-
-        // Prepare initial analysis context if available in the result - DISABLED: Now on-demand
-        // if (result.data_profile || result.insights) {
-        //   aiMessage.analysisContext = {
-        //     data_profile: result.data_profile,
-        //     insights: result.insights || [],
-        //     refinement_history: lastSQLMessage.analysisContext?.refinement_history || [],
-        //     suggested_refinements: []
-        //   };
-        // }
-
-        // Add both user message and new AI message to the chat
-        const updatedMessages = [...chatHistory, userMessage, aiMessage];
-        updateConversation(conversationId, { messages: updatedMessages });
-
-        // Fetch summary for new visualization (non-blocking) - analysis is now on-demand
-        await handleSQLExecutionComplete(aiMessage.id, result);
-
-      } catch (error) {
-        console.error('SQL re-visualization failed:', error);
-        // Build helpful error message with supported chart types
-        const supportedCharts = ['Bar', 'Line', 'Pie', 'Scatter', 'Column', 'Area', 'Treemap', 'Radar', 'Funnel', 'Stacked Bar', 'Stacked Column', 'Clustered Column'];
-        const requestedChartLabel = chartTypeOverride ? getChartTypeLabel(chartTypeOverride) : 'the requested chart';
-        const errorContent = `Sorry, I couldn't update the visualization to ${requestedChartLabel}. This may be due to incompatible data structure for this chart type.\n\n**Supported chart types:** ${supportedCharts.join(', ')}.\n\nPlease try a different chart type or ensure your data has the required columns.`;
-
-        const errorMessage: ChatMessage = {
-          id: generateMessageId(),
-          role: 'assistant',
-          type: 'ai',
-          content: errorContent,
-          timestamp: new Date()
-        };
-        const updatedMessages = [...chatHistory, userMessage, errorMessage];
-        updateConversation(conversationId, { messages: updatedMessages });
-      } finally {
-        setIsLoading(false);
-        setTimeout(() => textareaRef.current?.focus(), 0);
-      }
-      return;
-    }
-
-    // Handle case where SQL is generated but NOT executed - execute it with chart type override
-    // This handles the scenario where user says "Convert to line chart" after generating SQL
-    const isChartOnlyRequest = chartIntent && isExplicitChartOnlyPattern(query);
-    if (isChartOnlyRequest && !lastSQLMessage && lastGeneratedSQLMessage) {
-      // User wants a chart type change, SQL exists but hasn't been executed yet
-      const userMessage: ChatMessage = {
-        id: generateMessageId(),
-        role: 'user',
-        type: 'user',
-        content: query,
-        timestamp: new Date(),
-        chartTypeOverride: chartTypeOverride
-      };
-
-      setQuery('');
-      setIsLoading(true);
-
-      try {
-        // Execute the generated SQL with the chart type override
-        const sourceQuery = lastGeneratedSQLMessage.sourceQuery || lastGeneratedSQLMessage.content || '';
-        const result = await api.executeSQL(
-          lastGeneratedSQLMessage.sqlResult!.sql,
-          {
-            user_query: sourceQuery,
-            schema_context: 'First execution with chart type override'
-          },
-          chartTypeOverride
-        );
-
-        // Create a new AI message with the visualization
-        const aiMessage: ChatMessage = {
-          id: generateMessageId(),
-          role: 'assistant',
-          type: 'ai',
-          content: `Here is the ${getChartTypeLabel(chartTypeOverride || 'line')} visualization:`,
-          timestamp: new Date(),
-          sqlResult: lastGeneratedSQLMessage.sqlResult,
-          sqlExecutionResult: result,
-          queryType: 'database',
-          sourceQuery: lastGeneratedSQLMessage.sourceQuery,
-          chartTypeOverride: chartTypeOverride
-        };
-
-        // Prepare initial analysis context if available in the result - DISABLED: Now on-demand
-        // if (result.data_profile || result.insights) {
-        //   aiMessage.analysisContext = {
-        //     data_profile: result.data_profile,
-        //     insights: result.insights || [],
-        //     refinement_history: [],
-        //     suggested_refinements: []
-        //   };
-        // }
-
-        // Add both user message and new AI message to the chat
-        const updatedMessages = [...chatHistory, userMessage, aiMessage];
-        updateConversation(conversationId, { messages: updatedMessages });
-
-        // Fetch summary for visualization (non-blocking) - analysis is now on-demand
-        await handleSQLExecutionComplete(aiMessage.id, result);
-
-      } catch (error) {
-        console.error('SQL visualization failed:', error);
-        const supportedCharts = ['Bar', 'Line', 'Pie', 'Scatter', 'Column', 'Area', 'Treemap', 'Radar', 'Funnel', 'Stacked Bar', 'Stacked Column', 'Clustered Column'];
-        const requestedChartLabel = chartTypeOverride ? getChartTypeLabel(chartTypeOverride) : 'the requested chart';
-        const errorContent = `Sorry, I couldn't create the ${requestedChartLabel} visualization. The SQL execution may have failed or the data structure may be incompatible.\n\n**Supported chart types:** ${supportedCharts.join(', ')}.`;
-
-        const errorMessage: ChatMessage = {
-          id: generateMessageId(),
-          role: 'assistant',
-          type: 'ai',
-          content: errorContent,
-          timestamp: new Date()
-        };
-        const updatedMessages = [...chatHistory, userMessage, errorMessage];
-        updateConversation(conversationId, { messages: updatedMessages });
-      } finally {
-        setIsLoading(false);
-        setTimeout(() => textareaRef.current?.focus(), 0);
-      }
-      return;
-    }
-
-    // If chart intent detected but we're NOT re-visualizing, show toast explaining why
-    if (chartIntent && lastExecutedQuery) {
-      const reason = getNewCodeReason(query, lastExecutedQuery);
-      if (reason) {
-        setToast({ message: reason, type: 'info' });
-      }
-    }
-
     // Determine user message content - use auto-generate indicator if no query but planning summary exists
     const userMessageContent = query.trim()
       ? query
@@ -937,8 +649,7 @@ function AuthenticatedApp({
       role: 'user',
       type: 'user',
       content: userMessageContent,
-      timestamp: new Date(),
-      chartTypeOverride: chartTypeOverride
+      timestamp: new Date()
     };
 
     // Add user message to chat history
@@ -1121,8 +832,7 @@ function AuthenticatedApp({
           discoveryResult: context,
           sqlResult: result,
           queryType: normalizedQueryType,
-          sourceQuery: currentQuery,
-          chartTypeOverride: chartTypeOverride  // Pass chart type preference from user query
+          sourceQuery: currentQuery
         };
 
         const updatedMessages = [...currentMessages, aiMessage];
@@ -1263,6 +973,8 @@ function AuthenticatedApp({
     abortedRef.current = true;
     abortControllerRef.current.abort();
     setSteps([]);
+    // Set focus back to textarea after stopping generation
+    setTimeout(() => textareaRef.current?.focus(), 0);
   };
 
   const navigateToAdmin = () => {
@@ -1402,13 +1114,6 @@ function AuthenticatedApp({
                               <p className="text-slate-200 leading-relaxed whitespace-pre-wrap break-words">
                                 {message.content}
                               </p>
-                              {/* Chart Type Updated Badge */}
-                              {message.chartTypeOverride && (
-                                <div className="flex items-center gap-1.5 text-emerald-400 text-xs font-medium">
-                                  <CheckCircle size={14} />
-                                  <span>Updated to {getChartTypeLabel(message.chartTypeOverride)}</span>
-                                </div>
-                              )}
                             </div>
                           )}
 
@@ -1507,7 +1212,7 @@ function AuthenticatedApp({
                                                 key={idx}
                                                 remarkPlugins={[remarkGfm]}
                                                 components={{
-                                                  code({ children }: any) {
+                                                  code({ children }: React.ComponentPropsWithoutRef<'code'>) {
                                                     // Render inline code as plain text
                                                     return <span>{children}</span>;
                                                   },
@@ -1564,7 +1269,7 @@ function AuthenticatedApp({
                                           schema,
                                           name: normalizedName,
                                           type: obj.type ?? null,
-                                          autoChecked: (obj as any).auto_checked || false
+                                          autoChecked: (obj as { auto_checked?: boolean }).auto_checked || false
                                         };
                                       })
                                       : (() => {
@@ -1720,81 +1425,36 @@ function AuthenticatedApp({
 
 
                               {/* SQL Result - Only for database/code generation queries */}
-                              {/* Only show chart for code execution messages (Python/R/SAS) generated by chart type change (re-visualization) */}
-                              {(message.queryType === 'python_code' || message.queryType === 'r_code' || message.queryType === 'sas_code') && message.executionResult && message.chartTypeOverride ? (
+                              {message.sqlResult && (message.queryType === 'database' || message.queryType === 'r_code' || message.queryType === 'sas_code' || message.queryType === 'python_code') && (message.sqlResult.sql || message.sqlResult.explanation) && (
                                 <div className="relative group">
-                                  <SQLResultDisplay
-                                    sql={message.sqlResult?.sql || ''}
-                                    sourceQuestion={message.sourceQuery}
-                                    allUserMessages={chatHistory
-                                      .filter(msg => msg.type === 'user')
-                                      .map(msg => msg.content)
-                                    }
-                                    queryType={message.queryType}
-                                    executionResult={message.executionResult}
-                                    sqlExecutionResult={message.sqlExecutionResult}
-                                    onExecutionComplete={(result) => handleExecutionComplete(message.id, result)}
-                                    onSQLExecutionComplete={(result) => handleSQLExecutionComplete(message.id, result)}
-                                    chartTypeOverride={message.chartTypeOverride}
-                                    chartOnly={true}
-                                    pythonSummary={message.pythonSummary || ''}
-                                    sqlSummary={message.sqlSummary || ''}
-                                  />
-                                </div>
-                              ) : message.queryType === 'database' && message.sqlExecutionResult && message.chartTypeOverride ? (
-                                /* Only show chart for database messages generated by chart type change (SQL re-visualization) */
-                                <div className="relative group">
-                                  <SQLResultDisplay
-                                    sql={message.sqlResult?.sql || ''}
-                                    sourceQuestion={message.sourceQuery}
-                                    allUserMessages={chatHistory
-                                      .filter(msg => msg.type === 'user')
-                                      .map(msg => msg.content)
-                                    }
-                                    queryType={message.queryType}
-                                    executionResult={message.executionResult}
-                                    sqlExecutionResult={message.sqlExecutionResult}
-                                    onExecutionComplete={(result) => handleExecutionComplete(message.id, result)}
-                                    onSQLExecutionComplete={(result) => handleSQLExecutionComplete(message.id, result)}
-                                    chartTypeOverride={message.chartTypeOverride}
-                                    chartOnly={true}
-                                    pythonSummary={message.pythonSummary || ''}
-                                    sqlSummary={message.sqlSummary || ''}
-                                  />
-                                </div>
-                              ) : (
-                                message.sqlResult && (message.queryType === 'database' || message.queryType === 'r_code' || message.queryType === 'sas_code' || message.queryType === 'python_code') && (message.sqlResult.sql || message.sqlResult.explanation) && (
-                                  <div className="relative group">
-                                    {message.sqlResult.sql ? (
-                                      <SQLResultDisplay
-                                        sql={message.sqlResult.sql}
-                                        sourceQuestion={message.sourceQuery}
-                                        allUserMessages={chatHistory
-                                          .filter(msg => msg.type === 'user')
-                                          .map(msg => msg.content)
-                                        }
-                                        queryType={message.queryType}
-                                        executionResult={message.executionResult}
-                                        sqlExecutionResult={message.sqlExecutionResult}
-                                        onExecutionComplete={(result) => handleExecutionComplete(message.id, result)}
-                                        onSQLExecutionComplete={(result) => handleSQLExecutionComplete(message.id, result)}
-                                        chartTypeOverride={message.chartTypeOverride}
-                                        pythonSummary={message.pythonSummary || ''}
-                                        sqlSummary={message.sqlSummary || ''}
-                                      />
-                                    ) : (
-                                      // Show explanation when no SQL was generated
-                                      <div className="bg-slate-900/50 border border-red-500/50 rounded-lg p-4">
-                                        <div className="flex items-center gap-2 mb-2 text-sm font-semibold text-red-400">
-                                          <div className="w-2 h-2 bg-red-500 rounded-full"></div> Query Generation Failed
-                                        </div>
-                                        <div className="text-sm text-red-300">
-                                          {message.sqlResult.explanation || "Unable to generate SQL query for this request."}
-                                        </div>
+                                  {message.sqlResult.sql ? (
+                                    <SQLResultDisplay
+                                      sql={message.sqlResult.sql}
+                                      sourceQuestion={message.sourceQuery}
+                                      allUserMessages={chatHistory
+                                        .filter(msg => msg.type === 'user')
+                                        .map(msg => msg.content)
+                                      }
+                                      queryType={message.queryType}
+                                      executionResult={message.executionResult}
+                                      sqlExecutionResult={message.sqlExecutionResult}
+                                      onExecutionComplete={(result) => handleExecutionComplete(message.id, result)}
+                                      onSQLExecutionComplete={(result) => handleSQLExecutionComplete(message.id, result)}
+                                      pythonSummary={message.pythonSummary || ''}
+                                      sqlSummary={message.sqlSummary || ''}
+                                    />
+                                  ) : (
+                                    // Show explanation when no SQL was generated
+                                    <div className="bg-slate-900/50 border border-red-500/50 rounded-lg p-4">
+                                      <div className="flex items-center gap-2 mb-2 text-sm font-semibold text-red-400">
+                                        <div className="w-2 h-2 bg-red-500 rounded-full"></div> Query Generation Failed
                                       </div>
-                                    )}
-                                  </div>
-                                )
+                                      <div className="text-sm text-red-300">
+                                        {message.sqlResult.explanation || "Unable to generate SQL query for this request."}
+                                      </div>
+                                    </div>
+                                  )}
+                                </div>
                               )}
 
                               {/* Code Advisor display */}
@@ -1887,7 +1547,7 @@ function AuthenticatedApp({
                                                 remarkPlugins={[remarkGfm]}
                                                 className="prose prose-invert max-w-none"
                                                 components={{
-                                                  code({ children }: any) {
+                                                  code({ children }: React.ComponentPropsWithoutRef<'code'>) {
                                                     // Inline code as plain span
                                                     return <span>{children}</span>;
                                                   },
