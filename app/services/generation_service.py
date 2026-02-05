@@ -446,13 +446,22 @@ def _detect_turn_type_fast(query: str, planning_context: Dict[str, Any]) -> Opti
                 "topic_similarity": 1.0
             }
     
-    # 2. CORRECTION SIGNALS (2+ signals required)
+    # 2. CORRECTION/REJECTION SIGNALS (2+ signals required, or explicit "no" with pending pivot)
     correction_signals = [
         r'\b(no|not|nope|incorrect|wrong|actually|instead|rather)\b',
         r'\b(i\s+\w+\s+meant|meant|should be|change)\b',  # "i meant", "i actually meant", etc.
         r'\b(different|other|another)\b',
     ]
     correction_count = sum(1 for pattern in correction_signals if re.search(pattern, query_lower))
+    
+    # Special case: explicit "no" when there's a pending pivot (rejection)
+    if planning_context.get("pending_pivot") and re.search(r'^\s*(no|nope|nah|not)\b', query_lower):
+        return {
+            "turn_type": "correction",
+            "confidence": 0.95,
+            "reasoning": "User rejected pending pivot with explicit negative response",
+            "topic_similarity": 0.0
+        }
     
     if correction_count >= 2:
         return {
@@ -868,6 +877,25 @@ Would you like to start fresh with this new topic? (This will clear your current
             query = new_goal
             turn_type = "refinement"  # Treat as fresh start
         
+        # Handle pending pivot rejection (user said "no")
+        if planning_context.get("pending_pivot") and turn_type == "correction":
+            # User rejected the pivot - keep original topic
+            previous_goal = planning_context["pending_pivot"]["previous_goal"]
+            
+            # Clear pending pivot
+            del planning_context["pending_pivot"]
+            
+            # Acknowledge rejection and continue with original topic
+            response_text = f"Understood! Let's continue with your current topic: \"{previous_goal}\". How would you like to proceed?"
+            
+            return GenerateSQLResponse(
+                sql="",
+                explanation=response_text,
+                objects=[],
+                query_type="plan",
+                context_text=_serialize_planning_context(planning_context)
+            )
+        
         # Handle TABLE_SELECTION (user modified table selection without text input)
         if turn_type == "table_selection":
             # Skip intent analysis - directly prepare response about table selection
@@ -1072,15 +1100,28 @@ Intent Analysis: {json.dumps(intent_data, indent=2)}
 Number of Suggested Tables: {len(suggested_objects)}
 Auto-Checked Tables: {json.dumps(auto_checked_tables, indent=2)}
 
-Guidelines:
-1. Acknowledge their input warmly
-2. ONLY ask questions from intent_data["required_questions"] (if any exist)
-3. If tables found, say: "Based on your question about [topic], please review the following tables and select the ones you want to use in the analysis:"
-4. If tables were auto-checked, mention: "I've pre-selected tables that are essential for your analysis, but you can adjust the selection."
-5. Keep it conversational and helpful, not robotic
-6. If planning seems complete (goal clear, tables selected, requirements noted), say: "Your planning is complete! Switch to 'Generate SQL' or another mode when you're ready to create the code."
+User's Message: {query}
 
-Format as markdown. Be concise but friendly. Maximum 4 sentences."""
+Guidelines:
+1. **If user asks about current state** (e.g., "which tables are selected?", "what did we discuss?", "summarize our conversation"):
+   - Answer directly using information from Context (goal, selected_tables, requirements, conversation_history)
+   - List selected tables from "selected_tables" field
+   - Summarize goal from "goal" field
+   - Reference requirements from "requirements" field
+   
+2. Acknowledge their input warmly
+
+3. ONLY ask questions from intent_data["required_questions"] (if any exist)
+
+4. If tables found, say: "Based on your question about [topic], please review the following tables and select the ones you want to use in the analysis:"
+
+5. If tables were auto-checked, mention: "I've pre-selected tables that are essential for your analysis, but you can adjust the selection."
+
+6. Keep it conversational and helpful, not robotic
+
+7. If planning seems complete (goal clear, tables selected, requirements noted), say: "Your planning is complete! Switch to 'Generate SQL' or another mode when you're ready to create the code."
+
+Format as markdown. Be concise but friendly. Maximum 4 sentences (unless answering state questions, which may need more detail)."""
 
         ai_response = llm_service.chat(response_prompt)
         

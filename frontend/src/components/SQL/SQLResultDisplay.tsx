@@ -68,7 +68,74 @@ const ResultsWrapper = ({ children }: { children: React.ReactNode }) => (
 type ResultWithExtras = ExecutePythonResult & { recommendation?: ChartRecommendation };
 type DisplayableChartType = Exclude<ChartTypeOption, 'none'>;
 
-const SUPPORTED_CHART_TYPES: readonly DisplayableChartType[] = ['bar', 'line', 'pie', 'scatter', 'column', 'stackedBar', 'stackedColumn', 'clusteredColumn', 'area', 'radar', 'treemap', 'funnel'];
+const SUPPORTED_CHART_TYPES: readonly DisplayableChartType[] = ['line', 'pie', 'scatter', 'column', 'stackedColumn', 'clusteredColumn', 'area', 'radar', 'treemap', 'funnel'];
+
+// Chart type labels for UI display
+const CHART_TYPE_LABELS: Record<DisplayableChartType, string> = {
+    bar: 'Bar',
+    line: 'Line',
+    pie: 'Pie',
+    scatter: 'Scatter',
+    column: 'Column',
+    stackedBar: 'Stacked Bar',
+    stackedColumn: 'Stacked Column',
+    clusteredColumn: 'Clustered Column',
+    area: 'Area',
+    radar: 'Radar',
+    treemap: 'Treemap',
+    funnel: 'Funnel',
+};
+
+// Chart Type Selector Component
+interface ChartTypeSelectorProps {
+    currentType: DisplayableChartType;
+    onTypeChange: (newType: DisplayableChartType) => void;
+    isLoading?: boolean;
+}
+
+const ChartTypeSelector: React.FC<ChartTypeSelectorProps> = ({ currentType, onTypeChange, isLoading }) => {
+    return (
+        <div className="mt-4 p-4 bg-slate-800/30 border border-slate-700/50 rounded-lg">
+            <div className="flex items-center gap-2 mb-3">
+                <BarChart3 size={16} className="text-cyan-400" />
+                <span className="text-sm font-semibold text-slate-300">Chart Type</span>
+            </div>
+            <div className="flex flex-wrap gap-2">
+                {SUPPORTED_CHART_TYPES.map((chartType) => (
+                    <label
+                        key={chartType}
+                        className={`flex items-center gap-2.5 px-3 py-2.5 rounded-lg border cursor-pointer transition-all ${
+                            currentType === chartType
+                                ? 'bg-cyan-500/10 border-cyan-500/50'
+                                : 'bg-slate-800/50 border-slate-700/50 hover:border-slate-600'
+                        } ${isLoading ? 'opacity-50 cursor-not-allowed' : ''}`}
+                    >
+                        <input
+                            type="radio"
+                            name="chart-type"
+                            value={chartType}
+                            checked={currentType === chartType}
+                            onChange={() => !isLoading && onTypeChange(chartType)}
+                            disabled={isLoading}
+                            className="w-4 h-4 text-cyan-500 bg-slate-700 border-slate-600 focus:ring-cyan-500 focus:ring-2 focus:ring-offset-0 disabled:opacity-50"
+                        />
+                        <span className={`text-sm font-medium ${
+                            currentType === chartType ? 'text-cyan-300' : 'text-slate-300'
+                        }`}>
+                            {CHART_TYPE_LABELS[chartType]}
+                        </span>
+                    </label>
+                ))}
+            </div>
+            {isLoading && (
+                <div className="mt-3 flex items-center gap-2 text-xs text-slate-400">
+                    <Loader2 size={14} className="animate-spin" />
+                    <span>Updating chart...</span>
+                </div>
+            )}
+        </div>
+    );
+};
 
 const isSupportedChartType = (chartType?: ChartTypeOption): chartType is DisplayableChartType => {
     if (!chartType || chartType === 'none') {
@@ -111,7 +178,23 @@ function recommendationToMetadata(rec: ChartRecommendation): ChartMetadata {
     };
 }
 
-const ExecutionResultViewer: React.FC<{ results: ResultWithExtras[]; recommendation?: ChartRecommendation; pythonSummary?: string }> = ({ results, recommendation, pythonSummary }) => {
+interface ExecutionResultViewerProps {
+    results: ResultWithExtras[];
+    recommendation?: ChartRecommendation;
+    pythonSummary?: string;
+    onChartTypeChange?: (newType: DisplayableChartType, resultIndex: number) => void;
+    isChangingChartType?: boolean;
+    chartRefs?: React.MutableRefObject<Map<number, HTMLDivElement | null>>;
+}
+
+const ExecutionResultViewer: React.FC<ExecutionResultViewerProps> = ({ 
+    results, 
+    recommendation, 
+    pythonSummary,
+    onChartTypeChange,
+    isChangingChartType = false,
+    chartRefs
+}) => {
     const normalizeTableData = (data: StructuredTableData | Array<Record<string, unknown>>, fallbackColumns?: string[]) => {
         if (Array.isArray(data)) {
             return { columns: fallbackColumns || Object.keys(data[0] || {}), rows: data };
@@ -195,12 +278,14 @@ const ExecutionResultViewer: React.FC<{ results: ResultWithExtras[]; recommendat
                                 </div>
                             </div>
                         ) : shouldShowChart && effectiveMetadata ? (
-                            <ResultsWrapper>
-                                <ResultChart
-                                    data={res.normalized.rows}
-                                    metadata={effectiveMetadata as ChartMetadata}
-                                />
-                            </ResultsWrapper>
+                            <div ref={(el) => { chartRefs?.current.set(idx, el); }}>
+                                <ResultsWrapper>
+                                    <ResultChart
+                                        data={res.normalized.rows}
+                                        metadata={effectiveMetadata as ChartMetadata}
+                                    />
+                                </ResultsWrapper>
+                            </div>
                         ) : null}
 
                         {/* LLM Summary Section */}
@@ -218,11 +303,13 @@ const ExecutionResultViewer: React.FC<{ results: ResultWithExtras[]; recommendat
                             </div>
                         )}
 
-                        {/* Show recommendation explanation if available */}
-                        {effectiveRecommendation?.explanation && (
-                            <div className="mt-2 text-xs text-slate-500 italic">
-                                {effectiveRecommendation.explanation}
-                            </div>
+                        {/* Chart Type Selector - show when chart is displayed */}
+                        {shouldShowChart && effectiveMetadata && !vizConfigBlocksChart && onChartTypeChange && (
+                            <ChartTypeSelector
+                                currentType={effectiveMetadata.type as DisplayableChartType}
+                                onTypeChange={(newType) => onChartTypeChange(newType, idx)}
+                                isLoading={isChangingChartType}
+                            />
                         )}
                     </div>
                 );
@@ -240,8 +327,6 @@ interface SQLResultDisplayProps {
     sqlExecutionResult?: ExecuteSQLResponse;
     onExecutionComplete?: (result: ExecutePythonResponse) => void;
     onSQLExecutionComplete?: (result: ExecuteSQLResponse) => void;
-    /** Optional chart type override from user's natural language request */
-    chartTypeOverride?: ChartTypeOption;
     /** If true, only show the chart (for re-visualization) */
     chartOnly?: boolean;
     /** LLM summary of the Python execution result, if available */
@@ -259,7 +344,6 @@ export const SQLResultDisplay: React.FC<SQLResultDisplayProps> = ({
     sqlExecutionResult,
     onExecutionComplete,
     onSQLExecutionComplete,
-    chartTypeOverride,
     chartOnly = false,
     pythonSummary,
     sqlSummary
@@ -281,6 +365,8 @@ export const SQLResultDisplay: React.FC<SQLResultDisplayProps> = ({
     const [showAISummary, setShowAISummary] = useState(false);
     const [showFullAnalysis, setShowFullAnalysis] = useState(false);
     const [showDataProfile, setShowDataProfile] = useState(false);
+    const [isChangingChartType, setIsChangingChartType] = useState(false);
+    const chartRefs = React.useRef<Map<number, HTMLDivElement | null>>(new Map());
 
 
 
@@ -395,12 +481,12 @@ export const SQLResultDisplay: React.FC<SQLResultDisplayProps> = ({
         if (!sql) return;
         setIsRunning(true);
         try {
-            // Pass chart type override and source query to the execution API
+            // Pass source query to the execution API
             // enable_profiling is FALSE by default (on-demand only)
             const result = await api.executePython(
                 sql,
                 sourceQuestion ? { user_query: sourceQuestion } : undefined,
-                chartTypeOverride,
+                undefined,
                 false // explicitly disable automatic profiling
             );
 
@@ -435,7 +521,7 @@ export const SQLResultDisplay: React.FC<SQLResultDisplayProps> = ({
                     user_query: sourceQuestion,
                     schema_context: 'Generated from SQL generation pipeline'
                 } : undefined,
-                chartTypeOverride,
+                undefined,
                 undefined, // timeout
                 undefined, // max rows
                 false // explicitly disable automatic profiling
@@ -469,22 +555,77 @@ export const SQLResultDisplay: React.FC<SQLResultDisplayProps> = ({
         }
     };
 
+    // Handle chart type change from selector
+    const handleChartTypeChange = async (newType: DisplayableChartType, resultIndex: number) => {
+        setIsChangingChartType(true);
+        
+        try {
+            // Re-execute code/SQL with new chart type
+            if (queryType === 'python_code' || queryType === 'r_code' || queryType === 'sas_code') {
+                // Re-execute Python/R/SAS code with new chart type
+                const result = await api.executePython(
+                    sql,
+                    sourceQuestion ? { user_query: sourceQuestion } : undefined,
+                    newType,
+                    false
+                );
+                
+                if (onExecutionComplete) {
+                    onExecutionComplete(result);
+                }
+            } else if (queryType === 'database') {
+                // Re-execute SQL with new chart type
+                const result = await api.executeSQL(
+                    sql,
+                    sourceQuestion ? {
+                        user_query: sourceQuestion,
+                        schema_context: 'Chart type change'
+                    } : undefined,
+                    newType,
+                    undefined,
+                    undefined,
+                    false
+                );
+                
+                if (onSQLExecutionComplete) {
+                    onSQLExecutionComplete(result);
+                }
+            }
+            
+            setToast({ 
+                message: `Chart updated to ${CHART_TYPE_LABELS[newType]}`, 
+                type: 'success' 
+            });
+            
+            // Scroll to the specific chart after update
+            setTimeout(() => {
+                const chartElement = chartRefs.current.get(resultIndex);
+                if (chartElement) {
+                    chartElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                }
+            }, 300);
+        } catch (error) {
+            console.error('Chart type change failed:', error);
+            setToast({ 
+                message: 'Failed to update chart type', 
+                type: 'error' 
+            });
+        } finally {
+            setIsChangingChartType(false);
+        }
+    };
+
     // CHART ONLY MODE: Only show the chart for code execution results (Python/R/SAS - for re-visualization)
     if (chartOnly && (queryType === 'python_code' || queryType === 'r_code' || queryType === 'sas_code') && executionResult && executionResult.results && executionResult.results.length > 0) {
         const rec = executionResult.recommendation;
-        const requestedType = chartTypeOverride ?? rec?.chart_type;
-        // #region agent log
-        fetch('http://127.0.0.1:7242/ingest/46ec3597-91be-4ee3-bc4e-4aece9c658e1', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'SQLResultDisplay.tsx:chartOnly-python', message: 'Chart-only Python branch', data: { chartTypeOverride, recChartType: rec?.chart_type, requestedType }, timestamp: Date.now(), sessionId: 'debug-session', hypothesisId: 'A' }) }).catch(() => { });
-        // #endregion
+        const requestedType = rec?.chart_type;
 
         const metadataFromRecommendation = rec && isSupportedChartType(rec.chart_type)
             ? recommendationToMetadata(rec)
             : null;
 
         const resolvedType: ChartMetadata['type'] | undefined = metadataFromRecommendation
-            ? (chartTypeOverride && isSupportedChartType(chartTypeOverride)
-                ? chartTypeOverride
-                : metadataFromRecommendation.type)
+            ? metadataFromRecommendation.type
             : undefined;
 
         const chartMetadata = metadataFromRecommendation && resolvedType
@@ -519,19 +660,14 @@ export const SQLResultDisplay: React.FC<SQLResultDisplayProps> = ({
     // CHART ONLY MODE: Only show the chart for SQL execution results (for re-visualization)
     if (chartOnly && queryType === 'database' && sqlExecutionResult && sqlExecutionResult.success && sqlExecutionResult.results && sqlExecutionResult.results.length > 0) {
         const rec = sqlExecutionResult.recommendation;
-        const requestedType = chartTypeOverride ?? rec?.chart_type;
-        // #region agent log
-        fetch('http://127.0.0.1:7242/ingest/46ec3597-91be-4ee3-bc4e-4aece9c658e1', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'SQLResultDisplay.tsx:chartOnly-database', message: 'Chart-only Database branch', data: { chartTypeOverride, recChartType: rec?.chart_type, requestedType }, timestamp: Date.now(), sessionId: 'debug-session', hypothesisId: 'B' }) }).catch(() => { });
-        // #endregion
+        const requestedType = rec?.chart_type;
 
         const metadataFromRecommendation = rec && isSupportedChartType(rec.chart_type)
             ? recommendationToMetadata(rec)
             : null;
 
         const resolvedType: ChartMetadata['type'] | undefined = metadataFromRecommendation
-            ? (chartTypeOverride && isSupportedChartType(chartTypeOverride)
-                ? chartTypeOverride
-                : metadataFromRecommendation.type)
+            ? metadataFromRecommendation.type
             : undefined;
 
         const chartMetadata = metadataFromRecommendation && resolvedType
@@ -690,6 +826,9 @@ export const SQLResultDisplay: React.FC<SQLResultDisplayProps> = ({
                                         results={executionResult.results}
                                         recommendation={executionResult.recommendation}
                                         pythonSummary={pythonSummary}
+                                        onChartTypeChange={handleChartTypeChange}
+                                        isChangingChartType={isChangingChartType}
+                                        chartRefs={chartRefs}
                                     />
                                     {/* On-Demand Analysis Buttons */}
                                     <div className="flex items-center gap-2 mt-4 mb-2">
@@ -702,7 +841,7 @@ export const SQLResultDisplay: React.FC<SQLResultDisplayProps> = ({
                                                     const summaryResult = await api.summarizeResults(
                                                         sourceQuestion || allUserMessages.join(' '),
                                                         executionResult?.output || executionResult?.results,
-                                                        chartTypeOverride
+                                                        undefined
                                                     );
                                                     // Convert summary to insights format
                                                     const insights = summaryResult.summary ? [
@@ -752,7 +891,7 @@ export const SQLResultDisplay: React.FC<SQLResultDisplayProps> = ({
                                                     const result = await api.executePython(
                                                         sql,
                                                         sourceQuestion ? { user_query: sourceQuestion } : undefined,
-                                                        chartTypeOverride,
+                                                        undefined,
                                                         true // enable profiling for on-demand
                                                     );
                                                     if (result.success && (result.data_profile || result.insights)) {
@@ -794,7 +933,7 @@ export const SQLResultDisplay: React.FC<SQLResultDisplayProps> = ({
                                                     const result = await api.executePython(
                                                         sql,
                                                         sourceQuestion ? { user_query: sourceQuestion } : undefined,
-                                                        chartTypeOverride,
+                                                        undefined,
                                                         true // enable profiling for on-demand
                                                     );
                                                     if (result.success && (result.data_profile || result.insights)) {
@@ -884,6 +1023,9 @@ export const SQLResultDisplay: React.FC<SQLResultDisplayProps> = ({
                                         results={sqlExecutionResult.results}
                                         recommendation={sqlExecutionResult.recommendation}
                                         pythonSummary={sqlSummary}
+                                        onChartTypeChange={handleChartTypeChange}
+                                        isChangingChartType={isChangingChartType}
+                                        chartRefs={chartRefs}
                                     />
                                     {/* On-Demand Analysis Buttons */}
                                     <div className="flex items-center gap-2 mt-4 mb-2">
@@ -896,7 +1038,7 @@ export const SQLResultDisplay: React.FC<SQLResultDisplayProps> = ({
                                                     const summaryResult = await api.summarizeResults(
                                                         sourceQuestion || allUserMessages.join(' '),
                                                         sqlExecutionResult?.output || sqlExecutionResult?.results,
-                                                        chartTypeOverride
+                                                        undefined
                                                     );
                                                     // Convert summary to insights format
                                                     const insights = summaryResult.summary ? [
@@ -949,7 +1091,7 @@ export const SQLResultDisplay: React.FC<SQLResultDisplayProps> = ({
                                                             user_query: sourceQuestion,
                                                             schema_context: 'Generated from SQL generation pipeline'
                                                         } : undefined,
-                                                        chartTypeOverride,
+                                                        undefined,
                                                         undefined,
                                                         undefined,
                                                         true // enable profiling for on-demand
@@ -996,7 +1138,7 @@ export const SQLResultDisplay: React.FC<SQLResultDisplayProps> = ({
                                                             user_query: sourceQuestion,
                                                             schema_context: 'Generated from SQL generation pipeline'
                                                         } : undefined,
-                                                        chartTypeOverride,
+                                                        undefined,
                                                         undefined,
                                                         undefined,
                                                         true // enable profiling for on-demand
