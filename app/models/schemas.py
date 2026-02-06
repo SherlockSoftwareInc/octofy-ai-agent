@@ -569,6 +569,17 @@ class ThreeProngedResult(BaseModel):
     requires_user_selection: bool = False
     selection_candidates: List[RankedTable] = []  # Top N candidates for user to choose from
 
+class KBAssessment(BaseModel):
+    """Result of LLM evaluation of knowledge base examples against user query"""
+    is_sufficient: bool = False
+    confidence: float = Field(ge=0.0, le=1.0, default=0.0)
+    adjustments_needed: List[str] = []  # e.g., ["Change date filter to 2024", "Add GROUP BY region"]
+    missing_entities: List[str] = []  # Entities/dimensions not covered by the KB example
+    missing_tables: List[str] = []  # Tables needed but not in the KB SQL
+    suggested_search_terms: List[str] = []  # Terms to search schema/value index for gap-filling
+    original_sql: str = ""  # The SQL from the knowledge base example
+    original_question: str = ""  # The question from the knowledge base example
+
 class EnhanceSchemaRequest(BaseModel):
     """Request to enhance schema descriptions with AI"""
     file_path: str
