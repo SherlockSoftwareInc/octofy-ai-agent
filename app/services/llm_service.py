@@ -38,6 +38,10 @@ class LLMServiceBase(ABC):
     def extract_filter_values(self, query: str) -> List[str]:
         pass
 
+    @abstractmethod
+    def validate_schema_with_join_paths(self, user_query: str, schemas: List[Any], code_type: str = "sql") -> Dict[str, Any]:
+        pass
+
 class OpenAILLMService(LLMServiceBase):
     def __init__(self):
         from app.services.settings_service import load_settings
@@ -352,6 +356,84 @@ the columns necessary to answer it - either directly or through computation/deri
                 "status": "sufficient",
                 "required_data_points": [],
                 "missing_data_points": [],
+                "search_suggestions": [],
+                "analysis": f"Validation skipped due to error: {e}"
+            }
+
+    def validate_schema_with_join_paths(self, user_query: str, schemas: List[Any], code_type: str = "sql") -> Dict[str, Any]:
+        """
+        Enhanced validation with join-path verification (Stage A + Stage B).
+        
+        Replaces check_schema_sufficiency for new validation flow while 
+        keeping the old method for backward compatibility.
+        """
+        import json
+        from app.services.schema_context_utils import (
+            build_sufficiency_schema_text, get_derivation_guidance, 
+            get_temporal_guidance, prioritize_base_tables
+        )
+        
+        # Mock mode for development
+        if self.client is None:
+            return {
+                "status": "sufficient",
+                "join_path": None,
+                "validation_details": [],
+                "missing_logic": None,
+                "search_suggestions": [],
+                "analysis": "Mock validation - schema assumed sufficient"
+            }
+        
+        # Prioritize base tables over views for temporal queries
+        filtered_schemas = prioritize_base_tables(schemas)
+        
+        schema_text = build_sufficiency_schema_text(filtered_schemas)
+        derivation_guidance = get_derivation_guidance(code_type)
+        temporal_guidance = get_temporal_guidance(filtered_schemas)
+        
+        prompt = _build_join_path_validation_prompt(
+            user_query, schema_text, code_type, temporal_guidance, derivation_guidance
+        )
+        
+        try:
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": "You are a database schema validator. Output valid JSON only."},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0,
+                response_format={"type": "json_object"}
+            )
+            
+            result = json.loads(response.choices[0].message.content)
+            
+            # Log the interaction
+            log_messages = [
+                {"role": "system", "content": "You are a database schema validator. Output valid JSON only."},
+                {"role": "user", "content": prompt}
+            ]
+            log_llm_interaction(log_messages, response.choices[0].message.content)
+            
+            return result
+            
+        except json.JSONDecodeError as e:
+            logging.error(f"Failed to parse join-path validation response as JSON: {e}")
+            return {
+                "status": "sufficient",
+                "join_path": None,
+                "validation_details": [],
+                "missing_logic": None,
+                "search_suggestions": [],
+                "analysis": f"Validation skipped due to parse error: {e}"
+            }
+        except Exception as e:
+            logging.error(f"Error in join-path validation: {e}")
+            return {
+                "status": "sufficient",
+                "join_path": None,
+                "validation_details": [],
+                "missing_logic": None,
                 "search_suggestions": [],
                 "analysis": f"Validation skipped due to error: {e}"
             }
@@ -880,6 +962,76 @@ the columns necessary to answer it - either directly or through computation/deri
                 "analysis": f"Validation skipped due to error: {e}"
             }
 
+    def validate_schema_with_join_paths(self, user_query: str, schemas: List[Any], code_type: str = "sql") -> Dict[str, Any]:
+        """
+        Enhanced validation with join-path verification (Stage A + Stage B).
+        
+        Replaces check_schema_sufficiency for new validation flow while 
+        keeping the old method for backward compatibility.
+        """
+        import json
+        from app.services.schema_context_utils import (
+            build_sufficiency_schema_text, get_derivation_guidance, 
+            get_temporal_guidance, prioritize_base_tables
+        )
+        
+        # Prioritize base tables over views for temporal queries
+        filtered_schemas = prioritize_base_tables(schemas)
+        
+        schema_text = build_sufficiency_schema_text(filtered_schemas)
+        derivation_guidance = get_derivation_guidance(code_type)
+        temporal_guidance = get_temporal_guidance(filtered_schemas)
+        
+        prompt = _build_join_path_validation_prompt(
+            user_query, schema_text, code_type, temporal_guidance, derivation_guidance
+        )
+        
+        try:
+            response = litellm.completion(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": "You are a database schema validator. Output valid JSON only."},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0,
+                response_format={"type": "json_object"},
+                base_url=self.base_url,
+                api_key=self.api_key,
+                timeout=30
+            )
+            
+            result = json.loads(response.choices[0].message.content)
+            
+            # Log the interaction
+            log_messages = [
+                {"role": "system", "content": "You are a database schema validator. Output valid JSON only."},
+                {"role": "user", "content": prompt}
+            ]
+            log_llm_interaction(log_messages, response.choices[0].message.content)
+            
+            return result
+            
+        except json.JSONDecodeError as e:
+            logging.error(f"Failed to parse join-path validation response as JSON: {e}")
+            return {
+                "status": "sufficient",
+                "join_path": None,
+                "validation_details": [],
+                "missing_logic": None,
+                "search_suggestions": [],
+                "analysis": f"Validation skipped due to parse error: {e}"
+            }
+        except Exception as e:
+            logging.error(f"Error in join-path validation: {e}")
+            return {
+                "status": "sufficient",
+                "join_path": None,
+                "validation_details": [],
+                "missing_logic": None,
+                "search_suggestions": [],
+                "analysis": f"Validation skipped due to error: {e}"
+            }
+
     def generate_sql_with_context(self, query: str, context_text: str) -> str:
         system_prompt = f"""You are an expert T-SQL developer for Microsoft SQL Server.
 
@@ -1133,6 +1285,70 @@ schema.Table1, schema.Table2
             else:
                 logging.error(f"LLM Error in extract_filter_values: {e}")
             return []
+
+def _build_join_path_validation_prompt(user_query: str, schema_text: str, code_type: str, temporal_guidance: str, derivation_guidance: str) -> str:
+    """Build the join-path validation prompt used by both LLM service implementations."""
+    return f"""### ROLE
+You are a database schema analyst performing a two-stage validation check.
+
+### TASK
+Analyze the user's request against the provided schemas using TWO validation stages:
+- **Stage A (Structural):** Do the schemas contain the required columns/data points?
+- **Stage B (Relational):** Can the required tables be joined together via a valid path?
+
+### CODE TYPE
+{code_type.upper()} - Consider what calculations are possible in this language.
+
+### USER REQUEST
+{user_query}
+
+### AVAILABLE SCHEMAS
+{schema_text}
+{temporal_guidance}
+
+### VALIDATION PROTOCOL
+
+**Stage A - Structural Check:**
+1. Identify the core data points required to answer the user's request
+2. For each data point, check if it exists directly or can be derived
+3. If ANY required base data is truly missing -> status: "insufficient_data"
+
+**Stage B - Relational Check (only if Stage A passes):**
+1. If the query requires data from multiple tables, verify a join path exists
+2. Look for shared columns (especially columns ending in 'ID' marked [FK])
+3. Trace the path: Table_A -> shared_key -> Table_B -> shared_key -> Table_C
+4. If tables cannot be connected -> status: "insufficient_joins"
+
+{derivation_guidance}
+
+### OUTPUT FORMAT (JSON only, no markdown)
+{{
+  "status": "sufficient" or "insufficient_data" or "insufficient_joins",
+  "join_path": "TableA -> TableB ON ColumnX -> TableC ON ColumnY" or null,
+  "validation_details": [
+    {{
+      "requirement": "descriptive name of what's needed",
+      "mapping": "[schema].[table].[column]" or "DERIVED: expression" or null,
+      "found": true or false,
+      "reason": "explanation"
+    }}
+  ],
+  "missing_logic": "explanation of what join path is missing" or null,
+  "search_suggestions": ["term1", "term2"],
+  "analysis": "Brief overall assessment"
+}}
+
+### CRITICAL RULES
+- status: "sufficient" if all data points exist AND tables can be joined
+- status: "insufficient_data" if required BASE DATA does not exist in any schema
+- status: "insufficient_joins" if data exists but tables CANNOT be connected
+- join_path: REQUIRED when query involves 2+ tables, null for single-table queries
+- For single-table queries: skip Stage B, just report Stage A result
+- Do NOT require pre-calculated columns when {code_type.upper()} can compute them
+- The question is: "Do we have the RAW DATA and can we JOIN it?" not "Do we have the exact column name?"
+- search_suggestions: only populate if status is NOT "sufficient"
+"""
+
 
 def get_llm_service() -> LLMServiceBase:
     return LiteLLMService()

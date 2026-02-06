@@ -295,6 +295,89 @@ def generate_r_for_request(request: GenerateSQLRequest) -> Generator[Union[Agent
     else:
         value_mappings = {}
 
+    # Stage 2.6: Schema Sufficiency Pre-Flight Check (Join-Path Validation)
+    if not use_table_override:
+        from app.core.config import settings as app_settings
+        use_join_path = getattr(app_settings, 'ENABLE_JOIN_PATH_VALIDATION', True)
+        
+        if use_join_path:
+            yield AgentStatus(step_id=10, message="Validating schema sufficiency with join-path analysis...")
+            
+            sufficiency_result = llm_service.validate_schema_with_join_paths(
+                user_query=request.query,
+                schemas=context.relevant_tables,
+                code_type="r"
+            )
+        else:
+            yield AgentStatus(step_id=10, message="Validating schema sufficiency for query requirements...")
+            
+            sufficiency_result = llm_service.check_schema_sufficiency(
+                user_query=request.query,
+                schemas=context.relevant_tables,
+                code_type="r"
+            )
+        
+        result_status = sufficiency_result.get("status")
+        
+        if result_status in ("insufficient_data", "insufficient_joins"):
+            search_suggestions = sufficiency_result.get("search_suggestions", [])
+            missing_logic = sufficiency_result.get("missing_logic")
+            
+            if result_status == "insufficient_joins" and missing_logic:
+                logger.info(f"Join-path validation failed for R. Missing logic: {missing_logic}")
+            
+            if search_suggestions:
+                yield AgentStatus(step_id=10, message=f"Missing data detected. Expanding search...")
+                
+                tables_added, context = expand_context_for_missing_data(
+                    context, 
+                    search_suggestions,
+                    max_suggestions=5
+                )
+                
+                if tables_added:
+                    yield AgentStatus(step_id=10, message=f"Added {len(tables_added)} tables: {', '.join(tables_added[:3])}{'...' if len(tables_added) > 3 else ''}")
+                    
+                    if use_join_path:
+                        sufficiency_result = llm_service.validate_schema_with_join_paths(
+                            user_query=request.query,
+                            schemas=context.relevant_tables,
+                            code_type="r"
+                        )
+                    else:
+                        sufficiency_result = llm_service.check_schema_sufficiency(
+                            user_query=request.query,
+                            schemas=context.relevant_tables,
+                            code_type="r"
+                        )
+                    result_status = sufficiency_result.get("status")
+            
+            if result_status in ("insufficient_data", "insufficient_joins"):
+                if "missing_data_points" in sufficiency_result:
+                    missing_names = [p.get("name", "unknown") for p in sufficiency_result.get("missing_data_points", [])]
+                else:
+                    missing_names = [d.get("requirement", "unknown") for d in sufficiency_result.get("validation_details", []) if not d.get("found", True)]
+                
+                analysis = sufficiency_result.get("analysis", "Required data not found in available schemas.")
+                missing_logic_msg = sufficiency_result.get("missing_logic", "")
+                missing_list = "\n".join([f"- {name}" for name in missing_names])
+                
+                explanation = f"**Schema Validation Failed**\n\nI analyzed your request but cannot find the required data in the available schemas.\n\n**Missing data points:**\n{missing_list}\n\n**Analysis:** {analysis}"
+                if missing_logic_msg:
+                    explanation += f"\n\n**Join issue:** {missing_logic_msg}"
+                
+                result = GenerateSQLResponse(
+                    sql="",
+                    explanation=explanation,
+                    query_type="r_code",
+                    context_text=f"Sufficiency check failed. Missing: {', '.join(missing_names)}"
+                )
+                yield {"type": "result", "payload": result}
+                yield {"type": "done"}
+                return
+        
+        yield AgentStatus(step_id=10, message="Schema sufficiency validated. Proceeding with R code generation...")
+
     # Search for R-specific knowledge base examples
     yield AgentStatus(step_id=10, message="Searching knowledge base for R examples...")
     r_examples = vector_store.search_fewshots(request.query, top_k=3, knowledge_type="r_code")
@@ -312,20 +395,9 @@ def generate_r_for_request(request: GenerateSQLRequest) -> Generator[Union[Agent
             references.append(f"Example {idx}:\nQuestion: {question}\nR Code:\n```r\n{code}\n```")
         reference_text = "\n\n".join(references)
     
-    # Build Schema & Value Text
-    schema_parts = []
-    for t in context.relevant_tables:
-        if use_table_override and t.description:
-            schema_parts.append(t.description)
-            continue
-        t_text = f"Table: {t.schema_name or 'dbo'}.{t.table_name}\nDescription: {t.description or 'No description'}\nColumns:"
-        if t.columns:
-            for col in t.columns:
-                t_text += f"\n  - {col.name} ({col.data_type}): {col.description or ''}"
-        else:
-             t_text += "\n  (No columns defined)"
-        schema_parts.append(t_text)
-    schema_text = "\n\n".join(schema_parts)
+    # Build Schema & Value Text using shared utility
+    from app.services.schema_context_utils import build_schema_text
+    schema_text = build_schema_text(context.relevant_tables, use_table_override=use_table_override)
 
     value_context = ""
     if value_mappings:
@@ -587,6 +659,89 @@ def generate_sas_for_request(request: GenerateSQLRequest) -> Generator[Union[Age
     else:
         value_mappings = {}
 
+    # Stage 2.6: Schema Sufficiency Pre-Flight Check (Join-Path Validation)
+    if not use_table_override:
+        from app.core.config import settings as app_settings
+        use_join_path = getattr(app_settings, 'ENABLE_JOIN_PATH_VALIDATION', True)
+        
+        if use_join_path:
+            yield AgentStatus(step_id=10, message="Validating schema sufficiency with join-path analysis...")
+            
+            sufficiency_result = llm_service.validate_schema_with_join_paths(
+                user_query=request.query,
+                schemas=context.relevant_tables,
+                code_type="sas"
+            )
+        else:
+            yield AgentStatus(step_id=10, message="Validating schema sufficiency for query requirements...")
+            
+            sufficiency_result = llm_service.check_schema_sufficiency(
+                user_query=request.query,
+                schemas=context.relevant_tables,
+                code_type="sas"
+            )
+        
+        result_status = sufficiency_result.get("status")
+        
+        if result_status in ("insufficient_data", "insufficient_joins"):
+            search_suggestions = sufficiency_result.get("search_suggestions", [])
+            missing_logic = sufficiency_result.get("missing_logic")
+            
+            if result_status == "insufficient_joins" and missing_logic:
+                logger.info(f"Join-path validation failed for SAS. Missing logic: {missing_logic}")
+            
+            if search_suggestions:
+                yield AgentStatus(step_id=10, message=f"Missing data detected. Expanding search...")
+                
+                tables_added, context = expand_context_for_missing_data(
+                    context, 
+                    search_suggestions,
+                    max_suggestions=5
+                )
+                
+                if tables_added:
+                    yield AgentStatus(step_id=10, message=f"Added {len(tables_added)} tables: {', '.join(tables_added[:3])}{'...' if len(tables_added) > 3 else ''}")
+                    
+                    if use_join_path:
+                        sufficiency_result = llm_service.validate_schema_with_join_paths(
+                            user_query=request.query,
+                            schemas=context.relevant_tables,
+                            code_type="sas"
+                        )
+                    else:
+                        sufficiency_result = llm_service.check_schema_sufficiency(
+                            user_query=request.query,
+                            schemas=context.relevant_tables,
+                            code_type="sas"
+                        )
+                    result_status = sufficiency_result.get("status")
+            
+            if result_status in ("insufficient_data", "insufficient_joins"):
+                if "missing_data_points" in sufficiency_result:
+                    missing_names = [p.get("name", "unknown") for p in sufficiency_result.get("missing_data_points", [])]
+                else:
+                    missing_names = [d.get("requirement", "unknown") for d in sufficiency_result.get("validation_details", []) if not d.get("found", True)]
+                
+                analysis = sufficiency_result.get("analysis", "Required data not found in available schemas.")
+                missing_logic_msg = sufficiency_result.get("missing_logic", "")
+                missing_list = "\n".join([f"- {name}" for name in missing_names])
+                
+                explanation = f"**Schema Validation Failed**\n\nI analyzed your request but cannot find the required data in the available schemas.\n\n**Missing data points:**\n{missing_list}\n\n**Analysis:** {analysis}"
+                if missing_logic_msg:
+                    explanation += f"\n\n**Join issue:** {missing_logic_msg}"
+                
+                result = GenerateSQLResponse(
+                    sql="",
+                    explanation=explanation,
+                    query_type="sas_code",
+                    context_text=f"Sufficiency check failed. Missing: {', '.join(missing_names)}"
+                )
+                yield {"type": "result", "payload": result}
+                yield {"type": "done"}
+                return
+        
+        yield AgentStatus(step_id=10, message="Schema sufficiency validated. Proceeding with SAS code generation...")
+
     # Search for SAS-specific knowledge base examples
     yield AgentStatus(step_id=10, message="Searching knowledge base for SAS examples...")
     sas_examples = vector_store.search_fewshots(request.query, top_k=3, knowledge_type="sas_code")
@@ -604,20 +759,9 @@ def generate_sas_for_request(request: GenerateSQLRequest) -> Generator[Union[Age
             references.append(f"Example {idx}:\nQuestion: {question}\nSAS Code:\n```sas\n{code}\n```")
         reference_text = "\n\n".join(references)
     
-    # Build Schema & Value Text
-    schema_parts = []
-    for t in context.relevant_tables:
-        if use_table_override and t.description:
-            schema_parts.append(t.description)
-            continue
-        t_text = f"Table: {t.schema_name or 'dbo'}.{t.table_name}\nDescription: {t.description or 'No description'}\nColumns:"
-        if t.columns:
-            for col in t.columns:
-                t_text += f"\n  - {col.name} ({col.data_type}): {col.description or ''}"
-        else:
-             t_text += "\n  (No columns defined)"
-        schema_parts.append(t_text)
-    schema_text = "\n\n".join(schema_parts)
+    # Build Schema & Value Text using shared utility
+    from app.services.schema_context_utils import build_schema_text as build_schema_text_sas
+    schema_text = build_schema_text_sas(context.relevant_tables, use_table_override=use_table_override)
 
     value_context = ""
     if value_mappings:
@@ -885,21 +1029,39 @@ def generate_python_for_request(request: GenerateSQLRequest) -> Generator[Union[
     else:
         value_mappings = {}
 
-    # Stage 2.6: Schema Sufficiency Pre-Flight Check
+    # Stage 2.6: Schema Sufficiency Pre-Flight Check (Join-Path Validation)
     if not use_table_override:
-        yield AgentStatus(step_id=10, message="Validating schema sufficiency for query requirements...")
+        from app.core.config import settings as app_settings
+        use_join_path = getattr(app_settings, 'ENABLE_JOIN_PATH_VALIDATION', True)
         
-        sufficiency_result = llm_service.check_schema_sufficiency(
-            user_query=request.query,
-            schemas=context.relevant_tables,
-            code_type="python"
-        )
-        
-        if sufficiency_result.get("status") == "insufficient_data":
-            missing_points = sufficiency_result.get("missing_data_points", [])
-            search_suggestions = sufficiency_result.get("search_suggestions", [])
+        if use_join_path:
+            yield AgentStatus(step_id=10, message="Validating schema sufficiency with join-path analysis...")
             
-            logger.info(f"Schema sufficiency check failed. Missing: {[p.get('name') for p in missing_points]}")
+            sufficiency_result = llm_service.validate_schema_with_join_paths(
+                user_query=request.query,
+                schemas=context.relevant_tables,
+                code_type="python"
+            )
+        else:
+            yield AgentStatus(step_id=10, message="Validating schema sufficiency for query requirements...")
+            
+            sufficiency_result = llm_service.check_schema_sufficiency(
+                user_query=request.query,
+                schemas=context.relevant_tables,
+                code_type="python"
+            )
+        
+        result_status = sufficiency_result.get("status")
+        
+        if result_status in ("insufficient_data", "insufficient_joins"):
+            missing_points = sufficiency_result.get("missing_data_points", []) or sufficiency_result.get("validation_details", [])
+            search_suggestions = sufficiency_result.get("search_suggestions", [])
+            missing_logic = sufficiency_result.get("missing_logic")
+            
+            if result_status == "insufficient_joins" and missing_logic:
+                logger.info(f"Join-path validation failed for Python. Missing logic: {missing_logic}")
+            else:
+                logger.info(f"Schema sufficiency check failed. Missing: {[p.get('name', p.get('requirement', '')) for p in missing_points]}")
             
             if search_suggestions:
                 yield AgentStatus(step_id=10, message=f"Missing data detected. Expanding search...")
@@ -915,22 +1077,40 @@ def generate_python_for_request(request: GenerateSQLRequest) -> Generator[Union[
                     yield AgentStatus(step_id=10, message=f"Added {len(tables_added)} tables: {', '.join(tables_added[:3])}{'...' if len(tables_added) > 3 else ''}")
                     
                     # Re-validate after expansion
-                    sufficiency_result = llm_service.check_schema_sufficiency(
-                        user_query=request.query,
-                        schemas=context.relevant_tables,
-                        code_type="python"
-                    )
+                    if use_join_path:
+                        sufficiency_result = llm_service.validate_schema_with_join_paths(
+                            user_query=request.query,
+                            schemas=context.relevant_tables,
+                            code_type="python"
+                        )
+                    else:
+                        sufficiency_result = llm_service.check_schema_sufficiency(
+                            user_query=request.query,
+                            schemas=context.relevant_tables,
+                            code_type="python"
+                        )
+                    result_status = sufficiency_result.get("status")
             
             # If still insufficient after expansion, inform user
-            if sufficiency_result.get("status") == "insufficient_data":
-                missing_names = [p.get("name", "unknown") for p in sufficiency_result.get("missing_data_points", [])]
+            if result_status in ("insufficient_data", "insufficient_joins"):
+                # Extract names from either old or new format
+                if "missing_data_points" in sufficiency_result:
+                    missing_names = [p.get("name", "unknown") for p in sufficiency_result.get("missing_data_points", [])]
+                else:
+                    missing_names = [d.get("requirement", "unknown") for d in sufficiency_result.get("validation_details", []) if not d.get("found", True)]
+                
                 analysis = sufficiency_result.get("analysis", "Required data not found in available schemas.")
+                missing_logic_msg = sufficiency_result.get("missing_logic", "")
                 
                 missing_list = "\n".join([f"- {name}" for name in missing_names])
                 
+                explanation = f"**Schema Validation Failed**\n\nI analyzed your request but cannot find the required data in the available schemas.\n\n**Missing data points:**\n{missing_list}\n\n**Analysis:** {analysis}"
+                if missing_logic_msg:
+                    explanation += f"\n\n**Join issue:** {missing_logic_msg}"
+                
                 result = GenerateSQLResponse(
                     sql="",
-                    explanation=f"**Schema Validation Failed**\n\nI analyzed your request but cannot find the required data in the available schemas.\n\n**Missing data points:**\n{missing_list}\n\n**Analysis:** {analysis}\n\nPlease provide more context about which tables contain this data, or verify these schemas are indexed.",
+                    explanation=explanation,
                     query_type="python_code",
                     context_text=f"Sufficiency check failed. Missing: {', '.join(missing_names)}"
                 )
@@ -959,21 +1139,9 @@ def generate_python_for_request(request: GenerateSQLRequest) -> Generator[Union[
             references.append(f"Example {idx}:\nQuestion: {question}\nPython Code:\n```python\n{code}\n```")
         reference_text = "\n\n".join(references)
     
-    # Build Schema Text
-    schema_parts = []
-    for t in context.relevant_tables:
-        if use_table_override and t.description:
-            schema_parts.append(t.description)
-            continue
-        t_text = f"Table: {t.schema_name or 'dbo'}.{t.table_name}\nDescription: {t.description or 'No description'}\nColumns:"
-        if t.columns:
-            for col in t.columns:
-                t_text += f"\n  - {col.name} ({col.data_type}): {col.description or ''}"
-        else:
-             t_text += "\n  (No columns defined)"
-        schema_parts.append(t_text)
-    
-    schema_text = "\n\n".join(schema_parts)
+    # Build Schema Text using shared utility
+    from app.services.schema_context_utils import build_schema_text as build_schema_text_py
+    schema_text = build_schema_text_py(context.relevant_tables, use_table_override=use_table_override)
 
     # Build Value Mappings Text
     value_context = ""
