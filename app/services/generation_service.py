@@ -1945,6 +1945,16 @@ Alternatively, if these table references are incorrect, please rephrase your que
     # Stage 3: Build Reference Section (Complexity-Mapped Knowledge Base Examples)
     sql_references = []
     
+    # If KB-direct branch, prioritize KB examples and include adjustment guidance
+    kb_guidance = ""
+    if discovery_branch == "kb_direct" and kb_assessment:
+        adjustments = kb_assessment.get("adjustments_needed", [])
+        if adjustments:
+            kb_guidance = "\n### KB-INFORMED ADJUSTMENTS\nThe following adjustments should be applied to the reference SQL:\n"
+            for adj in adjustments:
+                kb_guidance += f"- {adj}\n"
+            kb_guidance += "\nUse the reference SQL as your starting point and apply these adjustments.\n"
+    
     # Map knowledge base examples to complexity level
     complexity_relevant_queries = []
     for sq in (context.similar_queries or []):
@@ -1959,6 +1969,7 @@ Alternatively, if these table references are incorrect, please rephrase your que
         sql_references.append(f"Question {idx}: {sq.get('question', 'N/A')}\nSQL:\n```sql\n{sq.get('sql')}\n```")
 
     reference_text = "\n\n".join(sql_references) if sql_references else "No previous examples available."
+    reference_text += kb_guidance
     
     # Build value mappings reference section
     value_context = ""
