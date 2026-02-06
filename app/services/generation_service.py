@@ -2160,7 +2160,8 @@ Extracted Entities: {', '.join(entities) if entities else 'None'}
                 explanation="The following code might be able to retrieve the data you requested.",
                 query_type="database",
                 context_text=current_prompt,
-                context_history=current_context_history
+                context_history=current_context_history,
+                discovery_branch=discovery_branch if not use_table_override else "table_override"
             )
             yield {"type": "result", "payload": result}
             yield {"type": "done"}
