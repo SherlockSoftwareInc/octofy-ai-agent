@@ -57,8 +57,8 @@ def list_data_sources(api_key: str = Depends(verify_api_key)):
                     friendly_name=skill_source.name,
                     description=skill_source.description,
                     keywords=skill_source.keywords,
-                    server="(Defined in skills)",
-                    database_name="(Defined in skills)",
+                    server="(Defined in schema library)",
+                    database_name="(Defined in schema library)",
                     db_type="mssql",  # Default assumption
                     enabled=skill_source.status.lower() == "active",
                     is_primary=False,  # Skills sources are not primary by default
@@ -482,24 +482,30 @@ def _get_object_count(source_id: str) -> int:
 
 def _get_object_count_by_name(data_source_name: str) -> int:
     """
-    Get count of indexed objects for a data source by name.
+    Get count of objects for a skills-based data source by counting schema files.
     
-    This searches the vector store for objects that match the data source name
-    (e.g., "Northwind" matches schema descriptions with "Northwind").
+    For skills-based sources, count .md files in the schemas directory (schema library v2).
     """
     try:
-        vector_store = get_vector_store()
-        # Get all schemas and filter by data source name
-        all_schemas = vector_store.get_all_schemas()
+        from pathlib import Path
+        import logging
+        logger = logging.getLogger(__name__)
         
-        # Count schemas that mention this data source name
-        # (This is a simple heuristic - could be improved with better metadata)
-        count = sum(
-            1 for schema in all_schemas 
-            if data_source_name.lower() in (schema.description or "").lower() or
-               data_source_name.lower() in schema.table_name.lower()
-        )
+        # Convert data source name to slug format (e.g., "Northwind" -> "northwind")
+        slug = re.sub(r'[^\w\s-]', '', data_source_name.lower()).replace(' ', '-')
+        skills_path = Path("skills/data-sources") / slug / "schemas"
+        
+        if not skills_path.exists():
+            logger.warning(f"Skills path not found for {data_source_name}: {skills_path}")
+            return 0
+        
+        # Count all .md files in the schemas directory (recursively)
+        schema_files = list(skills_path.rglob("*.md"))
+        count = len(schema_files)
+        logger.info(f"Found {count} schema files for {data_source_name} in {skills_path}")
         return count
+        
     except Exception as e:
-        print(f"Error counting objects for {data_source_name}: {e}")
+        import logging
+        logging.getLogger(__name__).error(f"Error counting objects for {data_source_name}: {e}", exc_info=True)
         return 0
