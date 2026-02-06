@@ -19,11 +19,16 @@ from app.models.schemas import (
 from app.services.vector_store import get_vector_store
 from app.services.skills_service import get_skills_service
 from app.services.llm_service import LLMServiceBase
+from app.services.relationship_graph import get_relationship_graph
 
 # Configuration Constants
 KNOWLEDGE_BASE_EXACT_MATCH_THRESHOLD = 0.1  # L2 distance threshold for exact match
 SKILLS_HIGH_SCORE_THRESHOLD = 15  # Minimum score to consider skills match as high-confidence
 USER_SELECTION_TOP_K = 20  # Number of top candidates to present to user
+
+# Relationship tracing constants
+MAX_RELATED_TABLES_PER_HIT = 3  # Cap related tables added per value index hit
+RELATIONSHIP_TRACE_HOPS = 2      # Max FK hops to traverse
 
 
 def perform_discovery(request: DiscoveryRequest) -> DiscoveryResponse:
@@ -91,36 +96,87 @@ def perform_skills_based_discovery(query: str, llm_service: Optional[LLMServiceB
 
 def perform_value_index_search(query: str, top_k: int = 5) -> List[RankedTable]:
     """
-    Stage 2B: Value Index Search (Entity Mapping)
+    Stage 2B: Value Index Search (Entity Mapping) with Relationship Tracing
+    
+    After finding direct value matches, traces FK relationships to discover
+    related data/fact tables (up to RELATIONSHIP_TRACE_HOPS hops, capped at
+    MAX_RELATED_TABLES_PER_HIT per direct hit).
     
     Args:
         query: User's natural language query
-        top_k: Number of top results to return
+        top_k: Number of top results to return from value index
         
     Returns:
-        List of RankedTable objects from value index
+        List of RankedTable objects (direct matches + traced related tables)
     """
     vector_store = get_vector_store()
     
-    # Search value index for entity matches
+    # Phase 1: Direct value index search
     value_results = vector_store.search_values(query, top_k=top_k)
     
     ranked_tables = []
+    seen_keys = set()  # (schema_lower, table_lower) for deduplication
+    
     for result in value_results:
         if isinstance(result, dict):
             entity = result.get('entity', {})
             schema_name = entity.get('schema_name', 'dbo')
             table_name = entity.get('table_name', '')
             
-            if table_name:
+            if not table_name:
+                continue
+                
+            key = (schema_name.lower(), table_name.lower())
+            if key in seen_keys:
+                continue
+            seen_keys.add(key)
+            
+            ranked_tables.append(RankedTable(
+                schema_name=schema_name,
+                table_name=table_name,
+                score=8,  # Value index score
+                matched_by=['value_index'],
+                data_source=None,
+                data_group=None
+            ))
+    
+    if not ranked_tables:
+        return ranked_tables
+    
+    # Phase 2: Relationship tracing for each direct hit
+    try:
+        graph = get_relationship_graph()
+        
+        for direct_hit in list(ranked_tables):  # iterate over copy
+            related = graph.trace_related_tables(
+                direct_hit.schema_name,
+                direct_hit.table_name,
+                max_hops=RELATIONSHIP_TRACE_HOPS,
+                max_tables=MAX_RELATED_TABLES_PER_HIT
+            )
+            
+            for rel_schema in related:
+                rel_key = (rel_schema.schema_name.lower(), rel_schema.table_name.lower())
+                if rel_key in seen_keys:
+                    continue
+                seen_keys.add(rel_key)
+                
                 ranked_tables.append(RankedTable(
-                    schema_name=schema_name,
-                    table_name=table_name,
-                    score=8,  # Value index score
-                    matched_by=['value_index'],
+                    schema_name=rel_schema.schema_name,
+                    table_name=rel_schema.table_name,
+                    score=8,  # Same weight as direct value match
+                    matched_by=['relationship_traced'],
                     data_source=None,
                     data_group=None
                 ))
+                
+                logging.info(
+                    f"[Value Index] Relationship traced: "
+                    f"{direct_hit.schema_name}.{direct_hit.table_name} -> "
+                    f"{rel_schema.schema_name}.{rel_schema.table_name}"
+                )
+    except Exception as e:
+        logging.warning(f"[Value Index] Relationship tracing failed (non-fatal): {e}")
     
     return ranked_tables
 
