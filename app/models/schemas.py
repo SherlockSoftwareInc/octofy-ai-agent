@@ -157,6 +157,7 @@ class GenerateSQLResponse(BaseModel):
     context_text: Optional[str] = None  # The raw context sent to LLM (last one)
     context_history: Optional[List[str]] = None # History of contexts for each attempt
     objects: Optional[List[SearchObject]] = None
+    discovery_branch: Optional[str] = None  # "kb_direct", "kb_gap_fill", or "dual_prong"
 
 class AgentStatus(BaseModel):
     step_id: int
