@@ -31,11 +31,16 @@ export const DataSourcesManager: React.FC = () => {
         setLoading(true);
         try {
             const response = await api.dataSources.getAll();
+            console.log('Data sources response:', response);
             setDataSources(response.data_sources || []);
-        } catch (error) {
+        } catch (error: any) {
             console.error('Failed to fetch data sources:', error);
+            console.error('Error details:', error.response || error.message);
             setDataSources([]); // Ensure we always have an array
-            alert('Failed to load data sources');
+            
+            // Show more helpful error message
+            const errorMessage = error.response?.data?.detail || error.message || 'Unknown error';
+            alert(`Failed to load data sources: ${errorMessage}\n\nPlease check:\n- Backend is running\n- You are logged in\n- API key is valid`);
         } finally {
             setLoading(false);
         }
@@ -210,6 +215,25 @@ export const DataSourcesManager: React.FC = () => {
                 </div>
             </div>
 
+            {/* Info message when data sources exist but have no indexed objects */}
+            {dataSources.length > 0 && dataSources.every(source => source.object_count === 0) && !loading && (
+                <div className="bg-blue-500/10 border border-blue-500/30 rounded-lg p-4 mb-4">
+                    <div className="flex items-start gap-3">
+                        <AlertCircle size={20} className="text-blue-400 mt-0.5 flex-shrink-0" />
+                        <div>
+                            <h4 className="text-blue-300 font-semibold mb-1">Schema Library Mode</h4>
+                            <p className="text-slate-300 text-sm mb-2">
+                                Data sources are configured using the <span className="font-mono text-blue-300">skills/data-sources/</span> directory.
+                                Schemas are loaded from markdown files (0 objects indexed in vector store).
+                            </p>
+                            <p className="text-slate-400 text-xs">
+                                💡 To index schemas in Milvus for semantic search, run: <span className="font-mono bg-slate-950 px-2 py-1 rounded">python scripts/ingest_metadata.py</span>
+                            </p>
+                        </div>
+                    </div>
+                </div>
+            )}
+
             {/* Data Sources List */}
             <div className="grid gap-4">
                 {dataSources.map((source) => (
@@ -220,6 +244,11 @@ export const DataSourcesManager: React.FC = () => {
                                 <div>
                                     <div className="flex items-center gap-2">
                                         <h3 className="text-lg font-semibold text-white">{source.friendly_name}</h3>
+                                        {source.source_id.startsWith('skill_') && (
+                                            <span className="px-2 py-1 bg-blue-500/20 border border-blue-500/30 text-blue-300 text-xs rounded-full">
+                                                SCHEMA LIBRARY
+                                            </span>
+                                        )}
                                         {source.is_primary && (
                                             <span className="px-2 py-1 bg-emerald-500/20 border border-emerald-500/30 text-emerald-300 text-xs rounded-full">
                                                 PRIMARY
@@ -235,33 +264,42 @@ export const DataSourcesManager: React.FC = () => {
                                 </div>
                             </div>
                             <div className="flex items-center gap-2">
-                                <button
-                                    onClick={() => handleTestConnection(source.source_id)}
-                                    disabled={testingConnection === source.source_id}
-                                    className="p-2 bg-blue-500/10 text-blue-400 rounded hover:bg-blue-500/20 disabled:opacity-50"
-                                    title="Test Connection"
-                                >
-                                    {testingConnection === source.source_id ? (
-                                        <Loader2 size={16} className="animate-spin" />
-                                    ) : (
-                                        <Settings size={16} />
-                                    )}
-                                </button>
-                                <button
-                                    onClick={() => handleEdit(source.source_id)}
-                                    className="p-2 bg-amber-500/10 text-amber-400 rounded hover:bg-amber-500/20"
-                                    title="Edit"
-                                >
-                                    <Edit size={16} />
-                                </button>
-                                {!source.is_primary && (
-                                    <button
-                                        onClick={() => handleDelete(source.source_id, source.friendly_name)}
-                                        className="p-2 bg-red-500/10 text-red-400 rounded hover:bg-red-500/20"
-                                        title="Delete"
-                                    >
-                                        <Trash2 size={16} />
-                                    </button>
+                                {!source.source_id.startsWith('skill_') && (
+                                    <>
+                                        <button
+                                            onClick={() => handleTestConnection(source.source_id)}
+                                            disabled={testingConnection === source.source_id}
+                                            className="p-2 bg-blue-500/10 text-blue-400 rounded hover:bg-blue-500/20 disabled:opacity-50"
+                                            title="Test Connection"
+                                        >
+                                            {testingConnection === source.source_id ? (
+                                                <Loader2 size={16} className="animate-spin" />
+                                            ) : (
+                                                <Settings size={16} />
+                                            )}
+                                        </button>
+                                        <button
+                                            onClick={() => handleEdit(source.source_id)}
+                                            className="p-2 bg-amber-500/10 text-amber-400 rounded hover:bg-amber-500/20"
+                                            title="Edit"
+                                        >
+                                            <Edit size={16} />
+                                        </button>
+                                        {!source.is_primary && (
+                                            <button
+                                                onClick={() => handleDelete(source.source_id, source.friendly_name)}
+                                                className="p-2 bg-red-500/10 text-red-400 rounded hover:bg-red-500/20"
+                                                title="Delete"
+                                            >
+                                                <Trash2 size={16} />
+                                            </button>
+                                        )}
+                                    </>
+                                )}
+                                {source.source_id.startsWith('skill_') && (
+                                    <div className="text-xs text-slate-500 italic">
+                                        Edit <span className="font-mono">skills/data-sources/</span> files
+                                    </div>
                                 )}
                             </div>
                         </div>
@@ -326,26 +364,28 @@ export const DataSourcesManager: React.FC = () => {
                             </div>
                         )}
 
-                        <div className="flex gap-2 mt-3 pt-3 border-t border-slate-800">
-                            {!source.is_primary && (
+                        {!source.source_id.startsWith('skill_') && (
+                            <div className="flex gap-2 mt-3 pt-3 border-t border-slate-800">
+                                {!source.is_primary && (
+                                    <button
+                                        onClick={() => handleSetPrimary(source.source_id)}
+                                        className="px-3 py-1 bg-emerald-500/10 text-emerald-400 rounded hover:bg-emerald-500/20 text-sm"
+                                    >
+                                        Set as Primary
+                                    </button>
+                                )}
                                 <button
-                                    onClick={() => handleSetPrimary(source.source_id)}
-                                    className="px-3 py-1 bg-emerald-500/10 text-emerald-400 rounded hover:bg-emerald-500/20 text-sm"
+                                    onClick={() => handleToggleEnabled(source.source_id, source.enabled)}
+                                    className={`px-3 py-1 rounded text-sm ${
+                                        source.enabled
+                                            ? 'bg-slate-700 text-slate-400 hover:bg-slate-600'
+                                            : 'bg-blue-500/10 text-blue-400 hover:bg-blue-500/20'
+                                    }`}
                                 >
-                                    Set as Primary
+                                    {source.enabled ? 'Disable' : 'Enable'}
                                 </button>
-                            )}
-                            <button
-                                onClick={() => handleToggleEnabled(source.source_id, source.enabled)}
-                                className={`px-3 py-1 rounded text-sm ${
-                                    source.enabled
-                                        ? 'bg-slate-700 text-slate-400 hover:bg-slate-600'
-                                        : 'bg-blue-500/10 text-blue-400 hover:bg-blue-500/20'
-                                }`}
-                            >
-                                {source.enabled ? 'Disable' : 'Enable'}
-                            </button>
-                        </div>
+                            </div>
+                        )}
                     </div>
                 ))}
 

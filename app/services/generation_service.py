@@ -290,10 +290,56 @@ def validate_schema_completeness(context: DiscoveryContext, user_query: str, llm
         return True, [], f"Validation error: {e}"
 
 
+def expand_context_for_missing_data(
+    context: DiscoveryContext,
+    search_suggestions: List[str],
+    max_suggestions: int = 5
+) -> Tuple[List[str], DiscoveryContext]:
+    """
+    Expand the discovery context by searching for tables that might contain missing data.
+    
+    This is called when the schema sufficiency check detects that required columns
+    are missing from the current context. It searches for suggested terms in the
+    schema/value indexes and adds any newly discovered tables to the context.
+    
+    Args:
+        context: Current discovery context with relevant tables
+        search_suggestions: List of search terms from sufficiency check (e.g., ["tax", "SalesTax"])
+        max_suggestions: Maximum number of suggestions to search for
+        
+    Returns:
+        Tuple of (tables_added, updated_context)
+        - tables_added: List of "schema.table" strings that were added
+        - updated_context: The context with new tables appended
+    """
+    tables_added = []
+    
+    for suggestion in search_suggestions[:max_suggestions]:
+        try:
+            disc_res = perform_discovery(DiscoveryRequest(query=suggestion, top_k=3))
+            for table in disc_res.context.relevant_tables:
+                # Check if table already exists in context
+                already_exists = any(
+                    t.table_name == table.table_name and t.schema_name == table.schema_name 
+                    for t in context.relevant_tables
+                )
+                if not already_exists:
+                    context.relevant_tables.append(table)
+                    tables_added.append(f"{table.schema_name}.{table.table_name}")
+        except Exception as e:
+            logging.warning(f"Discovery failed for suggestion '{suggestion}': {e}")
+    
+    return tables_added, context
+
+
 def search_data_objects(query: str) -> GenerateSQLResponse:
     """
     Search for relevant database objects based on user query.
     Queries both schema and value indexes and returns unique [schema].[table] objects sorted by relevance.
+    
+    Uses a two-tier approach:
+    1. Semantic search with score threshold
+    2. Fallback keyword search if no semantic matches found
     
     Args:
         query: User's search query
@@ -329,15 +375,38 @@ def search_data_objects(query: str) -> GenerateSQLResponse:
         # Use the internal _search_collection to get scores
         from pymilvus import utility
         
+        # Diagnostic: track search statistics
+        schema_total_hits = 0
+        schema_filtered_hits = 0
+        all_schema_scores = []  # Track all scores for debugging
+        
         if utility.has_collection(app_settings.MILVUS_COLLECTION_SCHEMA):
             embedding = vector_store._get_embedding(query)
-            schema_results = vector_store._search_collection(
+            
+            # First, get results with a very high threshold to see what's available
+            schema_results_unfiltered = vector_store._search_collection(
                 app_settings.MILVUS_COLLECTION_SCHEMA,
                 embedding,
                 ['schema_name', 'table_name', 'table_type'],
                 top_k=10,
-                score_threshold=1.5  # Relaxed threshold for object search (L2 distance)
+                score_threshold=10.0  # Very high to see all candidates
             )
+            schema_total_hits = len(schema_results_unfiltered)
+            
+            # Collect all scores for diagnostics
+            for result in schema_results_unfiltered:
+                score = result.get('score', 999)
+                all_schema_scores.append(score)
+            
+            # Now filter with actual threshold (increased from 1.5 to 2.0 for better recall)
+            SCORE_THRESHOLD = 2.0
+            schema_results = [r for r in schema_results_unfiltered if r.get('score', 999) <= SCORE_THRESHOLD]
+            schema_filtered_hits = len(schema_results)
+            
+            logging.info(f"Schema search for '{query}': {schema_total_hits} total hits, {schema_filtered_hits} after threshold ({SCORE_THRESHOLD})")
+            if all_schema_scores:
+                logging.info(f"Score distribution: min={min(all_schema_scores):.3f}, max={max(all_schema_scores):.3f}, scores={[f'{s:.2f}' for s in sorted(all_schema_scores)[:5]]}")
+            
             for result in schema_results:
                 entity = result.get('entity', result)
                 schema_name = entity.get('schema_name') or 'dbo'
@@ -355,9 +424,12 @@ def search_data_objects(query: str) -> GenerateSQLResponse:
                             "name": table_name,
                             "type": table_type
                         }
+        else:
+            logging.warning(f"Schema collection '{app_settings.MILVUS_COLLECTION_SCHEMA}' not found in Milvus")
         
         # Search value index for relevant tables
         value_results = vector_store.search_values(query, top_k=10)
+        logging.info(f"Value search for '{query}': {len(value_results)} hits")
         for result in value_results:
             entity = result.get('entity', result)
             schema_name = entity.get('schema_name') or 'dbo'
@@ -374,6 +446,56 @@ def search_data_objects(query: str) -> GenerateSQLResponse:
                         "name": table_name,
                         "type": None
                     }
+        
+        # Fallback: If no semantic matches, try keyword-based search on table names
+        if not object_scores and utility.has_collection(app_settings.MILVUS_COLLECTION_SCHEMA):
+            logging.info(f"No semantic matches for '{query}', attempting keyword fallback search")
+            
+            # Extract keywords from query (words with 3+ chars, excluding common words)
+            stop_words = {'the', 'and', 'for', 'are', 'but', 'not', 'you', 'all', 'can', 'had', 'her', 
+                         'was', 'one', 'our', 'out', 'has', 'have', 'been', 'find', 'get', 'show', 
+                         'list', 'what', 'which', 'where', 'how', 'top', 'best', 'most'}
+            query_words = set(word.lower() for word in re.findall(r'\b\w{3,}\b', query) if word.lower() not in stop_words)
+            
+            if query_words:
+                # Load collection and search all entities
+                from pymilvus import Collection
+                collection = Collection(app_settings.MILVUS_COLLECTION_SCHEMA)
+                collection.load()
+                
+                # Query all table names (limited to avoid memory issues)
+                try:
+                    all_tables = collection.query(
+                        expr="table_name != ''",
+                        output_fields=['schema_name', 'table_name', 'table_type'],
+                        limit=500
+                    )
+                    
+                    # Score tables by keyword matches in name
+                    for table in all_tables:
+                        table_name = table.get('table_name', '').lower()
+                        schema_name = table.get('schema_name', 'dbo')
+                        table_type = normalize_table_type(table.get('table_type'))
+                        
+                        # Check for keyword matches
+                        matches = sum(1 for word in query_words if word in table_name)
+                        if matches > 0:
+                            obj_key = f"[{schema_name}].[{table.get('table_name', '')}]"
+                            # Use negative match count as score (more matches = better = lower score)
+                            keyword_score = 5.0 - (matches * 0.5)  # Score between 3.0-4.5 for fallback results
+                            
+                            if obj_key not in object_scores or keyword_score < object_scores[obj_key]:
+                                object_scores[obj_key] = keyword_score
+                            if obj_key not in object_metadata:
+                                object_metadata[obj_key] = {
+                                    "schema": schema_name,
+                                    "name": table.get('table_name', ''),
+                                    "type": table_type
+                                }
+                    
+                    logging.info(f"Keyword fallback found {len(object_scores)} matching tables for keywords: {query_words}")
+                except Exception as e:
+                    logging.warning(f"Keyword fallback search failed: {e}")
         
         # Sort objects by score (lower = more relevant)
         sorted_objects = sorted(object_scores.keys(), key=lambda x: object_scores[x])
@@ -455,7 +577,22 @@ def _detect_turn_type_fast(query: str, planning_context: Dict[str, Any]) -> Opti
     correction_count = sum(1 for pattern in correction_signals if re.search(pattern, query_lower))
     
     # Special case: explicit "no" when there's a pending pivot (rejection)
+    # But check if user also included a new request after "no" (e.g., "No. let's find order tables")
     if planning_context.get("pending_pivot") and re.search(r'^\s*(no|nope|nah|not)\b', query_lower):
+        # Check if there's a meaningful request after the rejection
+        # Pattern: "no" followed by action words like "let's", "find", "show", "search", "look"
+        has_followup_request = re.search(
+            r'\b(no|nope|nah|not)[,.\s]+(let\'?s?|find|show|search|look|get|check|instead|but)\b',
+            query_lower
+        )
+        if has_followup_request:
+            # User rejected pivot BUT included a new request - treat as refinement
+            return {
+                "turn_type": "refinement",
+                "confidence": 0.90,
+                "reasoning": "User rejected pending pivot but included a follow-up request",
+                "topic_similarity": 0.0
+            }
         return {
             "turn_type": "correction",
             "confidence": 0.95,
@@ -492,8 +629,9 @@ def _detect_turn_type_fast(query: str, planning_context: Dict[str, Any]) -> Opti
     # 5. REFINEMENT DETECTION (refinement signals + higher overlap)
     refinement_signals = [
         r'\b(also|too|additionally|furthermore|plus|and)\b',
-        r'\b(add|include|show|break down|filter|only)\b',
+        r'\b(add|include|show|break down|filter|only|find|search|look)\b',
         r'\b(more|specifically|detailed|by)\b',
+        r'\b(let\'?s?)\b',  # "let's", "lets" - indicates user wants to take action
     ]
     refinement_signal_count = sum(1 for pattern in refinement_signals if re.search(pattern, query_lower))
     
@@ -831,7 +969,11 @@ def planning_conversation(
             turn_type = turn_classification["turn_type"]
         
         # Handle pivot with confirmation
-        if turn_type == "pivot":
+        # BUT: Skip pivot detection on the FIRST turn of a new conversation
+        # (when there's no existing goal, it's the primary request, not a topic change)
+        is_first_turn = planning_context.get("turn_count", 0) == 0 and not planning_context.get("goal")
+        
+        if turn_type == "pivot" and not is_first_turn:
             if not planning_context.get("pending_pivot"):
                 # First pivot detection - ask for confirmation
                 planning_context["pending_pivot"] = {
@@ -850,6 +992,9 @@ Would you like to start fresh with this new topic? (This will clear your current
                     query_type="plan",
                     context_text=_serialize_planning_context(planning_context)
                 )
+        elif turn_type == "pivot" and is_first_turn:
+            # First turn - treat as refinement (primary request), not a pivot
+            turn_type = "refinement"
         
         # Handle pending pivot confirmation
         if planning_context.get("pending_pivot") and turn_type == "confirmation":
@@ -895,6 +1040,29 @@ Would you like to start fresh with this new topic? (This will clear your current
                 query_type="plan",
                 context_text=_serialize_planning_context(planning_context)
             )
+        
+        # Handle pending pivot rejection WITH a new request (e.g., "No. let's find order tables")
+        # When turn_type is "refinement" but there's still a pending_pivot, user rejected and provided new direction
+        if planning_context.get("pending_pivot") and turn_type == "refinement":
+            # User rejected the pivot but provided a follow-up request
+            previous_goal = planning_context["pending_pivot"]["previous_goal"]
+            
+            # Clear pending pivot
+            del planning_context["pending_pivot"]
+            
+            # Extract the actual request by removing the "no" prefix
+            # Pattern: strip "no", "nope", etc. and any following punctuation/whitespace
+            cleaned_query = re.sub(r'^\s*(no|nope|nah|not)[,.\s]+', '', query, flags=re.IGNORECASE).strip()
+            
+            # If we have a meaningful cleaned query, use it; otherwise use original
+            if cleaned_query and len(cleaned_query) > 3:
+                query = cleaned_query
+            
+            # If previous goal was empty (first turn failed), don't reference it
+            if previous_goal:
+                planning_context["goal_history"].append(previous_goal)
+            
+            # Continue with the refinement flow - don't return early
         
         # Handle TABLE_SELECTION (user modified table selection without text input)
         if turn_type == "table_selection":
@@ -1006,6 +1174,10 @@ Be helpful, not interrogative."""
                 })
             
             planning_context["goal"] = new_goal
+        elif not old_goal and query:
+            # Fallback: If no goal_statement from LLM and no existing goal, use the query itself
+            # This ensures we always have SOME goal set for context preservation
+            planning_context["goal"] = query
         
         # Ensure requirements field exists
         planning_context.setdefault("requirements", [])
@@ -1446,6 +1618,61 @@ Alternatively, if these table references are incorrect, please rephrase your que
         value_mappings = lookup_values_for_query(request.query)
     else:
         value_mappings = {}
+    
+    # Stage 2.6: Schema Sufficiency Pre-Flight Check
+    if not use_table_override:
+        yield AgentStatus(step_id=10, message="Validating schema sufficiency for query requirements...")
+        
+        sufficiency_result = llm_service.check_schema_sufficiency(
+            user_query=request.query,
+            schemas=context.relevant_tables,
+            code_type="sql"
+        )
+        
+        if sufficiency_result.get("status") == "insufficient_data":
+            missing_points = sufficiency_result.get("missing_data_points", [])
+            search_suggestions = sufficiency_result.get("search_suggestions", [])
+            
+            logging.info(f"Schema sufficiency check failed. Missing: {[p.get('name') for p in missing_points]}")
+            
+            if search_suggestions:
+                yield AgentStatus(step_id=10, message=f"Missing data detected. Expanding search...")
+                
+                # Auto-expansion: Search for missing data
+                tables_added, context = expand_context_for_missing_data(
+                    context, 
+                    search_suggestions,
+                    max_suggestions=5
+                )
+                
+                if tables_added:
+                    yield AgentStatus(step_id=10, message=f"Added {len(tables_added)} tables: {', '.join(tables_added[:3])}{'...' if len(tables_added) > 3 else ''}")
+                    
+                    # Re-validate after expansion
+                    sufficiency_result = llm_service.check_schema_sufficiency(
+                        user_query=request.query,
+                        schemas=context.relevant_tables,
+                        code_type="sql"
+                    )
+            
+            # If still insufficient after expansion, inform user
+            if sufficiency_result.get("status") == "insufficient_data":
+                missing_names = [p.get("name", "unknown") for p in sufficiency_result.get("missing_data_points", [])]
+                analysis = sufficiency_result.get("analysis", "Required data not found in available schemas.")
+                
+                missing_list = "\n".join([f"- {name}" for name in missing_names])
+                
+                result = GenerateSQLResponse(
+                    sql="",
+                    explanation=f"**Schema Validation Failed**\n\nI analyzed your request but cannot find the required data in the available schemas.\n\n**Missing data points:**\n{missing_list}\n\n**Analysis:** {analysis}\n\nPlease provide more context about which tables contain this data, or verify these schemas are indexed.",
+                    query_type="database",
+                    context_text=f"Sufficiency check failed. Missing: {', '.join(missing_names)}"
+                )
+                yield {"type": "result", "payload": result}
+                yield {"type": "done"}
+                return
+        
+        yield AgentStatus(step_id=10, message="Schema sufficiency validated. Proceeding with generation...")
     
     # Build dynamic database info from settings
     keywords_str = ", ".join(db_keywords[:5]) if db_keywords else "business data"

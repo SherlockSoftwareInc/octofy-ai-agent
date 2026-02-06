@@ -28,6 +28,9 @@ def list_data_sources(api_key: str = Depends(verify_api_key)):
     Returns data sources from both agent_settings.json AND skills/data-sources/_index.md.
     Skills-based sources are read-only and represent the current skills catalog.
     """
+    import logging
+    logger = logging.getLogger(__name__)
+    
     try:
         settings = load_settings()
         skills_service = SkillsService()
@@ -38,6 +41,8 @@ def list_data_sources(api_key: str = Depends(verify_api_key)):
         # First, add sources from skills directory (_index.md)
         try:
             skills_sources = skills_service.load_data_sources_index()
+            logger.info(f"Loaded {len(skills_sources)} data sources from skills directory")
+            
             for skill_source in skills_sources:
                 # Generate a deterministic source_id from the data source name
                 source_id = f"skill_{re.sub(r'[^a-zA-Z0-9]', '_', skill_source.name.lower())}"
@@ -62,7 +67,7 @@ def list_data_sources(api_key: str = Depends(verify_api_key)):
                 ))
         except Exception as skills_error:
             # Log but don't fail if skills directory is empty/missing
-            print(f"Warning: Could not load skills sources: {skills_error}")
+            logger.warning(f"Could not load skills sources: {skills_error}", exc_info=True)
         
         # Then, add sources from agent_settings.json (if v2 config)
         if hasattr(settings, 'data_sources'):
@@ -74,7 +79,7 @@ def list_data_sources(api_key: str = Depends(verify_api_key)):
                     is_primary=(source.source_id == settings.primary_source_id),
                     object_count=obj_count
                 ))
-        elif hasattr(settings, 'target_db'):
+        elif hasattr(settings, 'target_db') and settings.target_db is not None:
             # Legacy v1 config - return single source wrapped in v2 format
             source = TargetDBConfigV2(
                 **settings.target_db.model_dump(),
@@ -92,6 +97,7 @@ def list_data_sources(api_key: str = Depends(verify_api_key)):
         elif sources:
             primary_source_id = sources[0].source_id
         
+        logger.info(f"Returning {len(sources)} data sources with {total_objects} total objects")
         return DataSourceListResponse(
             data_sources=sources,
             primary_source_id=primary_source_id,
@@ -99,6 +105,7 @@ def list_data_sources(api_key: str = Depends(verify_api_key)):
         )
     
     except Exception as e:
+        logger.error(f"Failed to list data sources: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to list data sources: {str(e)}")
 
 

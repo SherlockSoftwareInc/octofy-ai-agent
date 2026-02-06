@@ -54,6 +54,26 @@ class DiscoveryResponse(BaseModel):
     reasoning: str
     context: DiscoveryContext
 
+
+# --- Schema Sufficiency Check Models ---
+
+class RequiredDataPoint(BaseModel):
+    """A single data point required to answer the user's query"""
+    name: str  # e.g., "customer name", "order total", "sales tax"
+    column_mapping: Optional[str] = None  # e.g., "[dbo].[Customers].[CustomerName]" or None if not found
+    found: bool = False
+    reasoning: str = ""  # Why this data point is needed
+
+
+class SchemaSufficiencyResult(BaseModel):
+    """Result of the pre-flight schema sufficiency check"""
+    status: Literal["sufficient", "insufficient_data"] = "sufficient"
+    required_data_points: List[RequiredDataPoint] = []
+    missing_data_points: List[RequiredDataPoint] = []
+    search_suggestions: List[str] = []  # Suggested search terms for missing data
+    analysis: str = ""  # LLM's reasoning about sufficiency
+
+
 # Define chart types as a reusable type alias for consistency
 ChartTypeLiteral = Literal['line', 'pie', 'scatter', 'column', 'stackedColumn', 'clusteredColumn', 'area', 'radar', 'treemap', 'funnel', 'none']
 

@@ -829,7 +829,7 @@ def get_data_sources(api_key: str = Depends(verify_api_key)):
         # Clear cache to get fresh data
         skills_service._data_sources_cache = None
         data_sources = skills_service.load_data_sources_index()
-        return [ds.dict() for ds in data_sources]
+        return [ds.model_dump() for ds in data_sources if ds is not None]
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -880,7 +880,7 @@ def get_data_groups(data_source: Optional[str] = None, api_key: str = Depends(ve
         if data_source:
             groups = [g for g in groups if g.data_source == data_source]
         
-        return [g.dict() for g in groups]
+        return [g.model_dump() for g in groups if g is not None]
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -939,7 +939,7 @@ def get_tables(data_source: Optional[str] = None, data_group: Optional[str] = No
         
         # Load table schemas
         tables = skills_service.load_table_schemas(table_paths)
-        return [t.dict() for t in tables]
+        return [t.model_dump() for t in tables if t is not None]
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -952,7 +952,7 @@ def get_table_by_path(file_path: str, api_key: str = Depends(verify_api_key)):
         tables = skills_service.load_table_schemas([file_path])
         if not tables:
             raise HTTPException(status_code=404, detail="Table not found")
-        return tables[0].dict()
+        return tables[0].model_dump()
     except HTTPException:
         raise
     except Exception as e:

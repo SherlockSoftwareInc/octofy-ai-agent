@@ -6,7 +6,7 @@ import { api, type FewShotItem, type ExecutePythonResponse, type ExecuteSQLRespo
 import { DataTable } from '../DataTable/DataTable';
 import { InsightsPanel } from '../InsightsPanel';
 import { DataProfileCard } from '../DataProfileCard';
-import type { AnalysisContext } from '../../types/conversation';
+import type { AnalysisContext, DataProfile, Insight } from '../../types/conversation';
 
 
 
@@ -945,8 +945,8 @@ export const SQLResultDisplay: React.FC<SQLResultDisplayProps> = ({
                                                     );
                                                     if (result.success && (result.data_profile || result.insights)) {
                                                         setAnalysisData({
-                                                            data_profile: result.data_profile,
-                                                            insights: result.insights || [],
+                                                            data_profile: result.data_profile as DataProfile | undefined,
+                                                            insights: (result.insights || []) as Insight[],
                                                             refinement_history: [],
                                                             suggested_refinements: result.suggested_refinements || []
                                                         });
@@ -987,8 +987,8 @@ export const SQLResultDisplay: React.FC<SQLResultDisplayProps> = ({
                                                     );
                                                     if (result.success && (result.data_profile || result.insights)) {
                                                         setAnalysisData({
-                                                            data_profile: result.data_profile,
-                                                            insights: result.insights || [],
+                                                            data_profile: result.data_profile as DataProfile | undefined,
+                                                            insights: (result.insights || []) as Insight[],
                                                             refinement_history: [],
                                                             suggested_refinements: result.suggested_refinements || []
                                                         });
@@ -1153,8 +1153,8 @@ export const SQLResultDisplay: React.FC<SQLResultDisplayProps> = ({
                                                     );
                                                     if (result.success && (result.data_profile || result.insights)) {
                                                         setAnalysisData({
-                                                            data_profile: result.data_profile,
-                                                            insights: result.insights || [],
+                                                            data_profile: result.data_profile as DataProfile | undefined,
+                                                            insights: (result.insights || []) as Insight[],
                                                             refinement_history: [],
                                                             suggested_refinements: []
                                                         });
@@ -1200,8 +1200,8 @@ export const SQLResultDisplay: React.FC<SQLResultDisplayProps> = ({
                                                     );
                                                     if (result.success && (result.data_profile || result.insights)) {
                                                         setAnalysisData({
-                                                            data_profile: result.data_profile,
-                                                            insights: result.insights || [],
+                                                            data_profile: result.data_profile as DataProfile | undefined,
+                                                            insights: (result.insights || []) as Insight[],
                                                             refinement_history: [],
                                                             suggested_refinements: []
                                                         });

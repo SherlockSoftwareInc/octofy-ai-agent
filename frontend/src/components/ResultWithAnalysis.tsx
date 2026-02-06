@@ -3,7 +3,7 @@ import { api, type ExecuteSQLResponse, type ExecutePythonResponse } from '../api
 import AnalysisButtons from './AnalysisButtons';
 import InsightsPanel from './InsightsPanel';
 import DataProfileCard from './DataProfileCard';
-import type { AnalysisContext } from '../types/conversation';
+import type { AnalysisContext, DataProfile, Insight } from '../types/conversation';
 
 interface ResultWithAnalysisProps {
   /** SQL query text (for SQL results) */
@@ -77,8 +77,8 @@ const ResultWithAnalysis: React.FC<ResultWithAnalysisProps> = ({
       }
 
       const analysis: AnalysisContext = {
-        data_profile: result.data_profile,
-        insights: result.insights || [],
+        data_profile: result.data_profile as DataProfile | undefined,
+        insights: (result.insights || []) as Insight[],
         refinement_history: [],
         suggested_refinements: (result as ExecutePythonResponse).suggested_refinements || [],
       };
