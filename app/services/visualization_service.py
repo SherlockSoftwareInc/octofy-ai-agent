@@ -18,7 +18,9 @@ class VisualizationService:
         self, 
         df: pd.DataFrame, 
         user_query: str,
-        chart_type_override: Optional[str] = None
+        chart_type_override: Optional[str] = None,
+        preserved_x_axis: Optional[str] = None,
+        preserved_y_axis: Optional[List[str]] = None
     ) -> Optional[ChartRecommendation]:
         """
         Analyzes the DataFrame and user query to recommend the best visualization.
@@ -27,6 +29,8 @@ class VisualizationService:
             df: DataFrame containing the data to visualize
             user_query: User's original query/question
             chart_type_override: If provided, use this chart type instead of LLM recommendation
+            preserved_x_axis: Preserve original x_axis column when changing chart type
+            preserved_y_axis: Preserve original y_axis columns when changing chart type
         
         Returns:
             ChartRecommendation or None if no visualization is appropriate
@@ -37,7 +41,7 @@ class VisualizationService:
         # If chart type override is provided, skip LLM and build recommendation directly
         if chart_type_override and chart_type_override != 'none':
             logger.info(f"Using chart type override: {chart_type_override}")
-            return self._build_override_recommendation(df, chart_type_override, user_query)
+            return self._build_override_recommendation(df, chart_type_override, user_query, preserved_x_axis, preserved_y_axis)
 
         # 1. Profile the Data
         profile = self._profile_data(df)
@@ -294,7 +298,9 @@ Return valid JSON ONLY. No markdown, no explanations outside the JSON.
         self, 
         df: pd.DataFrame, 
         chart_type: str,
-        user_query: str = ""
+        user_query: str = "",
+        preserved_x_axis: Optional[str] = None,
+        preserved_y_axis: Optional[List[str]] = None
     ) -> Optional[ChartRecommendation]:
         """
         Build a chart recommendation using explicit chart type override.
@@ -304,10 +310,21 @@ Return valid JSON ONLY. No markdown, no explanations outside the JSON.
             df: DataFrame to visualize
             chart_type: The chart type requested by user
             user_query: Original user query for context
+            preserved_x_axis: Preserve original x_axis column when changing chart type
+            preserved_y_axis: Preserve original y_axis columns when changing chart type
         
         Returns:
             ChartRecommendation with the specified chart type
         """
+        # If preserved columns are provided, use them directly
+        if preserved_x_axis is not None and preserved_y_axis is not None:
+            logger.info(f"Using preserved axes: x={preserved_x_axis}, y={preserved_y_axis}")
+            return ChartRecommendation(
+                chart_type=chart_type,
+                x_axis=preserved_x_axis,
+                y_axis=preserved_y_axis,
+                explanation=f"Chart type changed to {chart_type} with preserved column selections"
+            )
         columns = list(df.columns)
         
         # === 1. Classify Columns (improved detection) ===

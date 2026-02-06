@@ -149,6 +149,8 @@ class ExecutePythonRequest(BaseModel):
     code: str
     context: Optional[Dict[str, Any]] = None
     chart_type_override: Optional[ChartTypeLiteral] = None  # User-specified chart type
+    preserved_x_axis: Optional[str] = None  # Preserve original x_axis column when changing chart type
+    preserved_y_axis: Optional[List[str]] = None  # Preserve original y_axis columns when changing chart type
     enable_profiling: Optional[bool] = False  # Enable data profiling and insights generation
 
 
@@ -156,6 +158,8 @@ class ExecuteSQLRequest(BaseModel):
     sql: str  # SQL query to execute
     context: Optional[Dict[str, Any]] = None  # Optional execution context (user_query, schema_context, etc.)
     chart_type_override: Optional[ChartTypeLiteral] = None  # User-specified chart type preference
+    preserved_x_axis: Optional[str] = None  # Preserve original x_axis column when changing chart type
+    preserved_y_axis: Optional[List[str]] = None  # Preserve original y_axis columns when changing chart type
     timeout_seconds: Optional[int] = 60  # Configurable timeout for query execution (default: 60 seconds)
     max_rows: Optional[int] = 10000  # Row limit for results to prevent memory exhaustion
     enable_profiling: Optional[bool] = False  # Enable data profiling and insights generation

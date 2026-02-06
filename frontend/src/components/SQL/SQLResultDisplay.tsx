@@ -609,14 +609,28 @@ export const SQLResultDisplay: React.FC<SQLResultDisplayProps> = ({
         setIsChangingChartType(true);
         
         try {
-            // Re-execute code/SQL with new chart type
+            // Get the original recommendation to preserve axis columns
+            let originalRecommendation: any = null;
+            if (queryType === 'python_code' || queryType === 'r_code' || queryType === 'sas_code') {
+                originalRecommendation = executionResult?.recommendation;
+            } else if (queryType === 'database') {
+                originalRecommendation = sqlExecutionResult?.recommendation;
+            }
+            
+            // Extract preserved columns from original recommendation
+            const preservedXAxis = originalRecommendation?.x_axis;
+            const preservedYAxis = originalRecommendation?.y_axis;
+            
+            // Re-execute code/SQL with new chart type and preserved columns
             if (queryType === 'python_code' || queryType === 'r_code' || queryType === 'sas_code') {
                 // Re-execute Python/R/SAS code with new chart type
                 const result = await api.executePython(
                     sql,
                     sourceQuestion ? { user_query: sourceQuestion } : undefined,
                     newType,
-                    false
+                    false,
+                    preservedXAxis,
+                    preservedYAxis
                 );
                 
                 if (onExecutionComplete) {
@@ -633,7 +647,9 @@ export const SQLResultDisplay: React.FC<SQLResultDisplayProps> = ({
                     newType,
                     undefined,
                     undefined,
-                    false
+                    false,
+                    preservedXAxis,
+                    preservedYAxis
                 );
                 
                 if (onSQLExecutionComplete) {
