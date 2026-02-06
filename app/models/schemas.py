@@ -74,6 +74,26 @@ class SchemaSufficiencyResult(BaseModel):
     analysis: str = ""  # LLM's reasoning about sufficiency
 
 
+# --- Join-Path Validation Models ---
+
+class ValidationDetail(BaseModel):
+    """A single validation check performed during join-path validation"""
+    requirement: str  # e.g., "customer name column"
+    mapping: Optional[str] = None  # e.g., "[dbo].[Customers].[CustomerName]" or "DERIVED: ..."
+    found: bool = False
+    reason: str = ""  # Why this passed/failed
+
+
+class JoinPathValidationResult(BaseModel):
+    """Result of the enhanced join-path schema validation (replaces SchemaSufficiencyResult for new flow)"""
+    status: Literal["sufficient", "insufficient_data", "insufficient_joins"] = "sufficient"
+    join_path: Optional[str] = None  # e.g., "Orders -> OrderDetails ON OrderID -> Products ON ProductID"
+    validation_details: List[ValidationDetail] = []
+    missing_logic: Optional[str] = None  # e.g., "No FK path between Customers and Invoices"
+    search_suggestions: List[str] = []  # Suggested search terms for auto-discovery
+    analysis: str = ""  # LLM's reasoning about sufficiency
+
+
 # Define chart types as a reusable type alias for consistency
 ChartTypeLiteral = Literal['line', 'pie', 'scatter', 'column', 'stackedColumn', 'clusteredColumn', 'area', 'radar', 'treemap', 'funnel', 'none']
 

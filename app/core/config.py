@@ -52,4 +52,7 @@ class Settings(BaseSettings):
     CODE_ADVISOR_RATE_WINDOW: int = 60  # Time window in seconds
     CODE_ADVISOR_TEMPERATURE: float = 0.3  # LLM temperature for conversational advice
     
+    # Join-Path Validation
+    ENABLE_JOIN_PATH_VALIDATION: bool = True  # Use enhanced join-path validation (vs legacy sufficiency check)
+    
 settings = Settings()

@@ -563,3 +563,69 @@ class TestLLMServiceSchemaSufficiency:
         # Key assertion: should work even with empty columns array
         assert result["status"] == "sufficient"
         assert len(result["missing_data_points"]) == 0
+
+
+from app.models.schemas import ValidationDetail, JoinPathValidationResult
+
+
+class TestJoinPathValidationModels:
+    """Test the new join-path validation Pydantic models"""
+    
+    def test_validation_detail_creation(self):
+        detail = ValidationDetail(
+            requirement="customer name",
+            mapping="[dbo].[Customers].[CustomerName]",
+            found=True,
+            reason="Direct column match"
+        )
+        assert detail.requirement == "customer name"
+        assert detail.found is True
+    
+    def test_validation_detail_missing(self):
+        detail = ValidationDetail(
+            requirement="tax rate",
+            mapping=None,
+            found=False,
+            reason="No tax column in any schema"
+        )
+        assert detail.found is False
+        assert detail.mapping is None
+    
+    def test_join_path_result_sufficient(self):
+        result = JoinPathValidationResult(
+            status="sufficient",
+            join_path="Orders -> OrderDetails ON OrderID -> Products ON ProductID",
+            validation_details=[
+                ValidationDetail(requirement="order total", mapping="[dbo].[Orders].[Total]", found=True, reason="test")
+            ],
+            analysis="All data points found with valid join path"
+        )
+        assert result.status == "sufficient"
+        assert result.join_path is not None
+    
+    def test_join_path_result_insufficient_joins(self):
+        result = JoinPathValidationResult(
+            status="insufficient_joins",
+            join_path=None,
+            missing_logic="No FK path between Customers and Invoices",
+            validation_details=[
+                ValidationDetail(requirement="customer name", found=True, reason="found"),
+                ValidationDetail(requirement="invoice total", found=True, reason="found"),
+            ],
+            search_suggestions=["CustomerInvoice", "bridge table"],
+            analysis="Data exists but cannot be joined"
+        )
+        assert result.status == "insufficient_joins"
+        assert result.missing_logic is not None
+        assert len(result.search_suggestions) == 2
+    
+    def test_join_path_result_insufficient_data(self):
+        result = JoinPathValidationResult(
+            status="insufficient_data",
+            validation_details=[
+                ValidationDetail(requirement="tax rate", found=False, reason="missing"),
+            ],
+            search_suggestions=["tax", "tax_rate"],
+            analysis="Missing required data"
+        )
+        assert result.status == "insufficient_data"
