@@ -12,6 +12,7 @@ from app.services.discovery_service import (
 from app.services.validation_service import validate_sql_with_db
 from app.services.vector_store import get_vector_store
 from app.services.settings_service import get_settings_for_display
+from app.services.relationship_graph import get_relationship_graph
 from collections import defaultdict
 
 def parse_table_override_name(raw_name: str) -> Tuple[str, str]:
@@ -134,6 +135,62 @@ def expand_context_with_neighbors(selected_tables: List[str], user_query: str) -
     except Exception as e:
         print(f"Error in context expansion: {e}")
         return selected_tables
+
+def expand_value_tables_with_relationships(
+    value_tables: List[str],
+    max_hops: int = 2,
+    max_per_hit: int = 3
+) -> List[str]:
+    """
+    Expand value index table list by tracing FK relationships.
+    
+    For each table in value_tables, follows FK edges up to max_hops
+    to discover related data tables (capped at max_per_hit per source).
+    
+    Args:
+        value_tables: List of "schema.table" strings from value index search
+        max_hops: Maximum FK hops to traverse
+        max_per_hit: Maximum related tables to add per source table
+        
+    Returns:
+        Expanded list of "schema.table" strings (originals + discovered)
+    """
+    if not value_tables:
+        return value_tables
+    
+    try:
+        graph = get_relationship_graph()
+    except Exception as e:
+        logging.warning(f"[Relationship] Graph unavailable (non-fatal): {e}")
+        return value_tables
+    
+    seen = set()
+    result = []
+    
+    for table_str in value_tables:
+        # Normalize and parse
+        clean = table_str.replace('[', '').replace(']', '').strip()
+        if '.' in clean:
+            parts = clean.split('.', 1)
+            schema_name, table_name = parts[0], parts[1]
+        else:
+            schema_name, table_name = 'dbo', clean
+        
+        key = (schema_name.lower(), table_name.lower())
+        if key not in seen:
+            seen.add(key)
+            result.append(table_str)  # keep original formatting
+        
+        # Trace relationships
+        related = graph.trace_related_tables(schema_name, table_name, max_hops=max_hops, max_tables=max_per_hit)
+        for rel in related:
+            rel_key = (rel.schema_name.lower(), rel.table_name.lower())
+            if rel_key not in seen:
+                seen.add(rel_key)
+                result.append(f"{rel.schema_name}.{rel.table_name}")
+                logging.info(f"[Relationship] Expanded: {schema_name}.{table_name} -> {rel.schema_name}.{rel.table_name}")
+    
+    return result
 
 def extract_entities(query: str) -> Tuple[List[str], List[str]]:
     """
@@ -1606,6 +1663,10 @@ def generate_sql_for_request(request: GenerateSQLRequest, previous_sql: Optional
                             if full_name not in supplementary_value_tables:
                                 supplementary_value_tables.append(full_name)
                 
+                # Expand supplementary value tables with FK relationships
+                if supplementary_value_tables:
+                    supplementary_value_tables = expand_value_tables_with_relationships(supplementary_value_tables)
+
                 # Combine KB tables with supplementary discoveries
                 all_tables = list(set(kb_tables + supplementary_tables + supplementary_value_tables))
                 
@@ -1649,6 +1710,16 @@ def generate_sql_for_request(request: GenerateSQLRequest, previous_sql: Optional
                 value_results = vector_store.search_values(request.query, top_k=5)
                 value_tables = [f"{r.get('schema_name', 'dbo')}.{r.get('table_name')}" for r in value_results if r.get('table_name')]
                 
+            # 1b. Expand value tables with FK relationship tracing
+            if value_tables:
+                original_count = len(value_tables)
+                value_tables = expand_value_tables_with_relationships(value_tables)
+                if len(value_tables) > original_count:
+                    logging.info(
+                        f"Discovery: Relationship tracing expanded value tables "
+                        f"from {original_count} to {len(value_tables)}"
+                    )
+
             # 2. Few-Shot Discovery (broader search, no threshold)
             yield AgentStatus(step_id=6, message="Searching knowledge base for similar queries...")
             similar_queries = vector_store.search_fewshots(request.query, top_k=3, knowledge_type="sql_query")
