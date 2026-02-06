@@ -108,7 +108,8 @@ export const ChartRenderer: React.FC<ChartRendererProps> = ({ data, suggestion }
                     </PieChart>
                 );
             case 'column':
-                // Column chart is essentially a bar chart with vertical bars (default in Recharts BarChart)
+            case 'clusteredColumn':
+                // Column/Clustered column charts: vertical bars (default grouped behavior in Recharts)
                 return (
                     <BarChart data={data}>
                         <CartesianGrid strokeDasharray="3 3" stroke="#334155" vertical={false} />
@@ -161,35 +162,6 @@ export const ChartRenderer: React.FC<ChartRendererProps> = ({ data, suggestion }
                                 stackId="stack"
                                 fill={colors[index % colors.length]}
                                 radius={index === suggestion.seriesKeys!.length - 1 ? [4, 4, 0, 0] : [0, 0, 0, 0]}
-                            />
-                        ))}
-                    </BarChart>
-                );
-            case 'clusteredColumn':
-                // Clustered column is the default grouped bar chart behavior
-                return (
-                    <BarChart data={data}>
-                        <CartesianGrid strokeDasharray="3 3" stroke="#334155" vertical={false} />
-                        <XAxis
-                            dataKey={suggestion.xAxisKey}
-                            stroke="#94a3b8"
-                            fontSize={12}
-                            tickFormatter={(val) => {
-                                return String(val).length > 10 ? String(val).substring(0, 10) + '...' : String(val);
-                            }}
-                        />
-                        <YAxis stroke="#94a3b8" fontSize={12} />
-                        <Tooltip
-                            cursor={{ fill: '#334155', opacity: 0.2 }}
-                            contentStyle={{ backgroundColor: '#0f172a', borderColor: '#1e293b', color: '#f1f5f9' }}
-                        />
-                        <Legend />
-                        {suggestion.seriesKeys!.map((key, index) => (
-                            <Bar
-                                key={key}
-                                dataKey={key}
-                                fill={colors[index % colors.length]}
-                                radius={[4, 4, 0, 0]}
                             />
                         ))}
                     </BarChart>

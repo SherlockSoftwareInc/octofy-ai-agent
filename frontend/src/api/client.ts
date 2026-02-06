@@ -576,24 +576,28 @@ export const api = {
         return finalResult;
     },
 
-    executePython: async (code: string, context?: unknown, chartTypeOverride?: ChartTypeOption, enableProfiling: boolean = false): Promise<ExecutePythonResponse> => {
+    executePython: async (code: string, context?: unknown, chartTypeOverride?: ChartTypeOption, enableProfiling: boolean = false, preservedXAxis?: string, preservedYAxis?: string[]): Promise<ExecutePythonResponse> => {
         const response = await axios.post(`${API_BASE_URL}/execute-python`, { 
             code, 
             context,
             chart_type_override: chartTypeOverride,
-            enable_profiling: enableProfiling
+            enable_profiling: enableProfiling,
+            preserved_x_axis: preservedXAxis,
+            preserved_y_axis: preservedYAxis
         });
         return response.data;
     },
 
-    executeSQL: async (sql: string, context?: unknown, chartTypeOverride?: ChartTypeOption, timeoutSeconds?: number, maxRows?: number, enableProfiling: boolean = false): Promise<ExecuteSQLResponse> => {
+    executeSQL: async (sql: string, context?: unknown, chartTypeOverride?: ChartTypeOption, timeoutSeconds?: number, maxRows?: number, enableProfiling: boolean = false, preservedXAxis?: string, preservedYAxis?: string[]): Promise<ExecuteSQLResponse> => {
         const response = await axios.post(`${API_BASE_URL}/execute-sql`, { 
             sql, 
             context,
             chart_type_override: chartTypeOverride,
             timeout_seconds: timeoutSeconds,
             max_rows: maxRows,
-            enable_profiling: enableProfiling
+            enable_profiling: enableProfiling,
+            preserved_x_axis: preservedXAxis,
+            preserved_y_axis: preservedYAxis
         });
         return response.data;
     },

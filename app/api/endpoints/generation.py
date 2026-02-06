@@ -328,7 +328,7 @@ async def execute_python_endpoint(
 
                     viz_service = VisualizationService()
                     recommendation = viz_service.get_chart_recommendation(
-                        df, current_code, request.chart_type_override
+                        df, current_code, request.chart_type_override, request.preserved_x_axis, request.preserved_y_axis
                     )
                 except Exception as viz_err:
                     logger.error(f"Visualization recommendation failed: {viz_err}")
@@ -488,7 +488,7 @@ async def execute_sql_endpoint(
                             df = pd.DataFrame(target_df_data)
                         
                         recommendation = viz_service.get_chart_recommendation(
-                            df, user_query or current_sql, request.chart_type_override
+                            df, user_query or current_sql, request.chart_type_override, request.preserved_x_axis, request.preserved_y_axis
                         )
                         recommendations.append(recommendation)
                     except Exception as viz_err:
