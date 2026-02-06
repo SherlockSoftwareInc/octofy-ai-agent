@@ -8,6 +8,7 @@ from app.services.settings_service import load_settings
 from app.services.embedding_factory import EmbeddingFactory
 import json
 import hashlib
+import logging
 
 _vector_store_instance = None
 
@@ -561,6 +562,46 @@ class MilvusVectorStore(VectorStoreBase):
                 retrieved_items.append(item)
         
         return retrieved_items
+
+    def search_fewshots_with_threshold(
+        self, 
+        query: str, 
+        top_k: int = 3, 
+        knowledge_type: Optional[str] = None,
+        score_threshold: float = 0.5
+    ) -> List[Dict[str, Any]]:
+        """
+        Search few-shot examples with L2 distance threshold filtering.
+        Only returns results with L2 distance < score_threshold.
+        
+        Args:
+            query: Search query text
+            top_k: Maximum results to return
+            knowledge_type: Optional filter (e.g., "sql_query")
+            score_threshold: Maximum L2 distance to include (lower = more similar)
+            
+        Returns:
+            List of matching fewshot items with score < threshold
+        """
+        # Use existing search
+        all_results = self.search_fewshots(query, top_k=top_k, knowledge_type=knowledge_type)
+        
+        # Filter by threshold
+        filtered = [r for r in all_results if r.get('score', float('inf')) < score_threshold]
+        
+        if filtered:
+            logging.info(
+                f"[KB Search] {len(filtered)}/{len(all_results)} results passed threshold {score_threshold}. "
+                f"Best score: {filtered[0].get('score', 'N/A')}"
+            )
+        else:
+            scores = [r.get('score', 'N/A') for r in all_results]
+            logging.info(
+                f"[KB Search] 0/{len(all_results)} results passed threshold {score_threshold}. "
+                f"Scores: {scores}"
+            )
+        
+        return filtered
     
     def search_values(self, query: str, top_k: int = 5) -> List[Dict[str, Any]]:
         """
