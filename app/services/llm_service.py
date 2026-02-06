@@ -42,6 +42,11 @@ class LLMServiceBase(ABC):
     def validate_schema_with_join_paths(self, user_query: str, schemas: List[Any], code_type: str = "sql") -> Dict[str, Any]:
         pass
 
+    @abstractmethod
+    def evaluate_example_relevance(self, user_query: str, kb_examples: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Evaluate if knowledge base examples can answer the user's query."""
+        pass
+
 class OpenAILLMService(LLMServiceBase):
     def __init__(self):
         from app.services.settings_service import load_settings
@@ -92,14 +97,15 @@ class OpenAILLMService(LLMServiceBase):
 
     def validate_schema_references(self, schemas: List[Any], user_query: str) -> str:
         """
-        Validate if all referenced tables (via foreign keys) are present in the provided schemas.
+        Validate if all referenced tables (via foreign keys) that are RELEVANT to the user's query
+        are present in the provided schemas.
         
         Args:
             schemas: List of TableSchema objects with descriptions that may contain foreign key references
             user_query: The user's natural language query for context
             
         Returns:
-            Structured validation response from LLM indicating missing tables
+            Structured validation response from LLM indicating missing tables relevant to the query
         """
         # Mock mode for development
         if self.client is None:
@@ -131,47 +137,65 @@ class OpenAILLMService(LLMServiceBase):
 ### USER QUERY:
 {user_query}
 
-### TASK:
-Analyze the column descriptions in the provided schemas for references to other tables (foreign key relationships). 
-Look for patterns like:
-- "References [TableName]"
-- "FK to [TableName]"
-- "Foreign key to [schema].[table]"
-- "Links to [TableName]"
-- Or any mention of another table name in the relationship context
+### TWO-STAGE VALIDATION PROCESS:
 
-For each table referenced in the descriptions, check if that table is in the "TABLES CURRENTLY PRESENT" list above.
+**STAGE 1: SUFFICIENCY CHECK (MUST DO FIRST)**
+Before checking foreign key references, determine if the CURRENTLY PROVIDED tables already contain all the columns/data needed to answer the user's query.
 
-**IMPORTANT RULES:**
-1. Only flag tables that are EXPLICITLY referenced as foreign keys or relationships in column descriptions
-2. Do NOT flag tables mentioned casually or in general text
-3. Use exact table names from references (including schema prefix if mentioned)
-4. If a referenced table is already in the present list, do NOT flag it as missing
+- Analyze the columns available in the PROVIDED TABLE SCHEMAS above
+- Determine if these columns are sufficient to answer the user's query
+- Consider that SQL can compute derived values (aggregations, calculations, etc.)
+
+**STAGE 2: REFERENCE CHECK (ONLY IF STAGE 1 FAILS)**
+ONLY perform this stage if Stage 1 determined that current tables are INSUFFICIENT.
+
+If current tables lack required data, then check for foreign key references:
+- Look for patterns: "References [TableName]", "FK to [TableName]", "Foreign key to [schema].[table]"
+- Identify which referenced tables might provide the MISSING data
+- Only flag tables that are BOTH referenced AND would provide missing required data
+
+**CRITICAL RULES:**
+1. **CURRENT TABLES FIRST:** Always check if provided tables are sufficient before looking for references
+2. **NO UNNECESSARY REFS:** If current tables have all needed data, return SCHEMA_COMPLETE: YES even if foreign keys exist
+3. **RELEVANCE ONLY:** Only flag referenced tables that provide MISSING REQUIRED data
+4. **QUERY-SPECIFIC:** Focus on what the user's query actually needs, not all possible relationships
+5. **EXACT NAMES:** Use exact table names from references (including schema prefix if mentioned)
+6. **CHECK PRESENCE:** If a referenced table is already in the present list, do NOT flag it as missing
 
 ### OUTPUT FORMAT:
 Return your analysis in EXACTLY this format:
 
 SCHEMA_COMPLETE: YES or NO
 MISSING_TABLES: table1, table2, table3 (comma-separated, or "NONE" if complete)
-ANALYSIS: Brief explanation of what's missing and why
+ANALYSIS: Brief explanation of validation result
 
 **Example outputs:**
 
-Example 1 (complete):
+Example 1 (current tables sufficient - no need to check references):
 SCHEMA_COMPLETE: YES
 MISSING_TABLES: NONE
-ANALYSIS: All referenced tables are present in the context.
+ANALYSIS: Stage 1: Current tables contain all required columns. Orders table has OrderDate, ShippedDate, and Freight columns which are sufficient to answer the query about shipping costs. No need to check foreign key references.
 
-Example 2 (missing tables):
+Example 2 (current tables insufficient, referenced table needed):
 SCHEMA_COMPLETE: NO
-MISSING_TABLES: dbo.Customers, dbo.Products
-ANALYSIS: Orders.CustomerID references dbo.Customers (not present), OrderDetails.ProductID references dbo.Products (not present).
+MISSING_TABLES: dbo.Customers
+ANALYSIS: Stage 1: Current tables (Orders) lack customer name/contact data. Stage 2: Orders.CustomerID references dbo.Customers which contains the required customer information. Missing: dbo.Customers.
+
+Example 3 (current tables insufficient, but no helpful references):
+SCHEMA_COMPLETE: NO
+MISSING_TABLES: NONE
+ANALYSIS: Stage 1: Current tables lack profit/margin data. Stage 2: No foreign key references provide this data. The required calculation base (cost data) is not available in any referenced table.
+
+Example 4 (has references but current tables already sufficient):
+SCHEMA_COMPLETE: YES
+MISSING_TABLES: NONE
+ANALYSIS: Stage 1: Current tables contain OrderID, OrderDate, and Quantity - all needed for the query. Although Orders references Customers and Shippers, those tables are not needed since customer/shipper details were not requested.
 """
         
         response = self.client.chat.completions.create(
             model=self.model,
             messages=[
-                {"role": "system", "content": "You are a database schema analyzer. Analyze schemas and identify missing referenced tables."},
+                {"role": "system", "content": "You are a database schema analyzer. First check if current tables are sufficient. Only check for missing referenced tables if current tables lack required data."},
                 {"role": "user", "content": validation_prompt}
             ],
             temperature=0  # Deterministic analysis
@@ -181,12 +205,127 @@ ANALYSIS: Orders.CustomerID references dbo.Customers (not present), OrderDetails
         
         # Log the interaction
         log_messages = [
-            {"role": "system", "content": "You are a database schema analyzer. Analyze schemas and identify missing referenced tables."},
+            {"role": "system", "content": "You are a database schema analyzer. First check if current tables are sufficient. Only check for missing referenced tables if current tables lack required data."},
             {"role": "user", "content": validation_prompt}
         ]
         log_llm_interaction(log_messages, validation_result)
         
         return validation_result
+
+    def evaluate_example_relevance(self, user_query: str, kb_examples: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """
+        Evaluate if knowledge base SQL examples can answer the user's query.
+        Returns structured assessment with sufficiency judgment and gap analysis.
+        """
+        import json as json_module
+        
+        # Build examples text
+        examples_text = ""
+        for i, ex in enumerate(kb_examples, 1):
+            entity = ex.get('entity', ex)
+            question = entity.get('question', '')
+            sql = entity.get('sql_query', '')
+            score = ex.get('score', 'N/A')
+            examples_text += f"\n--- Example {i} (similarity score: {score}) ---\n"
+            examples_text += f"Question: {question}\n"
+            examples_text += f"SQL:\n```sql\n{sql}\n```\n"
+        
+        prompt = f"""You are a senior SQL expert performing a knowledge base evaluation.
+
+### USER'S NEW QUESTION
+{user_query}
+
+### KNOWLEDGE BASE EXAMPLES
+{examples_text}
+
+### TASK
+Evaluate whether the knowledge base SQL examples above can answer the user's new question.
+
+Consider:
+1. Does the SQL retrieve the right data entities (tables, columns)?
+2. Are the filters/conditions compatible or easily adjustable?
+3. Are there missing dimensions, metrics, or entities that the SQL doesn't cover?
+
+### OUTPUT FORMAT (JSON only, no markdown)
+{{
+  "is_sufficient": true/false,
+  "confidence": 0.0-1.0,
+  "adjustments_needed": ["list of minor SQL tweaks needed, e.g. 'change date filter'"],
+  "missing_entities": ["entities/dimensions not covered by examples"],
+  "missing_tables": ["table names that would be needed but are not in the SQL"],
+  "suggested_search_terms": ["terms to search for missing context"]
+}}
+
+### RULES
+- is_sufficient: true ONLY if the SQL can answer the question with minor tweaks (filter changes, column additions from SAME tables)
+- is_sufficient: false if the query needs entirely different tables or complex structural changes
+- confidence: 0.9+ for exact/near-exact matches, 0.7-0.9 for tweakable, <0.7 for insufficient
+- missing_entities: only populate if is_sufficient is false
+- suggested_search_terms: keywords to search schema/value indexes for missing data
+"""
+        
+        try:
+            if self.client is None:
+                # Mock mode
+                return {
+                    "is_sufficient": False,
+                    "confidence": 0.0,
+                    "adjustments_needed": [],
+                    "missing_entities": [],
+                    "missing_tables": [],
+                    "suggested_search_terms": []
+                }
+            
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": "You are a SQL expert evaluating knowledge base relevance. Respond with JSON only."},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0,
+                timeout=30
+            )
+            
+            content = response.choices[0].message.content.strip()
+            
+            # Log the interaction
+            log_messages = [
+                {"role": "system", "content": "SQL expert evaluating KB relevance"},
+                {"role": "user", "content": prompt}
+            ]
+            log_llm_interaction(log_messages, content)
+            
+            # Parse JSON response
+            # Strip markdown code fences if present
+            if content.startswith("```"):
+                content = content.split("\n", 1)[1] if "\n" in content else content[3:]
+                if content.endswith("```"):
+                    content = content[:-3]
+                content = content.strip()
+            
+            result = json_module.loads(content)
+            return result
+            
+        except json_module.JSONDecodeError as e:
+            logging.error(f"Failed to parse KB assessment JSON: {e}. Raw: {content}")
+            return {
+                "is_sufficient": False,
+                "confidence": 0.0,
+                "adjustments_needed": [],
+                "missing_entities": [],
+                "missing_tables": [],
+                "suggested_search_terms": []
+            }
+        except Exception as e:
+            logging.error(f"Error in evaluate_example_relevance: {e}")
+            return {
+                "is_sufficient": False,
+                "confidence": 0.0,
+                "adjustments_needed": [],
+                "missing_entities": [],
+                "missing_tables": [],
+                "suggested_search_terms": []
+            }
 
     def check_schema_sufficiency(self, user_query: str, schemas: List[Any], code_type: str = "sql") -> Dict[str, Any]:
         """
@@ -748,35 +887,65 @@ class LiteLLMService(LLMServiceBase):
 ### USER QUERY:
 {user_query}
 
-### TASK:
-Analyze the column descriptions in the provided schemas for references to other tables (foreign key relationships). 
-Look for patterns like:
-- "References [TableName]"
-- "FK to [TableName]"
-- "Foreign key to [schema].[table]"
-- "Links to [TableName]"
-- Or any mention of another table name in the relationship context
+### TWO-STAGE VALIDATION PROCESS:
 
-For each table referenced in the descriptions, check if that table is in the "TABLES CURRENTLY PRESENT" list above.
+**STAGE 1: SUFFICIENCY CHECK (MUST DO FIRST)**
+Before checking foreign key references, determine if the CURRENTLY PROVIDED tables already contain all the columns/data needed to answer the user's query.
 
-**IMPORTANT RULES:**
-1. Only flag tables that are EXPLICITLY referenced as foreign keys or relationships in column descriptions
-2. Do NOT flag tables mentioned casually or in general text
-3. Use exact table names from references (including schema prefix if mentioned)
-4. If a referenced table is already in the present list, do NOT flag it as missing
+- Analyze the columns available in the PROVIDED TABLE SCHEMAS above
+- Determine if these columns are sufficient to answer the user's query
+- Consider that SQL can compute derived values (aggregations, calculations, etc.)
+
+**STAGE 2: REFERENCE CHECK (ONLY IF STAGE 1 FAILS)**
+ONLY perform this stage if Stage 1 determined that current tables are INSUFFICIENT.
+
+If current tables lack required data, then check for foreign key references:
+- Look for patterns: "References [TableName]", "FK to [TableName]", "Foreign key to [schema].[table]"
+- Identify which referenced tables might provide the MISSING data
+- Only flag tables that are BOTH referenced AND would provide missing required data
+
+**CRITICAL RULES:**
+1. **CURRENT TABLES FIRST:** Always check if provided tables are sufficient before looking for references
+2. **NO UNNECESSARY REFS:** If current tables have all needed data, return SCHEMA_COMPLETE: YES even if foreign keys exist
+3. **RELEVANCE ONLY:** Only flag referenced tables that provide MISSING REQUIRED data
+4. **QUERY-SPECIFIC:** Focus on what the user's query actually needs, not all possible relationships
+5. **EXACT NAMES:** Use exact table names from references (including schema prefix if mentioned)
+6. **CHECK PRESENCE:** If a referenced table is already in the present list, do NOT flag it as missing
 
 ### OUTPUT FORMAT:
 Return your analysis in EXACTLY this format:
 
 SCHEMA_COMPLETE: YES or NO
 MISSING_TABLES: table1, table2, table3 (comma-separated, or "NONE" if complete)
-ANALYSIS: Brief explanation of what's missing and why
+ANALYSIS: Brief explanation of validation result
+
+**Example outputs:**
+
+Example 1 (current tables sufficient - no need to check references):
+SCHEMA_COMPLETE: YES
+MISSING_TABLES: NONE
+ANALYSIS: Stage 1: Current tables contain all required columns. Orders table has OrderDate, ShippedDate, and Freight columns which are sufficient to answer the query about shipping costs. No need to check foreign key references.
+
+Example 2 (current tables insufficient, referenced table needed):
+SCHEMA_COMPLETE: NO
+MISSING_TABLES: dbo.Customers
+ANALYSIS: Stage 1: Current tables (Orders) lack customer name/contact data. Stage 2: Orders.CustomerID references dbo.Customers which contains the required customer information. Missing: dbo.Customers.
+
+Example 3 (current tables insufficient, but no helpful references):
+SCHEMA_COMPLETE: NO
+MISSING_TABLES: NONE
+ANALYSIS: Stage 1: Current tables lack profit/margin data. Stage 2: No foreign key references provide this data. The required calculation base (cost data) is not available in any referenced table.
+
+Example 4 (has references but current tables already sufficient):
+SCHEMA_COMPLETE: YES
+MISSING_TABLES: NONE
+ANALYSIS: Stage 1: Current tables contain OrderID, OrderDate, and Quantity - all needed for the query. Although Orders references Customers and Shippers, those tables are not needed since customer/shipper details were not requested.
 """
         try:
             response = litellm.completion(
                 model=self.model,
                 messages=[
-                    {"role": "system", "content": "You are a database schema analyzer. Analyze schemas and identify missing referenced tables."},
+                    {"role": "system", "content": "You are a database schema analyzer. First check if current tables are sufficient. Only check for missing referenced tables if current tables lack required data."},
                     {"role": "user", "content": validation_prompt}
                 ],
                 temperature=0,
@@ -789,7 +958,7 @@ ANALYSIS: Brief explanation of what's missing and why
             
             # Log the interaction
             log_messages = [
-                {"role": "system", "content": "You are a database schema analyzer. Analyze schemas and identify missing referenced tables."},
+                {"role": "system", "content": "You are a database schema analyzer. First check if current tables are sufficient. Only check for missing referenced tables if current tables lack required data."},
                 {"role": "user", "content": validation_prompt}
             ]
             log_llm_interaction(log_messages, content)
@@ -1285,6 +1454,106 @@ schema.Table1, schema.Table2
             else:
                 logging.error(f"LLM Error in extract_filter_values: {e}")
             return []
+
+    def evaluate_example_relevance(self, user_query: str, kb_examples: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """
+        Evaluate if knowledge base SQL examples can answer the user's query.
+        Returns structured assessment with sufficiency judgment and gap analysis.
+        """
+        import json as json_module
+        
+        # Build examples text
+        examples_text = ""
+        for i, ex in enumerate(kb_examples, 1):
+            entity = ex.get('entity', ex)
+            question = entity.get('question', '')
+            sql = entity.get('sql_query', '')
+            score = ex.get('score', 'N/A')
+            examples_text += f"\n--- Example {i} (similarity score: {score}) ---\n"
+            examples_text += f"Question: {question}\n"
+            examples_text += f"SQL:\n```sql\n{sql}\n```\n"
+        
+        prompt = f"""You are a senior SQL expert performing a knowledge base evaluation.
+
+### USER'S NEW QUESTION
+{user_query}
+
+### KNOWLEDGE BASE EXAMPLES
+{examples_text}
+
+### TASK
+Evaluate whether the knowledge base SQL examples above can answer the user's new question.
+
+Consider:
+1. Does the SQL retrieve the right data entities (tables, columns)?
+2. Are the filters/conditions compatible or easily adjustable?
+3. Are there missing dimensions, metrics, or entities that the SQL doesn't cover?
+
+### OUTPUT FORMAT (JSON only, no markdown)
+{{
+  "is_sufficient": true/false,
+  "confidence": 0.0-1.0,
+  "adjustments_needed": ["list of minor SQL tweaks needed, e.g. 'change date filter'"],
+  "missing_entities": ["entities/dimensions not covered by examples"],
+  "missing_tables": ["table names that would be needed but are not in the SQL"],
+  "suggested_search_terms": ["terms to search for missing context"]
+}}
+
+### RULES
+- is_sufficient: true ONLY if the SQL can answer the question with minor tweaks (filter changes, column additions from SAME tables)
+- is_sufficient: false if the query needs entirely different tables or complex structural changes
+- confidence: 0.9+ for exact/near-exact matches, 0.7-0.9 for tweakable, <0.7 for insufficient
+- missing_entities: only populate if is_sufficient is false
+- suggested_search_terms: keywords to search schema/value indexes for missing data
+"""
+        
+        try:
+            response = litellm.completion(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": "You are a SQL expert evaluating knowledge base relevance. Respond with JSON only."},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0,
+                base_url=self.base_url,
+                api_key=self.api_key,
+                timeout=30
+            )
+            
+            content = response.choices[0].message.content.strip()
+            
+            # Log the interaction
+            log_messages = [
+                {"role": "system", "content": "SQL expert evaluating KB relevance"},
+                {"role": "user", "content": prompt}
+            ]
+            log_llm_interaction(log_messages, content)
+            
+            # Parse JSON response  
+            # Strip markdown code fences if present
+            if content.startswith("```"):
+                content = content.split("\n", 1)[1] if "\n" in content else content[3:]
+                if content.endswith("```"):
+                    content = content[:-3]
+                content = content.strip()
+            
+            result = json_module.loads(content)
+            return result
+            
+        except Exception as e:
+            error_msg = str(e)
+            if "timeout" in error_msg.lower() or "timed out" in error_msg.lower():
+                logging.warning(f"LLM timeout in evaluate_example_relevance after 30s: {e}")
+            else:
+                logging.error(f"LLM Error in evaluate_example_relevance: {e}")
+            return {
+                "is_sufficient": False,
+                "confidence": 0.0,
+                "adjustments_needed": [],
+                "missing_entities": [],
+                "missing_tables": [],
+                "suggested_search_terms": []
+            }
 
 def _build_join_path_validation_prompt(user_query: str, schema_text: str, code_type: str, temporal_guidance: str, derivation_guidance: str) -> str:
     """Build the join-path validation prompt used by both LLM service implementations."""
