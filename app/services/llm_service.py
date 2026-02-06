@@ -5,6 +5,7 @@ from app.core.config import settings
 from openai import OpenAI
 
 import litellm
+import logging
 from datetime import datetime
 from app.utils.logging_utils import log_llm_interaction
 
@@ -183,6 +184,178 @@ ANALYSIS: Orders.CustomerID references dbo.Customers (not present), OrderDetails
         
         return validation_result
 
+    def check_schema_sufficiency(self, user_query: str, schemas: List[Any], code_type: str = "sql") -> Dict[str, Any]:
+        """
+        Pre-flight check: Validate if the provided schemas contain all columns 
+        needed to answer the user's query.
+        
+        Args:
+            user_query: The user's natural language request
+            schemas: List of TableSchema objects with column definitions
+            code_type: "sql" or "python" - affects the analysis context
+            
+        Returns:
+            Dict with keys: status, required_data_points, missing_data_points, 
+                           search_suggestions, analysis
+        """
+        import json
+        import logging
+        
+        # Mock mode for development
+        if self.client is None:
+            return {
+                "status": "sufficient",
+                "required_data_points": [],
+                "missing_data_points": [],
+                "search_suggestions": [],
+                "analysis": "Mock validation - schema assumed sufficient"
+            }
+        
+        # Build schema text with column details
+        schema_text_parts = []
+        for t in schemas:
+            schema_name = getattr(t, 'schema_name', 'dbo')
+            table_name = getattr(t, 'table_name', '')
+            columns = getattr(t, 'columns', [])
+            description = getattr(t, 'description', '')
+            
+            if columns:
+                # Use structured column info if available
+                cols = ", ".join([f"{c.name} ({c.data_type})" for c in columns])
+                schema_text_parts.append(f"[{schema_name}].[{table_name}]: {cols}")
+            elif description:
+                # Fall back to description (which contains markdown with column details)
+                # Include the full description as it contains column information
+                schema_text_parts.append(f"[{schema_name}].[{table_name}]:\n{description}")
+            else:
+                schema_text_parts.append(f"[{schema_name}].[{table_name}]: (no column information available)")
+        
+        schema_text = "\n\n".join(schema_text_parts)
+        
+        # Determine language-specific guidance
+        if code_type.lower() == "python":
+            derivation_guidance = """### DERIVABLE VALUES - Mark as "found: true" if computable from existing columns:
+Python/pandas can compute virtually ANY derived value from raw columns:
+- **Aggregations**: df.sum(), df.mean(), df.count(), df.groupby().agg() 
+- **Calculated fields**: df['amount'] = df['quantity'] * df['price']
+- **Rankings**: df.nlargest(), df.sort_values(), df.rank()
+- **Date operations**: pd.to_datetime(), dt.year, dt.month, date arithmetic
+- **String operations**: str.contains(), str.upper(), str.split()
+- **Statistical analysis**: correlation, percentiles, distributions
+- **Pivot tables**: df.pivot_table(), df.crosstab()
+- **Window functions**: df.rolling(), df.expanding(), df.shift()
+
+IMPORTANT: If the base columns exist, Python can derive almost anything through code."""
+        else:
+            derivation_guidance = """### DERIVABLE VALUES - Mark as "found: true" if computable from existing columns:
+- **Aggregations**: COUNT(*), SUM(column), AVG(column), MIN/MAX - always available
+- **Calculated fields**: quantity * unit_price = amount, date differences, etc.
+- **Rankings**: TOP N, ORDER BY, ROW_NUMBER() - always available
+- **Date extractions**: YEAR(), MONTH(), DATEPART() from date columns
+- **String operations**: CONCAT(), SUBSTRING(), UPPER/LOWER from string columns
+- **Conditional logic**: CASE WHEN, IIF() on existing columns
+- **Standard joins**: If related tables exist, join operations are available"""
+
+        prompt = f"""### ROLE
+You are a database schema analyst performing a pre-flight validation check.
+
+### TASK
+Analyze the user's request and determine if the provided database schemas contain 
+the columns necessary to answer it - either directly or through computation/derivation.
+
+### CODE TYPE
+{code_type.upper()} - Consider what calculations are possible in this language.
+
+### USER REQUEST
+{user_query}
+
+### AVAILABLE SCHEMAS
+{schema_text}
+
+### VALIDATION PROTOCOL
+1. Identify the core data points required to answer the user's request
+2. For each data point, check if it can be satisfied by:
+   a) A direct column match in the provided schemas, OR
+   b) A DERIVABLE/COMPUTABLE value from existing columns using {code_type.upper()} capabilities
+
+{derivation_guidance}
+
+### OUTPUT FORMAT (JSON only, no markdown)
+{{
+  "status": "sufficient" or "insufficient_data",
+  "required_data_points": [
+    {{
+      "name": "descriptive name of data needed",
+      "column_mapping": "[schema].[table].[column]" or "DERIVED: expression" or null,
+      "found": true or false,
+      "reasoning": "why this data point is needed and how it can be obtained"
+    }}
+  ],
+  "missing_data_points": [
+    {{
+      "name": "descriptive name of missing data",
+      "column_mapping": null,
+      "found": false,
+      "reasoning": "why this is needed but cannot be obtained from available columns"
+    }}
+  ],
+  "search_suggestions": ["term1", "term2", "term3"],
+  "analysis": "Brief explanation of the validation result"
+}}
+
+### CRITICAL RULES
+- status: "sufficient" if data points are directly available OR computable from existing columns
+- status: "insufficient_data" ONLY if the required BASE DATA truly does not exist
+- For "top selling products": If you have product info + quantity/price columns -> SUFFICIENT
+- For aggregations (sum, count, avg): If base columns exist -> SUFFICIENT  
+- For rankings (top N, best, worst): Standard capability -> SUFFICIENT
+- Do NOT require explicit pre-calculated columns when code can compute them
+- The question is: "Do we have the RAW DATA?" not "Do we have the exact column name?"
+- search_suggestions: only needed if status is "insufficient_data"
+"""
+        
+        try:
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": "You are a database schema validator. Output valid JSON only."},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0,
+                response_format={"type": "json_object"}
+            )
+            
+            result = json.loads(response.choices[0].message.content)
+            
+            # Log the interaction
+            log_messages = [
+                {"role": "system", "content": "You are a database schema validator. Output valid JSON only."},
+                {"role": "user", "content": prompt}
+            ]
+            log_llm_interaction(log_messages, response.choices[0].message.content)
+            
+            return result
+            
+        except json.JSONDecodeError as e:
+            logging.error(f"Failed to parse schema sufficiency response as JSON: {e}")
+            # Return sufficient to avoid blocking generation on parse errors
+            return {
+                "status": "sufficient",
+                "required_data_points": [],
+                "missing_data_points": [],
+                "search_suggestions": [],
+                "analysis": f"Validation skipped due to parse error: {e}"
+            }
+        except Exception as e:
+            logging.error(f"Error in schema sufficiency check: {e}")
+            return {
+                "status": "sufficient",
+                "required_data_points": [],
+                "missing_data_points": [],
+                "search_suggestions": [],
+                "analysis": f"Validation skipped due to error: {e}"
+            }
+
     def generate_sql_with_context(self, query: str, context_text: str) -> str:
         # Mock mode for development
         if self.client is None:
@@ -292,7 +465,7 @@ Your goal is to generate a valid T-SQL SELECT query to answer the user's questio
             messages=messages,
             temperature=temperature
         )
-        return validation_result
+        return response.choices[0].message.content
 
     def extract_tables_from_sql(self, sql_queries: List[str]) -> List[str]:
         # Mock mode
@@ -446,7 +619,8 @@ class LiteLLMService(LLMServiceBase):
                 ],
                 temperature=0,
                 base_url=self.base_url,
-                api_key=self.api_key
+                api_key=self.api_key,
+                timeout=60
             )
             
             sql = response.choices[0].message.content
@@ -525,7 +699,8 @@ ANALYSIS: Brief explanation of what's missing and why
                 ],
                 temperature=0,
                 base_url=self.base_url,
-                api_key=self.api_key
+                api_key=self.api_key,
+                timeout=30
             )
             
             content = response.choices[0].message.content
@@ -540,6 +715,170 @@ ANALYSIS: Brief explanation of what's missing and why
             return content
         except Exception as e:
             return f"SCHEMA_COMPLETE: YES\nMISSING_TABLES: NONE\nANALYSIS: Error in validation: {str(e)}"
+
+    def check_schema_sufficiency(self, user_query: str, schemas: List[Any], code_type: str = "sql") -> Dict[str, Any]:
+        """
+        Pre-flight check: Validate if the provided schemas contain all columns 
+        needed to answer the user's query.
+        
+        Args:
+            user_query: The user's natural language request
+            schemas: List of TableSchema objects with column definitions
+            code_type: "sql" or "python" - affects the analysis context
+            
+        Returns:
+            Dict with keys: status, required_data_points, missing_data_points, 
+                           search_suggestions, analysis
+        """
+        import json
+        import logging
+        
+        # Build schema text with column details
+        schema_text_parts = []
+        for t in schemas:
+            schema_name = getattr(t, 'schema_name', 'dbo')
+            table_name = getattr(t, 'table_name', '')
+            columns = getattr(t, 'columns', [])
+            description = getattr(t, 'description', '')
+            
+            if columns:
+                # Use structured column info if available
+                cols = ", ".join([f"{c.name} ({c.data_type})" for c in columns])
+                schema_text_parts.append(f"[{schema_name}].[{table_name}]: {cols}")
+            elif description:
+                # Fall back to description (which contains markdown with column details)
+                # Include the full description as it contains column information
+                schema_text_parts.append(f"[{schema_name}].[{table_name}]:\n{description}")
+            else:
+                schema_text_parts.append(f"[{schema_name}].[{table_name}]: (no column information available)")
+        
+        schema_text = "\n\n".join(schema_text_parts)
+        
+        # Determine language-specific guidance
+        if code_type.lower() == "python":
+            derivation_guidance = """### DERIVABLE VALUES - Mark as "found: true" if computable from existing columns:
+Python/pandas can compute virtually ANY derived value from raw columns:
+- **Aggregations**: df.sum(), df.mean(), df.count(), df.groupby().agg() 
+- **Calculated fields**: df['amount'] = df['quantity'] * df['price']
+- **Rankings**: df.nlargest(), df.sort_values(), df.rank()
+- **Date operations**: pd.to_datetime(), dt.year, dt.month, date arithmetic
+- **String operations**: str.contains(), str.upper(), str.split()
+- **Statistical analysis**: correlation, percentiles, distributions
+- **Pivot tables**: df.pivot_table(), df.crosstab()
+- **Window functions**: df.rolling(), df.expanding(), df.shift()
+
+IMPORTANT: If the base columns exist, Python can derive almost anything through code."""
+        else:
+            derivation_guidance = """### DERIVABLE VALUES - Mark as "found: true" if computable from existing columns:
+- **Aggregations**: COUNT(*), SUM(column), AVG(column), MIN/MAX - always available
+- **Calculated fields**: quantity * unit_price = amount, date differences, etc.
+- **Rankings**: TOP N, ORDER BY, ROW_NUMBER() - always available
+- **Date extractions**: YEAR(), MONTH(), DATEPART() from date columns
+- **String operations**: CONCAT(), SUBSTRING(), UPPER/LOWER from string columns
+- **Conditional logic**: CASE WHEN, IIF() on existing columns
+- **Standard joins**: If related tables exist, join operations are available"""
+
+        prompt = f"""### ROLE
+You are a database schema analyst performing a pre-flight validation check.
+
+### TASK
+Analyze the user's request and determine if the provided database schemas contain 
+the columns necessary to answer it - either directly or through computation/derivation.
+
+### CODE TYPE
+{code_type.upper()} - Consider what calculations are possible in this language.
+
+### USER REQUEST
+{user_query}
+
+### AVAILABLE SCHEMAS
+{schema_text}
+
+### VALIDATION PROTOCOL
+1. Identify the core data points required to answer the user's request
+2. For each data point, check if it can be satisfied by:
+   a) A direct column match in the provided schemas, OR
+   b) A DERIVABLE/COMPUTABLE value from existing columns using {code_type.upper()} capabilities
+
+{derivation_guidance}
+
+### OUTPUT FORMAT (JSON only, no markdown)
+{{
+  "status": "sufficient" or "insufficient_data",
+  "required_data_points": [
+    {{
+      "name": "descriptive name of data needed",
+      "column_mapping": "[schema].[table].[column]" or "DERIVED: expression" or null,
+      "found": true or false,
+      "reasoning": "why this data point is needed and how it can be obtained"
+    }}
+  ],
+  "missing_data_points": [
+    {{
+      "name": "descriptive name of missing data",
+      "column_mapping": null,
+      "found": false,
+      "reasoning": "why this is needed but cannot be obtained from available columns"
+    }}
+  ],
+  "search_suggestions": ["term1", "term2", "term3"],
+  "analysis": "Brief explanation of the validation result"
+}}
+
+### CRITICAL RULES
+- status: "sufficient" if data points are directly available OR computable from existing columns
+- status: "insufficient_data" ONLY if the required BASE DATA truly does not exist
+- For "top selling products": If you have product info + quantity/price columns -> SUFFICIENT
+- For aggregations (sum, count, avg): If base columns exist -> SUFFICIENT  
+- For rankings (top N, best, worst): Standard capability -> SUFFICIENT
+- Do NOT require explicit pre-calculated columns when code can compute them
+- The question is: "Do we have the RAW DATA?" not "Do we have the exact column name?"
+- search_suggestions: only needed if status is "insufficient_data"
+"""
+        
+        try:
+            response = litellm.completion(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": "You are a database schema validator. Output valid JSON only."},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0,
+                response_format={"type": "json_object"},
+                base_url=self.base_url,
+                api_key=self.api_key,
+                timeout=30
+            )
+            
+            result = json.loads(response.choices[0].message.content)
+            
+            # Log the interaction
+            log_messages = [
+                {"role": "system", "content": "You are a database schema validator. Output valid JSON only."},
+                {"role": "user", "content": prompt}
+            ]
+            log_llm_interaction(log_messages, response.choices[0].message.content)
+            
+            return result
+            
+        except json.JSONDecodeError as e:
+            logging.error(f"Failed to parse schema sufficiency response as JSON: {e}")
+            return {
+                "status": "sufficient",
+                "required_data_points": [],
+                "missing_data_points": [],
+                "search_suggestions": [],
+                "analysis": f"Validation skipped due to parse error: {e}"
+            }
+        except Exception as e:
+            logging.error(f"Error in schema sufficiency check: {e}")
+            return {
+                "status": "sufficient",
+                "required_data_points": [],
+                "missing_data_points": [],
+                "search_suggestions": [],
+                "analysis": f"Validation skipped due to error: {e}"
+            }
 
     def generate_sql_with_context(self, query: str, context_text: str) -> str:
         system_prompt = f"""You are an expert T-SQL developer for Microsoft SQL Server.
@@ -558,7 +897,8 @@ Your goal is to generate a valid T-SQL SELECT query to answer the user's questio
                 ],
                 temperature=0,
                 base_url=self.base_url,
-                api_key=self.api_key
+                api_key=self.api_key,
+                timeout=60
             )
             
             sql = response.choices[0].message.content
@@ -628,7 +968,8 @@ Your goal is to generate a valid T-SQL SELECT query to answer the user's questio
                 ],
                 temperature=temperature,
                 base_url=self.base_url,
-                api_key=self.api_key
+                api_key=self.api_key,
+                timeout=60
             )
             
             content = response.choices[0].message.content
@@ -653,7 +994,8 @@ Your goal is to generate a valid T-SQL SELECT query to answer the user's questio
                 messages=messages,
                 temperature=temperature,
                 base_url=self.base_url,
-                api_key=self.api_key
+                api_key=self.api_key,
+                timeout=60
             )
             
             content = response.choices[0].message.content
@@ -691,7 +1033,8 @@ schema.table, schema.table2
                 ],
                 temperature=0,
                 base_url=self.base_url,
-                api_key=self.api_key
+                api_key=self.api_key,
+                timeout=30
             )
             
             item_str = response.choices[0].message.content.strip()
@@ -739,7 +1082,8 @@ schema.Table1, schema.Table2
                 ],
                 temperature=0,
                 base_url=self.base_url,
-                api_key=self.api_key
+                api_key=self.api_key,
+                timeout=30
             )
             
             item_str = response.choices[0].message.content.strip()
@@ -771,7 +1115,8 @@ schema.Table1, schema.Table2
                 ],
                 temperature=0,
                 base_url=self.base_url,
-                api_key=self.api_key
+                api_key=self.api_key,
+                timeout=30
             )
             
             item_str = response.choices[0].message.content.strip()
@@ -782,7 +1127,11 @@ schema.Table1, schema.Table2
                 
             return [val.strip() for val in item_str.split(",") if val.strip()]
         except Exception as e:
-            print(f"LiteLLM Error in extract_filter_values: {e}")
+            error_msg = str(e)
+            if "timeout" in error_msg.lower() or "timed out" in error_msg.lower():
+                logging.warning(f"LLM timeout in extract_filter_values after 30s: {e}")
+            else:
+                logging.error(f"LLM Error in extract_filter_values: {e}")
             return []
 
 def get_llm_service() -> LLMServiceBase:

@@ -128,8 +128,8 @@ export interface ExecutePythonResponse {
     results?: ExecutePythonResult[];
     recommendation?: ChartRecommendation;
     execution_time: number;
-    data_profile?: any; // DataProfile from backend (will be typed in conversation.ts)
-    insights?: any[]; // Insight[] from backend (will be typed in conversation.ts)
+    data_profile?: unknown; // DataProfile from backend (will be typed in conversation.ts)
+    insights?: unknown[]; // Insight[] from backend (will be typed in conversation.ts)
     suggested_refinements?: string[]; // Suggested refinement queries
 }
 
@@ -141,8 +141,8 @@ export interface ExecuteSQLResponse {
     recommendation?: ChartRecommendation;
     execution_time: number;
     rows_affected?: number;
-    data_profile?: any;
-    insights?: any[];
+    data_profile?: unknown;
+    insights?: unknown[];
     sql?: string; // Fixed SQL (if auto-corrected)
     auto_fixed?: boolean;
     fix_attempt?: number;
@@ -229,7 +229,7 @@ export const api = {
         queryMode: 'generate' | 'search' | 'plan' = 'generate',
         signal?: AbortSignal,
         tableOverride?: string[],
-        planningContext?: any,
+        planningContext?: unknown,
         userSelectedTables?: string[]
     ): Promise<GenerateSQLResponse> => {
         const url = `${API_BASE_URL}/generate-sql`;
@@ -576,7 +576,7 @@ export const api = {
         return finalResult;
     },
 
-    executePython: async (code: string, context?: any, chartTypeOverride?: ChartTypeOption, enableProfiling: boolean = false): Promise<ExecutePythonResponse> => {
+    executePython: async (code: string, context?: unknown, chartTypeOverride?: ChartTypeOption, enableProfiling: boolean = false): Promise<ExecutePythonResponse> => {
         const response = await axios.post(`${API_BASE_URL}/execute-python`, { 
             code, 
             context,
@@ -586,7 +586,7 @@ export const api = {
         return response.data;
     },
 
-    executeSQL: async (sql: string, context?: any, chartTypeOverride?: ChartTypeOption, timeoutSeconds?: number, maxRows?: number, enableProfiling: boolean = false): Promise<ExecuteSQLResponse> => {
+    executeSQL: async (sql: string, context?: unknown, chartTypeOverride?: ChartTypeOption, timeoutSeconds?: number, maxRows?: number, enableProfiling: boolean = false): Promise<ExecuteSQLResponse> => {
         const response = await axios.post(`${API_BASE_URL}/execute-sql`, { 
             sql, 
             context,
@@ -603,7 +603,7 @@ export const api = {
      */
     summarizeResults: async (
         userRequest: string,
-        resultData: any,
+        resultData: unknown,
         chartType?: string
     ): Promise<{ summary: string }> => {
         const response = await axios.post(`${API_BASE_URL}/summarize-results`, {
@@ -1007,7 +1007,7 @@ export const api = {
             return response.data;
         },
         getTables: async (dataSource?: string, dataGroup?: string): Promise<SkillTableSchema[]> => {
-            const params: any = {};
+            const params: Record<string, string> = {};
             if (dataSource) params.data_source = dataSource;
             if (dataGroup) params.data_group = dataGroup;
             const response = await axios.get(`${API_BASE_URL}/admin/skills/tables`, { params });
@@ -1104,7 +1104,7 @@ export const api = {
             return response.data.schemas;
         },
         getObjects: async (sourceId: string, schema?: string, objectType?: ObjectType): Promise<DataObject[]> => {
-            const params: any = {};
+            const params: Record<string, string> = {};
             if (schema) params.schema = schema;
             if (objectType) params.object_type = objectType;
             const response = await axios.get(`${API_BASE_URL}/admin/schema-tree/${encodeURIComponent(sourceId)}/objects`, { params });
@@ -1151,14 +1151,14 @@ export const api = {
             const response = await axios.get(`${API_BASE_URL}/conversations/${conversationId}`);
             return response.data;
         },
-        create: async (title: string | null, messages: any[]) => {
+        create: async (title: string | null, messages: unknown[]) => {
             const response = await axios.post(`${API_BASE_URL}/conversations`, {
                 title,
                 messages
             });
             return response.data;
         },
-        update: async (conversationId: number, title?: string, messages?: any[]) => {
+        update: async (conversationId: number, title?: string, messages?: unknown[]) => {
             const response = await axios.put(`${API_BASE_URL}/conversations/${conversationId}`, {
                 title,
                 messages
@@ -1371,7 +1371,7 @@ export interface DataSource {
     description: string;
     keywords: string[];
     status: string;
-    connection_info?: any;
+    connection_info?: Record<string, string>;
     data_groups?: string[];
     file_path?: string;
 }
@@ -1458,6 +1458,7 @@ export interface DataSourceResponse {
 export interface DataSourceListResponse {
     data_sources: DataSourceResponse[];
     primary_source_id?: string;
+    total_objects?: number;
 }
 
 export interface AddDataSourceRequest {
@@ -1540,10 +1541,9 @@ export interface DiscoverObjectsResponse {
  * @param chartType (optional) Chart type if relevant
  * @returns {Promise<{summary: string}>}
  */
-// @ts-ignore
 export const summarizeResults = async (
     userRequest: string,
-    resultData: any,
+    resultData: unknown,
     chartType?: string // Use string for compatibility
 ): Promise<{ summary: string }> => {
     const response = await axios.post(`${API_BASE_URL}/summarize-results`, {
@@ -1560,7 +1560,7 @@ export const summarizeResults = async (
  * @returns {Promise<{summary: string}>}
  */
 export const generatePlanningSummary = async (
-    planningContext: any
+    planningContext: unknown
 ): Promise<{ summary: string }> => {
     const response = await axios.post(`${API_BASE_URL}/planning-summary`, {
         planning_context: planningContext
@@ -1613,7 +1613,7 @@ export interface UserActivity {
     id: number;
     user_id: number;
     activity_type: string;
-    activity_data: any;
+    activity_data: unknown;
     tokens_used: number | null;
     execution_time: number | null;
     success: boolean;

@@ -22,7 +22,8 @@ from app.services.generation_service import (
     lookup_values_for_query,
     rerank_and_select_tables,
     search_data_objects,
-    _handle_general_query
+    _handle_general_query,
+    expand_context_for_missing_data
 )
 from app.services.discovery_service import perform_discovery, DiscoveryRequest
 from typing import Optional, Generator, Union, Dict, Any, List
@@ -884,8 +885,63 @@ def generate_python_for_request(request: GenerateSQLRequest) -> Generator[Union[
     else:
         value_mappings = {}
 
+    # Stage 2.6: Schema Sufficiency Pre-Flight Check
+    if not use_table_override:
+        yield AgentStatus(step_id=10, message="Validating schema sufficiency for query requirements...")
+        
+        sufficiency_result = llm_service.check_schema_sufficiency(
+            user_query=request.query,
+            schemas=context.relevant_tables,
+            code_type="python"
+        )
+        
+        if sufficiency_result.get("status") == "insufficient_data":
+            missing_points = sufficiency_result.get("missing_data_points", [])
+            search_suggestions = sufficiency_result.get("search_suggestions", [])
+            
+            logger.info(f"Schema sufficiency check failed. Missing: {[p.get('name') for p in missing_points]}")
+            
+            if search_suggestions:
+                yield AgentStatus(step_id=10, message=f"Missing data detected. Expanding search...")
+                
+                # Auto-expansion: Search for missing data
+                tables_added, context = expand_context_for_missing_data(
+                    context, 
+                    search_suggestions,
+                    max_suggestions=5
+                )
+                
+                if tables_added:
+                    yield AgentStatus(step_id=10, message=f"Added {len(tables_added)} tables: {', '.join(tables_added[:3])}{'...' if len(tables_added) > 3 else ''}")
+                    
+                    # Re-validate after expansion
+                    sufficiency_result = llm_service.check_schema_sufficiency(
+                        user_query=request.query,
+                        schemas=context.relevant_tables,
+                        code_type="python"
+                    )
+            
+            # If still insufficient after expansion, inform user
+            if sufficiency_result.get("status") == "insufficient_data":
+                missing_names = [p.get("name", "unknown") for p in sufficiency_result.get("missing_data_points", [])]
+                analysis = sufficiency_result.get("analysis", "Required data not found in available schemas.")
+                
+                missing_list = "\n".join([f"- {name}" for name in missing_names])
+                
+                result = GenerateSQLResponse(
+                    sql="",
+                    explanation=f"**Schema Validation Failed**\n\nI analyzed your request but cannot find the required data in the available schemas.\n\n**Missing data points:**\n{missing_list}\n\n**Analysis:** {analysis}\n\nPlease provide more context about which tables contain this data, or verify these schemas are indexed.",
+                    query_type="python_code",
+                    context_text=f"Sufficiency check failed. Missing: {', '.join(missing_names)}"
+                )
+                yield {"type": "result", "payload": result}
+                yield {"type": "done"}
+                return
+        
+        yield AgentStatus(step_id=10, message="Schema sufficiency validated. Proceeding with code generation...")
+
     # Step: Search for Python-specific knowledge base examples for the Prompt
-    yield AgentStatus(step_id=10, message="Searching knowledge base for Python examples...")
+    yield AgentStatus(step_id=11, message="Searching knowledge base for Python examples...")
     py_examples = vector_store.search_fewshots(request.query, top_k=3, knowledge_type="python_code")
     
     # If no Python examples found, fall back to LLM general knowledge
