@@ -31,6 +31,7 @@ def log_llm_interaction(context, reply):
 
         # 4. Append to the file (JSON Lines format)
         with open(filepath, "a", encoding="utf-8") as f:
+            f.write("\n\n")  # Start with a new line
             json_str = json.dumps(log_entry, ensure_ascii=False)
             # Replace literal \n with actual newline character for readability
             # This makes the file technically not valid JSONL if strings contain newlines,
