@@ -1505,10 +1505,6 @@ def generate_sql_for_request(request: GenerateSQLRequest, previous_sql: Optional
             score_threshold=0.5  # L2 distance threshold
         )
         
-        # Track which discovery branch was taken for logging
-        discovery_branch = None
-        kb_assessment = None
-        
         if kb_results:
             # ============================================================
             # BRANCH 1.1: Knowledge Base Hit - LLM Evaluation
@@ -1633,7 +1629,7 @@ def generate_sql_for_request(request: GenerateSQLRequest, previous_sql: Optional
                 
                 yield AgentStatus(step_id=7, message=f"Supplementary discovery complete. Found {len(context.relevant_tables)} tables.")
         
-        if not kb_results:
+        else:
             # ============================================================
             # BRANCH 1.2: No KB Hit - Dual-Prong Strategy (Original Flow)
             # ============================================================
