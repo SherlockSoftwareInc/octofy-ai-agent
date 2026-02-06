@@ -2,6 +2,7 @@ from app.core.database import get_db_engine
 from typing import List, Dict, Any, Optional
 from app.models.schemas import TableSchema, AdminSchemaStatus, ColumnInfo, ValueIndexItem
 from app.services.vector_store import get_vector_store
+from app.services.relationship_graph import invalidate_relationship_graph
 from sqlalchemy import inspect, text
 import json
 import io
@@ -293,6 +294,10 @@ def sync_specific_table(schema_name: str, table_name: str, custom_description: O
     
     # 7. Update Vector Store
     vector_store.insert_schema_embedding(schema_obj, embedding_text)
+    
+    # 8. Invalidate relationship graph cache (will be rebuilt on next query)
+    invalidate_relationship_graph()
+    
     return True
 
 def sync_all_schemas():
@@ -306,6 +311,8 @@ def sync_all_schemas():
         # Recreate collections and ingest all metadata
         create_milvus_collections()
         ingest_metadata()
+        # Invalidate relationship graph cache (will be rebuilt on next query)
+        invalidate_relationship_graph()
         return True
     except Exception as e:
         print(f"Error syncing all schemas: {e}")
