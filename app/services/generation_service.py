@@ -1471,6 +1471,10 @@ def generate_sql_for_request(request: GenerateSQLRequest, previous_sql: Optional
     table_override = [t for t in (request.table_override or []) if t]
     use_table_override = len(table_override) > 0
 
+    # Initialize discovery tracking variables (used by all branches)
+    discovery_branch = None
+    kb_assessment = None
+
     if use_table_override:
         yield AgentStatus(step_id=4, message="Locking context to user-selected tables...")
         context = hydrate_override_context(table_override)
@@ -1488,109 +1492,343 @@ def generate_sql_for_request(request: GenerateSQLRequest, previous_sql: Optional
         # If context is explicitly provided, use it
         context = request.context
     else:
-        # Multi-Source Discovery
+        # ====================================================================
+        # KNOWLEDGE-BASE-FIRST DISCOVERY (Sequential + Conditional)
+        # ====================================================================
         
-        
-        # 1. NER & Value Discovery (Focused)
-        # Extract specific entities to avoid noisy value searches (e.g. searching for "how" or "much")
-        yield AgentStatus(step_id=5, message="Identifying filter values and entities...")
-        filter_values = llm_service.extract_filter_values(request.query)
-        value_tables = []
-        if filter_values:
-            logging.info(f"Discovery: Extracted filter values: {filter_values}")
-            for val in filter_values:
-                # Search for each specific entity
-                v_res = vector_store.search_values(val, top_k=3)
-                value_tables.extend([f"{r.get('schema_name', 'dbo')}.{r.get('table_name')}" for r in v_res if r.get('table_name')])
-        else:
-            # Fallback to broad search if no entities found
-            value_results = vector_store.search_values(request.query, top_k=5)
-            value_tables = [f"{r.get('schema_name', 'dbo')}.{r.get('table_name')}" for r in value_results if r.get('table_name')]
-            
-        # 2. Few-Shot Discovery
-        # Search for similar queries to get table hints
-        yield AgentStatus(step_id=6, message="Searching knowledge base for similar queries...")
-        similar_queries = vector_store.search_fewshots(request.query, top_k=3, knowledge_type="sql_query")
-        few_shot_sqls = [q.get('sql_query', '') or q.get('sql', '') for q in similar_queries]
-        few_shot_tables = llm_service.extract_tables_from_sql(few_shot_sqls)
-        
-        # 3. Schema Index Discovery
-        schema_results = vector_store.search_schemas(request.query, top_k=5)
-        schema_tables = [f"{s.schema_name}.{s.table_name}" for s in schema_results]
-        
-        # 4. Re-rank and Filter
-        final_table_list = rerank_and_select_tables(few_shot_tables, value_tables, schema_tables)
-        logging.info(f"Discovery: Selected tables after reranking: {final_table_list}")
-        
-        # 5. Hydrate Context (Initial)
-        context = hydrate_discovery_context(final_table_list, similar_queries)
-        
-        # 6. Path Finding (Context Expansion)
-        # Check if the initial selection needs glue tables
-        yield AgentStatus(step_id=7, message="Analyzing schema relationships and path finding...")
-        expanded_list = expand_context_with_neighbors(final_table_list, request.query)
-        if len(expanded_list) > len(final_table_list):
-            logging.info(f"Discovery: Expanded context from {len(final_table_list)} to {len(expanded_list)} tables.")
-            context = hydrate_discovery_context(expanded_list, similar_queries)
-    
-    if not use_table_override:
-        # Stage 2.3: Schema Completeness Validation - Check if all referenced tables are present
-        yield AgentStatus(step_id=8, message="Validating schema completeness...")
-        is_complete, missing_tables, validation_analysis = validate_schema_completeness(
-            context, 
+        # STEP 1: Knowledge Base Priority Search
+        yield AgentStatus(step_id=5, message="Searching knowledge base for similar queries...")
+        kb_results = vector_store.search_fewshots_with_threshold(
             request.query, 
-            llm_service
+            top_k=3, 
+            knowledge_type="sql_query",
+            score_threshold=0.5  # L2 distance threshold
         )
         
-        # If missing tables detected, attempt auto-discovery
-        if not is_complete and missing_tables:
-            logging.info(f"Schema validation found missing tables: {missing_tables}")
-            logging.info(f"Validation analysis: {validation_analysis}")
+        # Track which discovery branch was taken for logging
+        discovery_branch = None
+        kb_assessment = None
+        
+        if kb_results:
+            # ============================================================
+            # BRANCH 1.1: Knowledge Base Hit - LLM Evaluation
+            # ============================================================
+            yield AgentStatus(step_id=6, message="Evaluating knowledge base examples with AI...")
+            logging.info(f"[KB-First] Found {len(kb_results)} KB results. Evaluating relevance...")
             
-            discovery_feedback = ""
-            tables_added = []
-            tables_not_found = []
+            kb_assessment = llm_service.evaluate_example_relevance(request.query, kb_results)
             
-            # Limit to max 5 missing tables to avoid excessive discovery calls
-            for missing_table in missing_tables[:5]:
-                try:
-                    # Search for the missing table in vector database
-                    disc_res = perform_discovery(DiscoveryRequest(query=missing_table, top_k=3))
+            is_sufficient = kb_assessment.get("is_sufficient", False)
+            confidence = kb_assessment.get("confidence", 0.0)
+            
+            if is_sufficient and confidence >= 0.7:
+                # ========================================================
+                # BRANCH 1.1.1: High Confidence - Direct to Prompt
+                # ========================================================
+                discovery_branch = "kb_direct"
+                logging.info(f"[KB-First] HIGH CONFIDENCE ({confidence}). Using KB example directly.")
+                yield AgentStatus(step_id=6, message=f"Found highly relevant example (confidence: {confidence:.0%}). Using as reference...")
+                
+                # Extract tables from the best KB example's SQL
+                best_example = kb_results[0]
+                best_entity = best_example.get('entity', best_example)
+                best_sql = best_entity.get('sql_query', '')
+                
+                # Get table names from the KB SQL
+                kb_sql_tables = llm_service.extract_tables_from_sql([best_sql]) if best_sql else []
+                
+                # Format similar queries from KB results for context
+                similar_queries = []
+                for r in kb_results:
+                    entity = r.get('entity', r)
+                    similar_queries.append({
+                        "question": entity.get("question", ""),
+                        "sql": entity.get("sql_query", "")
+                    })
+                
+                # Hydrate context using only the KB-referenced tables
+                if kb_sql_tables:
+                    context = hydrate_discovery_context(kb_sql_tables, similar_queries)
+                else:
+                    # Fallback: use similar queries without specific table hydration
+                    context = DiscoveryContext(
+                        relevant_tables=[],
+                        similar_queries=similar_queries
+                    )
+                
+                logging.info(f"[KB-First] Branch 1.1.1 complete. Tables: {kb_sql_tables}")
+                
+            else:
+                # ========================================================
+                # BRANCH 1.1.2: Gap Filling - Targeted Supplementary Search
+                # ========================================================
+                discovery_branch = "kb_gap_fill"
+                missing_entities = kb_assessment.get("missing_entities", [])
+                missing_tables = kb_assessment.get("missing_tables", [])
+                search_terms = kb_assessment.get("suggested_search_terms", [])
+                
+                logging.info(
+                    f"[KB-First] INSUFFICIENT ({confidence}). "
+                    f"Missing entities: {missing_entities}, Missing tables: {missing_tables}, "
+                    f"Search terms: {search_terms}"
+                )
+                yield AgentStatus(step_id=6, message="Knowledge base example needs supplementation. Searching for missing context...")
+                
+                # Extract tables from KB examples as a starting point
+                kb_sql_list = []
+                for r in kb_results:
+                    entity = r.get('entity', r)
+                    sql = entity.get('sql_query', '')
+                    if sql:
+                        kb_sql_list.append(sql)
+                
+                kb_tables = llm_service.extract_tables_from_sql(kb_sql_list) if kb_sql_list else []
+                
+                # Build search keywords from KB tables + LLM gap analysis
+                gap_keywords = list(set(missing_entities + missing_tables + search_terms))
+                
+                # Targeted supplementary search using gap keywords
+                supplementary_tables = []
+                supplementary_value_tables = []
+                
+                for keyword in gap_keywords[:5]:  # Limit to 5 gap searches
+                    # Schema index search
+                    schema_hits = vector_store.search_schemas(keyword, top_k=3)
+                    for s in schema_hits:
+                        full_name = f"{s.schema_name}.{s.table_name}"
+                        if full_name not in supplementary_tables:
+                            supplementary_tables.append(full_name)
                     
-                    # Add newly discovered tables to context
-                    newly_added = False
-                    for table in disc_res.context.relevant_tables:
-                        # Check if this table matches what we're looking for
-                        table_full_name = f"{table.schema_name}.{table.table_name}"
+                    # Value index search
+                    value_hits = vector_store.search_values(keyword, top_k=3)
+                    for v in value_hits:
+                        entity = v.get('entity', v)
+                        table_name = entity.get('table_name', '')
+                        schema_name = entity.get('schema_name', 'dbo')
+                        if table_name:
+                            full_name = f"{schema_name}.{table_name}"
+                            if full_name not in supplementary_value_tables:
+                                supplementary_value_tables.append(full_name)
+                
+                # Combine KB tables with supplementary discoveries
+                all_tables = list(set(kb_tables + supplementary_tables + supplementary_value_tables))
+                
+                logging.info(
+                    f"[KB-First] Gap fill found {len(supplementary_tables)} schema + "
+                    f"{len(supplementary_value_tables)} value tables. "
+                    f"Combined: {len(all_tables)} tables."
+                )
+                
+                # Format similar queries from KB results
+                similar_queries = []
+                for r in kb_results:
+                    entity = r.get('entity', r)
+                    similar_queries.append({
+                        "question": entity.get("question", ""),
+                        "sql": entity.get("sql_query", "")
+                    })
+                
+                # Hydrate context
+                context = hydrate_discovery_context(all_tables, similar_queries)
+                
+                yield AgentStatus(step_id=7, message=f"Supplementary discovery complete. Found {len(context.relevant_tables)} tables.")
+        
+        if not kb_results:
+            # ============================================================
+            # BRANCH 1.2: No KB Hit - Dual-Prong Strategy (Original Flow)
+            # ============================================================
+            discovery_branch = "dual_prong"
+            logging.info("[KB-First] No KB results passed threshold. Falling back to dual-prong discovery.")
+            
+            # 1. NER & Value Discovery (Focused)
+            yield AgentStatus(step_id=5, message="No knowledge base match. Identifying filter values and entities...")
+            filter_values = llm_service.extract_filter_values(request.query)
+            value_tables = []
+            if filter_values:
+                logging.info(f"Discovery: Extracted filter values: {filter_values}")
+                for val in filter_values:
+                    v_res = vector_store.search_values(val, top_k=3)
+                    value_tables.extend([f"{r.get('schema_name', 'dbo')}.{r.get('table_name')}" for r in v_res if r.get('table_name')])
+            else:
+                value_results = vector_store.search_values(request.query, top_k=5)
+                value_tables = [f"{r.get('schema_name', 'dbo')}.{r.get('table_name')}" for r in value_results if r.get('table_name')]
+                
+            # 2. Few-Shot Discovery (broader search, no threshold)
+            yield AgentStatus(step_id=6, message="Searching knowledge base for similar queries...")
+            similar_queries = vector_store.search_fewshots(request.query, top_k=3, knowledge_type="sql_query")
+            few_shot_sqls = [q.get('sql_query', '') or q.get('sql', '') for q in similar_queries]
+            few_shot_tables = llm_service.extract_tables_from_sql(few_shot_sqls)
+            
+            # 3. Schema Index Discovery
+            schema_results = vector_store.search_schemas(request.query, top_k=5)
+            schema_tables = [f"{s.schema_name}.{s.table_name}" for s in schema_results]
+            
+            # 4. Re-rank and Filter
+            final_table_list = rerank_and_select_tables(few_shot_tables, value_tables, schema_tables)
+            logging.info(f"Discovery: Selected tables after reranking: {final_table_list}")
+            
+            # 5. Hydrate Context (Initial)
+            context = hydrate_discovery_context(final_table_list, similar_queries)
+            
+            # 6. Path Finding (Context Expansion)
+            yield AgentStatus(step_id=7, message="Analyzing schema relationships and path finding...")
+            expanded_list = expand_context_with_neighbors(final_table_list, request.query)
+            if len(expanded_list) > len(final_table_list):
+                logging.info(f"Discovery: Expanded context from {len(final_table_list)} to {len(expanded_list)} tables.")
+                context = hydrate_discovery_context(expanded_list, similar_queries)
+    
+    if not use_table_override:
+        # Branch-aware validation routing
+        if discovery_branch == "kb_direct":
+            # BRANCH 1.1.1: Skip Steps 8, 9, 10 entirely - high confidence KB match
+            logging.info("[KB-First] Branch 1.1.1: Skipping all validation (Steps 8-10). Direct to prompt.")
+            value_mappings = {}
+            yield AgentStatus(step_id=8, message="High-confidence knowledge base match. Skipping validation...")
+            
+        elif discovery_branch == "kb_gap_fill":
+            # BRANCH 1.1.2: Skip Steps 8, 9 - jump to Step 10 (sufficiency validation)
+            logging.info("[KB-First] Branch 1.1.2: Skipping Steps 8-9. Running Step 10 (sufficiency).")
+            value_mappings = {}
+            
+            # Jump directly to Step 10: Schema Sufficiency with Join-Path Validation
+            from app.core.config import settings as app_settings
+            use_join_path = getattr(app_settings, 'ENABLE_JOIN_PATH_VALIDATION', True)
+            
+            if use_join_path:
+                yield AgentStatus(step_id=10, message="Validating schema sufficiency with join-path analysis...")
+                
+                sufficiency_result = llm_service.validate_schema_with_join_paths(
+                    user_query=request.query,
+                    schemas=context.relevant_tables,
+                    code_type="sql"
+                )
+            else:
+                yield AgentStatus(step_id=10, message="Validating schema sufficiency for query requirements...")
+                
+                sufficiency_result = llm_service.check_schema_sufficiency(
+                    user_query=request.query,
+                    schemas=context.relevant_tables,
+                    code_type="sql"
+                )
+            
+            result_status = sufficiency_result.get("status")
+            
+            if result_status in ("insufficient_data", "insufficient_joins"):
+                missing_points = sufficiency_result.get("missing_data_points", []) or sufficiency_result.get("validation_details", [])
+                search_suggestions = sufficiency_result.get("search_suggestions", [])
+                missing_logic = sufficiency_result.get("missing_logic")
+                
+                if result_status == "insufficient_joins" and missing_logic:
+                    logging.info(f"Join-path validation failed. Missing logic: {missing_logic}")
+                else:
+                    logging.info(f"Schema sufficiency check failed. Missing: {[p.get('name', p.get('requirement', '')) for p in missing_points]}")
+                
+                if search_suggestions:
+                    yield AgentStatus(step_id=10, message=f"Missing data detected. Expanding search...")
+                    
+                    tables_added, context = expand_context_for_missing_data(
+                        context, 
+                        search_suggestions,
+                        max_suggestions=5
+                    )
+                    
+                    if tables_added:
+                        yield AgentStatus(step_id=10, message=f"Added {len(tables_added)} tables: {', '.join(tables_added[:3])}{'...' if len(tables_added) > 3 else ''}")
                         
-                        # Only add if not already in context
-                        if not any(t.table_name == table.table_name and t.schema_name == table.schema_name 
-                                  for t in context.relevant_tables):
-                            context.relevant_tables.append(table)
-                            discovery_feedback += f"\n- Auto-discovered and added: {table_full_name}"
-                            tables_added.append(table_full_name)
-                            newly_added = True
-                            logging.info(f"Auto-discovered missing table: {table_full_name}")
+                        if use_join_path:
+                            sufficiency_result = llm_service.validate_schema_with_join_paths(
+                                user_query=request.query,
+                                schemas=context.relevant_tables,
+                                code_type="sql"
+                            )
+                        else:
+                            sufficiency_result = llm_service.check_schema_sufficiency(
+                                user_query=request.query,
+                                schemas=context.relevant_tables,
+                                code_type="sql"
+                            )
+                        result_status = sufficiency_result.get("status")
+                
+                # If still insufficient after expansion, inform user
+                if result_status in ("insufficient_data", "insufficient_joins"):
+                    if "missing_data_points" in sufficiency_result:
+                        missing_names = [p.get("name", "unknown") for p in sufficiency_result.get("missing_data_points", [])]
+                    else:
+                        missing_names = [d.get("requirement", "unknown") for d in sufficiency_result.get("validation_details", []) if not d.get("found", True)]
                     
-                    if not newly_added:
-                        # Check if table was already in context
-                        already_present = any(
-                            missing_table.lower() in f"{t.schema_name}.{t.table_name}".lower()
-                            for t in context.relevant_tables
-                        )
-                        if not already_present:
-                            tables_not_found.append(missing_table)
-                            
-                except Exception as e:
-                    logging.error(f"Error discovering missing table {missing_table}: {e}")
-                    tables_not_found.append(missing_table)
+                    analysis = sufficiency_result.get("analysis", "Required data not found in available schemas.")
+                    missing_logic_msg = sufficiency_result.get("missing_logic", "")
+                    
+                    missing_list = "\n".join([f"- {name}" for name in missing_names])
+                    
+                    explanation = f"**Schema Validation Failed**\n\nI analyzed your request but cannot find the required data in the available schemas.\n\n**Missing data points:**\n{missing_list}\n\n**Analysis:** {analysis}"
+                    if missing_logic_msg:
+                        explanation += f"\n\n**Join issue:** {missing_logic_msg}"
+                    
+                    result = GenerateSQLResponse(
+                        sql="",
+                        explanation=explanation,
+                        query_type="database",
+                        context_text=f"Sufficiency check failed. Missing: {', '.join(missing_names)}"
+                    )
+                    yield {"type": "result", "payload": result}
+                    yield {"type": "done"}
+                    return
             
-            # If we couldn't find some tables, return error asking user to sync schemas
-            if tables_not_found:
-                missing_list = "\n".join([f"- {t}" for t in tables_not_found])
-                result = GenerateSQLResponse(
-                    sql="",
-                    explanation=f"""I detected that the following referenced tables are missing from the database schema index:
+            yield AgentStatus(step_id=10, message="Schema sufficiency validated. Proceeding with generation...")
+            
+        else:
+            # BRANCH 1.2 (dual_prong) or fallback: Run full validation pipeline
+            # Stage 2.3: Schema Completeness Validation
+            yield AgentStatus(step_id=8, message="Validating schema completeness...")
+            is_complete, missing_tables, validation_analysis = validate_schema_completeness(
+                context, 
+                request.query, 
+                llm_service
+            )
+            
+            # If missing tables detected, attempt auto-discovery
+            if not is_complete and missing_tables:
+                logging.info(f"Schema validation found missing tables: {missing_tables}")
+                logging.info(f"Validation analysis: {validation_analysis}")
+                
+                discovery_feedback = ""
+                tables_added = []
+                tables_not_found = []
+                
+                for missing_table in missing_tables[:5]:
+                    try:
+                        disc_res = perform_discovery(DiscoveryRequest(query=missing_table, top_k=3))
+                        
+                        newly_added = False
+                        for table in disc_res.context.relevant_tables:
+                            table_full_name = f"{table.schema_name}.{table.table_name}"
+                            
+                            if not any(t.table_name == table.table_name and t.schema_name == table.schema_name 
+                                      for t in context.relevant_tables):
+                                context.relevant_tables.append(table)
+                                discovery_feedback += f"\n- Auto-discovered and added: {table_full_name}"
+                                tables_added.append(table_full_name)
+                                newly_added = True
+                                logging.info(f"Auto-discovered missing table: {table_full_name}")
+                        
+                        if not newly_added:
+                            already_present = any(
+                                missing_table.lower() in f"{t.schema_name}.{t.table_name}".lower()
+                                for t in context.relevant_tables
+                            )
+                            if not already_present:
+                                tables_not_found.append(missing_table)
+                                
+                    except Exception as e:
+                        logging.error(f"Error discovering missing table {missing_table}: {e}")
+                        tables_not_found.append(missing_table)
+                
+                if tables_not_found:
+                    missing_list = "\n".join([f"- {t}" for t in tables_not_found])
+                    result = GenerateSQLResponse(
+                        sql="",
+                        explanation=f"""I detected that the following referenced tables are missing from the database schema index:
 
 {missing_list}
 
@@ -1602,114 +1840,107 @@ def generate_sql_for_request(request: GenerateSQLRequest, previous_sql: Optional
 3. Then try your query again
 
 Alternatively, if these table references are incorrect, please rephrase your query.""",
-                    query_type="database",
-                    context_text=f"Missing schemas: {', '.join(tables_not_found)}"
-                )
-                yield {"type": "result", "payload": result}
-                yield {"type": "done"}
-                return
-            
-            # Log successful auto-discovery
-            if tables_added:
-                logging.info(f"Auto-discovery successful. Added tables: {tables_added}")
-        
-        # Stage 2.5: Value Index Lookup - Get relevant values for the query
-        yield AgentStatus(step_id=9, message="Checking value index for specific data mappings...")
-        value_mappings = lookup_values_for_query(request.query)
-    else:
-        value_mappings = {}
-    
-    # Stage 2.6: Schema Sufficiency Pre-Flight Check (Join-Path Validation)
-    if not use_table_override:
-        from app.core.config import settings as app_settings
-        use_join_path = getattr(app_settings, 'ENABLE_JOIN_PATH_VALIDATION', True)
-        
-        if use_join_path:
-            yield AgentStatus(step_id=10, message="Validating schema sufficiency with join-path analysis...")
-            
-            sufficiency_result = llm_service.validate_schema_with_join_paths(
-                user_query=request.query,
-                schemas=context.relevant_tables,
-                code_type="sql"
-            )
-        else:
-            yield AgentStatus(step_id=10, message="Validating schema sufficiency for query requirements...")
-            
-            sufficiency_result = llm_service.check_schema_sufficiency(
-                user_query=request.query,
-                schemas=context.relevant_tables,
-                code_type="sql"
-            )
-        
-        result_status = sufficiency_result.get("status")
-        
-        if result_status in ("insufficient_data", "insufficient_joins"):
-            missing_points = sufficiency_result.get("missing_data_points", []) or sufficiency_result.get("validation_details", [])
-            search_suggestions = sufficiency_result.get("search_suggestions", [])
-            missing_logic = sufficiency_result.get("missing_logic")
-            
-            # For insufficient_joins, include the missing join logic in the log
-            if result_status == "insufficient_joins" and missing_logic:
-                logging.info(f"Join-path validation failed. Missing logic: {missing_logic}")
-            else:
-                logging.info(f"Schema sufficiency check failed. Missing: {[p.get('name', p.get('requirement', '')) for p in missing_points]}")
-            
-            if search_suggestions:
-                yield AgentStatus(step_id=10, message=f"Missing data detected. Expanding search...")
-                
-                # Auto-expansion: Search for missing data
-                tables_added, context = expand_context_for_missing_data(
-                    context, 
-                    search_suggestions,
-                    max_suggestions=5
-                )
+                        query_type="database",
+                        context_text=f"Missing schemas: {', '.join(tables_not_found)}"
+                    )
+                    yield {"type": "result", "payload": result}
+                    yield {"type": "done"}
+                    return
                 
                 if tables_added:
-                    yield AgentStatus(step_id=10, message=f"Added {len(tables_added)} tables: {', '.join(tables_added[:3])}{'...' if len(tables_added) > 3 else ''}")
-                    
-                    # Re-validate after expansion
-                    if use_join_path:
-                        sufficiency_result = llm_service.validate_schema_with_join_paths(
-                            user_query=request.query,
-                            schemas=context.relevant_tables,
-                            code_type="sql"
-                        )
-                    else:
-                        sufficiency_result = llm_service.check_schema_sufficiency(
-                            user_query=request.query,
-                            schemas=context.relevant_tables,
-                            code_type="sql"
-                        )
-                    result_status = sufficiency_result.get("status")
+                    logging.info(f"Auto-discovery successful. Added tables: {tables_added}")
             
-            # If still insufficient after expansion, inform user
-            if result_status in ("insufficient_data", "insufficient_joins"):
-                # Extract names from either old or new format
-                if "missing_data_points" in sufficiency_result:
-                    missing_names = [p.get("name", "unknown") for p in sufficiency_result.get("missing_data_points", [])]
-                else:
-                    missing_names = [d.get("requirement", "unknown") for d in sufficiency_result.get("validation_details", []) if not d.get("found", True)]
+            # Stage 2.5: Value Index Lookup
+            yield AgentStatus(step_id=9, message="Checking value index for specific data mappings...")
+            value_mappings = lookup_values_for_query(request.query)
+            
+            # Stage 2.6: Schema Sufficiency Pre-Flight Check
+            from app.core.config import settings as app_settings
+            use_join_path = getattr(app_settings, 'ENABLE_JOIN_PATH_VALIDATION', True)
+            
+            if use_join_path:
+                yield AgentStatus(step_id=10, message="Validating schema sufficiency with join-path analysis...")
                 
-                analysis = sufficiency_result.get("analysis", "Required data not found in available schemas.")
-                missing_logic_msg = sufficiency_result.get("missing_logic", "")
-                
-                missing_list = "\n".join([f"- {name}" for name in missing_names])
-                
-                explanation = f"**Schema Validation Failed**\n\nI analyzed your request but cannot find the required data in the available schemas.\n\n**Missing data points:**\n{missing_list}\n\n**Analysis:** {analysis}"
-                if missing_logic_msg:
-                    explanation += f"\n\n**Join issue:** {missing_logic_msg}"
-                
-                result = GenerateSQLResponse(
-                    sql="",
-                    explanation=explanation,
-                    query_type="database",
-                    context_text=f"Sufficiency check failed. Missing: {', '.join(missing_names)}"
+                sufficiency_result = llm_service.validate_schema_with_join_paths(
+                    user_query=request.query,
+                    schemas=context.relevant_tables,
+                    code_type="sql"
                 )
-                yield {"type": "result", "payload": result}
-                yield {"type": "done"}
-                return
-        
-        yield AgentStatus(step_id=10, message="Schema sufficiency validated. Proceeding with generation...")
+            else:
+                yield AgentStatus(step_id=10, message="Validating schema sufficiency for query requirements...")
+                
+                sufficiency_result = llm_service.check_schema_sufficiency(
+                    user_query=request.query,
+                    schemas=context.relevant_tables,
+                    code_type="sql"
+                )
+            
+            result_status = sufficiency_result.get("status")
+            
+            if result_status in ("insufficient_data", "insufficient_joins"):
+                missing_points = sufficiency_result.get("missing_data_points", []) or sufficiency_result.get("validation_details", [])
+                search_suggestions = sufficiency_result.get("search_suggestions", [])
+                missing_logic = sufficiency_result.get("missing_logic")
+                
+                if result_status == "insufficient_joins" and missing_logic:
+                    logging.info(f"Join-path validation failed. Missing logic: {missing_logic}")
+                else:
+                    logging.info(f"Schema sufficiency check failed. Missing: {[p.get('name', p.get('requirement', '')) for p in missing_points]}")
+                
+                if search_suggestions:
+                    yield AgentStatus(step_id=10, message=f"Missing data detected. Expanding search...")
+                    
+                    tables_added, context = expand_context_for_missing_data(
+                        context, 
+                        search_suggestions,
+                        max_suggestions=5
+                    )
+                    
+                    if tables_added:
+                        yield AgentStatus(step_id=10, message=f"Added {len(tables_added)} tables: {', '.join(tables_added[:3])}{'...' if len(tables_added) > 3 else ''}")
+                        
+                        if use_join_path:
+                            sufficiency_result = llm_service.validate_schema_with_join_paths(
+                                user_query=request.query,
+                                schemas=context.relevant_tables,
+                                code_type="sql"
+                            )
+                        else:
+                            sufficiency_result = llm_service.check_schema_sufficiency(
+                                user_query=request.query,
+                                schemas=context.relevant_tables,
+                                code_type="sql"
+                            )
+                        result_status = sufficiency_result.get("status")
+                
+                if result_status in ("insufficient_data", "insufficient_joins"):
+                    if "missing_data_points" in sufficiency_result:
+                        missing_names = [p.get("name", "unknown") for p in sufficiency_result.get("missing_data_points", [])]
+                    else:
+                        missing_names = [d.get("requirement", "unknown") for d in sufficiency_result.get("validation_details", []) if not d.get("found", True)]
+                    
+                    analysis = sufficiency_result.get("analysis", "Required data not found in available schemas.")
+                    missing_logic_msg = sufficiency_result.get("missing_logic", "")
+                    
+                    missing_list = "\n".join([f"- {name}" for name in missing_names])
+                    
+                    explanation = f"**Schema Validation Failed**\n\nI analyzed your request but cannot find the required data in the available schemas.\n\n**Missing data points:**\n{missing_list}\n\n**Analysis:** {analysis}"
+                    if missing_logic_msg:
+                        explanation += f"\n\n**Join issue:** {missing_logic_msg}"
+                    
+                    result = GenerateSQLResponse(
+                        sql="",
+                        explanation=explanation,
+                        query_type="database",
+                        context_text=f"Sufficiency check failed. Missing: {', '.join(missing_names)}"
+                    )
+                    yield {"type": "result", "payload": result}
+                    yield {"type": "done"}
+                    return
+            
+            yield AgentStatus(step_id=10, message="Schema sufficiency validated. Proceeding with generation...")
+    else:
+        value_mappings = {}
     
     # Build dynamic database info from settings
     keywords_str = ", ".join(db_keywords[:5]) if db_keywords else "business data"
