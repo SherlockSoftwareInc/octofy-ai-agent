@@ -4,8 +4,9 @@ Skills Service - Handles parsing and discovery of data sources from filesystem-b
 
 import os
 import re
+import json
 from pathlib import Path
-from typing import List, Dict, Optional, Tuple
+from typing import List, Dict, Optional, Tuple, Set
 from collections import defaultdict
 
 from app.models.schemas import (
@@ -26,6 +27,8 @@ class SkillsService:
         self.skills_path = Path(skills_path)
         self._data_sources_cache: Optional[List[DataSource]] = None
         self._data_groups_cache: Optional[Dict[str, DataGroup]] = None
+        self._schema_indices_cache: Optional[Dict[str, Dict]] = None
+        self._object_indices_cache: Optional[Dict[str, Dict]] = None
         
     def load_data_sources_index(self) -> List[DataSource]:
         """
@@ -676,6 +679,311 @@ class SkillsService:
         """Clear cached data sources and groups"""
         self._data_sources_cache = None
         self._data_groups_cache = None
+        self._schema_indices_cache = None
+        self._object_indices_cache = None
+    
+    def load_schema_indices(self, force_reload: bool = False) -> Dict[str, Dict]:
+        """
+        Load all .schema-index.json files from data sources
+        
+        Args:
+            force_reload: Force reload from disk even if cached
+            
+        Returns:
+            Dictionary mapping data source name to schema index data
+        """
+        if self._schema_indices_cache is not None and not force_reload:
+            return self._schema_indices_cache
+        
+        indices = {}
+        
+        # Find all .schema-index.json files
+        for index_file in self.skills_path.rglob('.schema-index.json'):
+            try:
+                with open(index_file, 'r', encoding='utf-8') as f:
+                    index_data = json.load(f)
+                    data_source = index_data.get('data_source', index_file.parent.name)
+                    indices[data_source] = index_data
+            except Exception as e:
+                print(f"Error loading schema index {index_file}: {e}")
+        
+        self._schema_indices_cache = indices
+        return indices
+    
+    def load_object_indices(self, data_source: str, force_reload: bool = False) -> Dict[str, Dict]:
+        """
+        Load all .object-index.json files for a specific data source
+        
+        Args:
+            data_source: Name of the data source
+            force_reload: Force reload from disk even if cached
+            
+        Returns:
+            Dictionary mapping schema name to object index data
+        """
+        if self._object_indices_cache is not None and not force_reload:
+            return self._object_indices_cache.get(data_source, {})
+        
+        if self._object_indices_cache is None:
+            self._object_indices_cache = {}
+        
+        indices = {}
+        
+        # Find data source directory
+        data_source_dirs = list(self.skills_path.glob(f"*{data_source}*"))
+        if not data_source_dirs:
+            data_source_dirs = list(self.skills_path.glob("*"))
+            data_source_dirs = [d for d in data_source_dirs if d.is_dir() and not d.name.startswith('_')]
+        
+        for ds_dir in data_source_dirs:
+            # Find all .object-index.json files in this data source
+            for index_file in ds_dir.rglob('.object-index.json'):
+                try:
+                    with open(index_file, 'r', encoding='utf-8') as f:
+                        index_data = json.load(f)
+                        schema_name = index_data.get('schema', index_file.parent.name)
+                        indices[schema_name] = index_data
+                except Exception as e:
+                    print(f"Error loading object index {index_file}: {e}")
+        
+        self._object_indices_cache[data_source] = indices
+        return indices
+    
+    def search_objects_by_keyword(self, query: str, data_source: Optional[str] = None, 
+                                   object_type: Optional[str] = None, top_k: int = 10) -> List[Dict]:
+        """
+        Search for data objects using keywords from index files
+        
+        Args:
+            query: Search query (keywords)
+            data_source: Optional filter by data source name
+            object_type: Optional filter by object type (Table/View)
+            top_k: Maximum number of results to return
+            
+        Returns:
+            List of matching objects with metadata
+        """
+        query_lower = query.lower()
+        query_terms = set(re.findall(r'\w+', query_lower))
+        
+        results = []
+        
+        # Load schema indices
+        schema_indices = self.load_schema_indices()
+        
+        # Filter by data source if specified
+        sources_to_search = [data_source] if data_source else schema_indices.keys()
+        
+        for ds_name in sources_to_search:
+            if ds_name not in schema_indices:
+                continue
+            
+            # Load object indices for this data source
+            object_indices = self.load_object_indices(ds_name)
+            
+            for schema_name, obj_index in object_indices.items():
+                objects = obj_index.get('objects', [])
+                
+                for obj in objects:
+                    # Filter by object type if specified
+                    if object_type and obj.get('object_type') != object_type:
+                        continue
+                    
+                    # Calculate relevance score
+                    score = self._calculate_keyword_score(obj, query_terms)
+                    
+                    if score > 0:
+                        result = {
+                            'data_source': ds_name,
+                            'schema_name': obj.get('schema_name'),
+                            'object_name': obj.get('object_name'),
+                            'object_type': obj.get('object_type'),
+                            'description': obj.get('description', ''),
+                            'keywords': obj.get('keywords', []),
+                            'file_name': obj.get('file_name'),
+                            'score': score
+                        }
+                        results.append(result)
+        
+        # Sort by score and return top_k
+        results.sort(key=lambda x: x['score'], reverse=True)
+        return results[:top_k]
+    
+    def _calculate_keyword_score(self, obj: Dict, query_terms: Set[str]) -> float:
+        """
+        Calculate relevance score for an object based on query terms
+        
+        Args:
+            obj: Object metadata dictionary
+            query_terms: Set of query terms
+            
+        Returns:
+            Relevance score (higher is better)
+        """
+        score = 0.0
+        
+        # Check object name (weight: 3.0)
+        obj_name_lower = obj.get('object_name', '').lower()
+        for term in query_terms:
+            if term in obj_name_lower:
+                score += 3.0
+        
+        # Check keywords (weight: 2.0)
+        keywords = obj.get('keywords', [])
+        for keyword in keywords:
+            if any(term in keyword.lower() for term in query_terms):
+                score += 2.0
+        
+        # Check description (weight: 1.0)
+        description = obj.get('description', '').lower()
+        for term in query_terms:
+            if term in description:
+                score += 1.0
+        
+        return score
+    
+    def list_all_objects(self, data_source: Optional[str] = None, 
+                         schema_name: Optional[str] = None) -> List[Dict]:
+        """
+        List all available data objects from index files
+        
+        Args:
+            data_source: Optional filter by data source name
+            schema_name: Optional filter by schema name
+            
+        Returns:
+            List of all objects with metadata
+        """
+        results = []
+        
+        # Load schema indices
+        schema_indices = self.load_schema_indices()
+        
+        # Filter by data source if specified
+        sources_to_search = [data_source] if data_source else schema_indices.keys()
+        
+        for ds_name in sources_to_search:
+            if ds_name not in schema_indices:
+                continue
+            
+            # Load object indices for this data source
+            object_indices = self.load_object_indices(ds_name)
+            
+            # Filter by schema if specified
+            schemas_to_search = [schema_name] if schema_name else object_indices.keys()
+            
+            for sch_name in schemas_to_search:
+                if sch_name not in object_indices:
+                    continue
+                
+                obj_index = object_indices[sch_name]
+                objects = obj_index.get('objects', [])
+                
+                for obj in objects:
+                    result = {
+                        'data_source': ds_name,
+                        'schema_name': obj.get('schema_name'),
+                        'object_name': obj.get('object_name'),
+                        'object_type': obj.get('object_type'),
+                        'description': obj.get('description', ''),
+                        'keywords': obj.get('keywords', []),
+                        'file_name': obj.get('file_name')
+                    }
+                    results.append(result)
+        
+        return results
+    
+    def get_object_by_name(self, object_name: str, schema_name: str = 'dbo',
+                           data_source: Optional[str] = None) -> Optional[Dict]:
+        """
+        Get a specific object by name using index files
+        
+        Args:
+            object_name: Name of the table/view
+            schema_name: Schema name (default: dbo)
+            data_source: Optional data source name
+            
+        Returns:
+            Object metadata or None if not found
+        """
+        # Load schema indices
+        schema_indices = self.load_schema_indices()
+        
+        # Search in all or specific data source
+        sources_to_search = [data_source] if data_source else schema_indices.keys()
+        
+        for ds_name in sources_to_search:
+            # Load object indices for this data source
+            object_indices = self.load_object_indices(ds_name)
+            
+            if schema_name in object_indices:
+                obj_index = object_indices[schema_name]
+                objects = obj_index.get('objects', [])
+                
+                for obj in objects:
+                    if obj.get('object_name') == object_name:
+                        return {
+                            'data_source': ds_name,
+                            'schema_name': obj.get('schema_name'),
+                            'object_name': obj.get('object_name'),
+                            'object_type': obj.get('object_type'),
+                            'description': obj.get('description', ''),
+                            'keywords': obj.get('keywords', []),
+                            'file_name': obj.get('file_name')
+                        }
+        
+        return None
+    
+    def get_schema_statistics(self, data_source: Optional[str] = None) -> Dict:
+        """
+        Get statistics about available schemas using index files
+        
+        Args:
+            data_source: Optional filter by data source name
+            
+        Returns:
+            Dictionary with schema statistics
+        """
+        schema_indices = self.load_schema_indices()
+        
+        if data_source and data_source in schema_indices:
+            # Stats for specific data source
+            index_data = schema_indices[data_source]
+            return {
+                'data_source': data_source,
+                'total_schemas': index_data.get('total_schemas', 0),
+                'schemas': index_data.get('schemas', [])
+            }
+        else:
+            # Stats for all data sources
+            total_schemas = 0
+            total_objects = 0
+            total_tables = 0
+            total_views = 0
+            
+            sources = []
+            
+            for ds_name, index_data in schema_indices.items():
+                total_schemas += index_data.get('total_schemas', 0)
+                
+                for schema in index_data.get('schemas', []):
+                    total_objects += schema.get('total_objects', 0)
+                    total_tables += schema.get('tables', 0)
+                    total_views += schema.get('views', 0)
+                
+                sources.append({
+                    'name': ds_name,
+                    'schemas': index_data.get('total_schemas', 0)
+                })
+            
+            return {
+                'total_data_sources': len(schema_indices),
+                'total_schemas': total_schemas,
+                'total_objects': total_objects,
+                'total_tables': total_tables,
+                'total_views': total_views,
+                'data_sources': sources
+            }
 
 
 # Singleton instance

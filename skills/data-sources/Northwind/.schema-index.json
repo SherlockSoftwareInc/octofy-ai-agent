@@ -1,0 +1,14 @@
+{
+  "data_source": "Northwind",
+  "total_schemas": 1,
+  "schemas": [
+    {
+      "schema_name": "dbo",
+      "description": "Contains 22 tables and 16 views",
+      "object_index_file": "schemas/dbo/.object-index.json",
+      "total_objects": 38,
+      "tables": 22,
+      "views": 16
+    }
+  ]
+}

@@ -1110,3 +1110,157 @@ def enhance_schema_with_ai(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# =======================
+# Index-Based Schema Search Endpoints
+# =======================
+
+@router.get("/skills/search")
+def search_schemas(
+    query: str,
+    data_source: Optional[str] = None,
+    object_type: Optional[str] = None,
+    top_k: int = 10,
+    api_key: str = Depends(verify_api_key)
+):
+    """
+    Search for data objects using keyword-based index search
+    
+    Args:
+        query: Search keywords
+        data_source: Optional filter by data source name
+        object_type: Optional filter by object type (Table/View)
+        top_k: Maximum number of results (default: 10)
+    """
+    try:
+        skills_service = get_skills_service()
+        results = skills_service.search_objects_by_keyword(
+            query=query,
+            data_source=data_source,
+            object_type=object_type,
+            top_k=top_k
+        )
+        return {
+            "query": query,
+            "total_results": len(results),
+            "results": results
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/skills/objects")
+def list_objects(
+    data_source: Optional[str] = None,
+    schema_name: Optional[str] = None,
+    api_key: str = Depends(verify_api_key)
+):
+    """
+    List all available data objects from index files
+    
+    Args:
+        data_source: Optional filter by data source name
+        schema_name: Optional filter by schema name
+    """
+    try:
+        skills_service = get_skills_service()
+        objects = skills_service.list_all_objects(
+            data_source=data_source,
+            schema_name=schema_name
+        )
+        return {
+            "total_objects": len(objects),
+            "objects": objects
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/skills/objects/by-name")
+def get_object_by_name(
+    object_name: str,
+    schema_name: str = "dbo",
+    data_source: Optional[str] = None,
+    api_key: str = Depends(verify_api_key)
+):
+    """
+    Get a specific data object by name using index files
+    
+    Args:
+        object_name: Name of the table/view
+        schema_name: Schema name (default: dbo)
+        data_source: Optional data source name
+    """
+    try:
+        skills_service = get_skills_service()
+        obj = skills_service.get_object_by_name(
+            object_name=object_name,
+            schema_name=schema_name,
+            data_source=data_source
+        )
+        if not obj:
+            raise HTTPException(status_code=404, detail=f"Object '{schema_name}.{object_name}' not found")
+        return obj
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/skills/statistics")
+def get_schema_statistics(
+    data_source: Optional[str] = None,
+    api_key: str = Depends(verify_api_key)
+):
+    """
+    Get statistics about available schemas using index files
+    
+    Args:
+        data_source: Optional filter by data source name
+    """
+    try:
+        skills_service = get_skills_service()
+        stats = skills_service.get_schema_statistics(data_source=data_source)
+        return stats
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/skills/regenerate-indices")
+def regenerate_schema_indices(api_key: str = Depends(verify_api_key)):
+    """
+    Regenerate all schema index files (.schema-index.json and .object-index.json)
+    """
+    try:
+        import subprocess
+        import sys
+        
+        # Run the generate_schema_indices.py script
+        script_path = "scripts/generate_schema_indices.py"
+        result = subprocess.run(
+            [sys.executable, script_path],
+            capture_output=True,
+            text=True,
+            timeout=60
+        )
+        
+        if result.returncode == 0:
+            # Clear cache to force reload
+            skills_service = get_skills_service()
+            skills_service.clear_cache()
+            
+            return {
+                "status": "success",
+                "message": "Schema indices regenerated successfully",
+                "output": result.stdout
+            }
+        else:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to regenerate indices: {result.stderr}"
+            )
+    except subprocess.TimeoutExpired:
+        raise HTTPException(status_code=500, detail="Index regeneration timed out")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
