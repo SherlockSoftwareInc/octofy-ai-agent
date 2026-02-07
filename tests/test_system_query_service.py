@@ -4,6 +4,7 @@ Tests for system query intent detection and prompt building.
 
 import pytest
 from app.services.system_query_service import detect_system_query_intent
+from app.services.system_query_service import build_system_catalog_prompt
 
 
 class TestDetectSystemQueryIntent:
@@ -79,3 +80,45 @@ class TestDetectSystemQueryIntent:
 
     def test_empty_query(self):
         assert detect_system_query_intent("") is False
+
+
+class TestBuildSystemCatalogPrompt:
+    """Test suite for build_system_catalog_prompt function"""
+
+    def test_returns_string(self):
+        result = build_system_catalog_prompt("list all tables")
+        assert isinstance(result, str)
+
+    def test_includes_user_query(self):
+        query = "show columns for the Orders table"
+        result = build_system_catalog_prompt(query)
+        assert query in result
+
+    def test_includes_sys_tables_reference(self):
+        result = build_system_catalog_prompt("list tables")
+        assert "sys.tables" in result
+
+    def test_includes_sys_columns_reference(self):
+        result = build_system_catalog_prompt("list columns")
+        assert "sys.columns" in result
+
+    def test_includes_information_schema_reference(self):
+        result = build_system_catalog_prompt("list tables")
+        assert "INFORMATION_SCHEMA" in result
+
+    def test_includes_version_reference(self):
+        result = build_system_catalog_prompt("what version")
+        assert "@@VERSION" in result or "SERVERPROPERTY" in result
+
+    def test_includes_tsql_rules(self):
+        result = build_system_catalog_prompt("list tables")
+        assert "T-SQL" in result
+
+    def test_includes_no_business_data_rule(self):
+        """Prompt should instruct LLM to avoid business schemas"""
+        result = build_system_catalog_prompt("list tables")
+        assert "business" in result.lower() or "user data" in result.lower()
+
+    def test_with_database_info(self):
+        result = build_system_catalog_prompt("list tables", database_info="Database: SalesDB")
+        assert "SalesDB" in result
