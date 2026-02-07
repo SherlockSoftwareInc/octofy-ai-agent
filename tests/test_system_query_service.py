@@ -122,3 +122,41 @@ class TestBuildSystemCatalogPrompt:
     def test_with_database_info(self):
         result = build_system_catalog_prompt("list tables", database_info="Database: SalesDB")
         assert "SalesDB" in result
+
+
+class TestDetectSystemQueryIntentEdgeCases:
+    """Edge cases and boundary conditions for system intent detection"""
+
+    def test_mixed_case_keywords(self):
+        assert detect_system_query_intent("List All Tables") is True
+
+    def test_extra_whitespace(self):
+        assert detect_system_query_intent("  list   tables  ") is True
+
+    def test_conversational_phrasing(self):
+        assert detect_system_query_intent("can you show me what tables exist?") is True
+
+    def test_specific_table_columns(self):
+        assert detect_system_query_intent("what are the columns in dbo.Orders?") is True
+
+    def test_version_question(self):
+        assert detect_system_query_intent("what version of SQL Server is this?") is True
+
+    def test_ambiguous_but_system(self):
+        """'describe table' is a system operation even without specifying 'system'"""
+        assert detect_system_query_intent("describe the Employees table") is True
+
+    def test_business_with_table_mention(self):
+        """Business queries mentioning tables should not trigger system path"""
+        assert detect_system_query_intent("show me total revenue from the sales table") is False
+
+    def test_business_aggregation(self):
+        assert detect_system_query_intent("list the top 10 customers by revenue") is False
+
+    def test_system_query_with_count_tables(self):
+        """Asking how many tables exist is a system query"""
+        assert detect_system_query_intent("how many tables are in the database?") is True
+
+    def test_none_input(self):
+        """Should handle None gracefully by returning False"""
+        assert detect_system_query_intent(None) is False
