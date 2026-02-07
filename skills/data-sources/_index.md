@@ -11,3 +11,10 @@ Last updated: 1769744267.5447774
 **Description:** Sales database for imported and exported specialty foods
 **Keywords:** sales, customers, orders, products, employees, shipping
 **Skill File:** [Northwind/_data-source.md](Northwind/_data-source.md)
+
+### Test Source
+**Type:** SQL Server
+**Status:** Active
+**Description:** Test source for validation
+**Keywords:** test
+**Skill File:** [test-source/_data-source.md](test-source/_data-source.md)

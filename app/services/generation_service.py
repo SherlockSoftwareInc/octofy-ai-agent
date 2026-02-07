@@ -182,13 +182,16 @@ def expand_value_tables_with_relationships(
             result.append(table_str)  # keep original formatting
         
         # Trace relationships
-        related = graph.trace_related_tables(schema_name, table_name, max_hops=max_hops, max_tables=max_per_hit)
-        for rel in related:
-            rel_key = (rel.schema_name.lower(), rel.table_name.lower())
-            if rel_key not in seen:
-                seen.add(rel_key)
-                result.append(f"{rel.schema_name}.{rel.table_name}")
-                logging.info(f"[Relationship] Expanded: {schema_name}.{table_name} -> {rel.schema_name}.{rel.table_name}")
+        try:
+            related = graph.trace_related_tables(schema_name, table_name, max_hops=max_hops, max_tables=max_per_hit)
+            for rel in related:
+                rel_key = (rel.schema_name.lower(), rel.table_name.lower())
+                if rel_key not in seen:
+                    seen.add(rel_key)
+                    result.append(f"{rel.schema_name}.{rel.table_name}")
+                    logging.info(f"[Relationship] Expanded: {schema_name}.{table_name} -> {rel.schema_name}.{rel.table_name}")
+        except Exception as e:
+            logging.warning(f"[Relationship] Trace failed for {schema_name}.{table_name} (non-fatal): {e}")
     
     return result
 
