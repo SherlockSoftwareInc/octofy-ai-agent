@@ -1582,9 +1582,16 @@ def generate_sql_for_request(request: GenerateSQLRequest, previous_sql: Optional
         return
 
     # --- Data Query Branch (continues to Stage 2: Discovery) ---
-    # Extract entities and score complexity for database queries
-    entities, date_ranges = extract_entities(request.query)
-    query_complexity = score_query_complexity(request.query)
+    # Build context-aware query for discovery by combining with conversation history
+    # This ensures follow-up questions maintain context from previous queries
+    discovery_query = request.query
+    if query_history:
+        discovery_query = f"{query_history}. {request.query}"
+        logging.info(f"[Context] Combined query for discovery: {discovery_query}")
+    
+    # Extract entities and score complexity for database queries (using context-aware query)
+    entities, date_ranges = extract_entities(discovery_query)
+    query_complexity = score_query_complexity(discovery_query)
     
     yield AgentStatus(step_id=4, message=f"Analyzed query. Complexity: {query_complexity}. Entities: {', '.join(entities) if entities else 'None'}")
 
@@ -1622,7 +1629,7 @@ def generate_sql_for_request(request: GenerateSQLRequest, previous_sql: Optional
         # STEP 1: Knowledge Base Priority Search
         yield AgentStatus(step_id=5, message="Searching knowledge base for similar queries...")
         kb_results = vector_store.search_fewshots_with_threshold(
-            request.query, 
+            discovery_query, 
             top_k=3, 
             knowledge_type="sql_query",
             score_threshold=0.5  # L2 distance threshold
@@ -1635,7 +1642,7 @@ def generate_sql_for_request(request: GenerateSQLRequest, previous_sql: Optional
             yield AgentStatus(step_id=6, message="Evaluating knowledge base examples with AI...")
             logging.info(f"[KB-First] Found {len(kb_results)} KB results. Evaluating relevance...")
             
-            kb_assessment = llm_service.evaluate_example_relevance(request.query, kb_results)
+            kb_assessment = llm_service.evaluate_example_relevance(discovery_query, kb_results)
             
             is_sufficient = kb_assessment.get("is_sufficient", False)
             confidence = kb_assessment.get("confidence", 0.0)
@@ -1765,7 +1772,7 @@ def generate_sql_for_request(request: GenerateSQLRequest, previous_sql: Optional
             
             # 1. NER & Value Discovery (Focused)
             yield AgentStatus(step_id=5, message="No knowledge base match. Identifying filter values and entities...")
-            filter_values = llm_service.extract_filter_values(request.query)
+            filter_values = llm_service.extract_filter_values(discovery_query)
             value_tables = []
             if filter_values:
                 logging.info(f"Discovery: Extracted filter values: {filter_values}")
@@ -1773,7 +1780,7 @@ def generate_sql_for_request(request: GenerateSQLRequest, previous_sql: Optional
                     v_res = vector_store.search_values(val, top_k=3)
                     value_tables.extend([f"{r.get('schema_name', 'dbo')}.{r.get('table_name')}" for r in v_res if r.get('table_name')])
             else:
-                value_results = vector_store.search_values(request.query, top_k=5)
+                value_results = vector_store.search_values(discovery_query, top_k=5)
                 value_tables = [f"{r.get('schema_name', 'dbo')}.{r.get('table_name')}" for r in value_results if r.get('table_name')]
                 
             # 1b. Expand value tables with FK relationship tracing
@@ -1788,12 +1795,12 @@ def generate_sql_for_request(request: GenerateSQLRequest, previous_sql: Optional
 
             # 2. Few-Shot Discovery (broader search, no threshold)
             yield AgentStatus(step_id=6, message="Searching knowledge base for similar queries...")
-            similar_queries = vector_store.search_fewshots(request.query, top_k=3, knowledge_type="sql_query")
+            similar_queries = vector_store.search_fewshots(discovery_query, top_k=3, knowledge_type="sql_query")
             few_shot_sqls = [q.get('sql_query', '') or q.get('sql', '') for q in similar_queries]
             few_shot_tables = llm_service.extract_tables_from_sql(few_shot_sqls)
             
             # 3. Schema Index Discovery
-            schema_results = vector_store.search_schemas(request.query, top_k=5)
+            schema_results = vector_store.search_schemas(discovery_query, top_k=5)
             schema_tables = [f"{s.schema_name}.{s.table_name}" for s in schema_results]
             
             # 4. Re-rank and Filter
@@ -1805,7 +1812,7 @@ def generate_sql_for_request(request: GenerateSQLRequest, previous_sql: Optional
             
             # 6. Path Finding (Context Expansion)
             yield AgentStatus(step_id=7, message="Analyzing schema relationships and path finding...")
-            expanded_list = expand_context_with_neighbors(final_table_list, request.query)
+            expanded_list = expand_context_with_neighbors(final_table_list, discovery_query)
             if len(expanded_list) > len(final_table_list):
                 logging.info(f"Discovery: Expanded context from {len(final_table_list)} to {len(expanded_list)} tables.")
                 context = hydrate_discovery_context(expanded_list, similar_queries)
@@ -1831,7 +1838,7 @@ def generate_sql_for_request(request: GenerateSQLRequest, previous_sql: Optional
                 yield AgentStatus(step_id=10, message="Validating schema sufficiency with join-path analysis...")
                 
                 sufficiency_result = llm_service.validate_schema_with_join_paths(
-                    user_query=request.query,
+                    user_query=discovery_query,
                     schemas=context.relevant_tables,
                     code_type="sql"
                 )
@@ -1839,7 +1846,7 @@ def generate_sql_for_request(request: GenerateSQLRequest, previous_sql: Optional
                 yield AgentStatus(step_id=10, message="Validating schema sufficiency for query requirements...")
                 
                 sufficiency_result = llm_service.check_schema_sufficiency(
-                    user_query=request.query,
+                    user_query=discovery_query,
                     schemas=context.relevant_tables,
                     code_type="sql"
                 )
@@ -1870,13 +1877,13 @@ def generate_sql_for_request(request: GenerateSQLRequest, previous_sql: Optional
                         
                         if use_join_path:
                             sufficiency_result = llm_service.validate_schema_with_join_paths(
-                                user_query=request.query,
+                                user_query=discovery_query,
                                 schemas=context.relevant_tables,
                                 code_type="sql"
                             )
                         else:
                             sufficiency_result = llm_service.check_schema_sufficiency(
-                                user_query=request.query,
+                                user_query=discovery_query,
                                 schemas=context.relevant_tables,
                                 code_type="sql"
                             )
@@ -1995,7 +2002,7 @@ Alternatively, if these table references are incorrect, please rephrase your que
                 yield AgentStatus(step_id=10, message="Validating schema sufficiency with join-path analysis...")
                 
                 sufficiency_result = llm_service.validate_schema_with_join_paths(
-                    user_query=request.query,
+                    user_query=discovery_query,
                     schemas=context.relevant_tables,
                     code_type="sql"
                 )
@@ -2003,7 +2010,7 @@ Alternatively, if these table references are incorrect, please rephrase your que
                 yield AgentStatus(step_id=10, message="Validating schema sufficiency for query requirements...")
                 
                 sufficiency_result = llm_service.check_schema_sufficiency(
-                    user_query=request.query,
+                    user_query=discovery_query,
                     schemas=context.relevant_tables,
                     code_type="sql"
                 )
@@ -2034,13 +2041,13 @@ Alternatively, if these table references are incorrect, please rephrase your que
                         
                         if use_join_path:
                             sufficiency_result = llm_service.validate_schema_with_join_paths(
-                                user_query=request.query,
+                                user_query=discovery_query,
                                 schemas=context.relevant_tables,
                                 code_type="sql"
                             )
                         else:
                             sufficiency_result = llm_service.check_schema_sufficiency(
-                                user_query=request.query,
+                                user_query=discovery_query,
                                 schemas=context.relevant_tables,
                                 code_type="sql"
                             )
