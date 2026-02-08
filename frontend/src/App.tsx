@@ -811,7 +811,11 @@ function AuthenticatedApp({
 
         // Store the generated SQL for future reference
         const newSQL = result.sql || lastGeneratedSQL;
-        const newQueryHistory = result.sql ? '' : (queryHistory ? `${queryHistory}. ${currentQuery}` : currentQuery);
+        // Keep query history even after successful SQL generation to support conversational follow-ups
+        // e.g., "find tables with EmployeeID" -> "give me those tables"
+        const newQueryHistory = result.sql 
+          ? currentQuery  // Keep current query for context in next request
+          : (queryHistory ? `${queryHistory}. ${currentQuery}` : currentQuery);
 
         // Add AI response to chat history
         const normalizedQueryType: ChatMessage['queryType'] =

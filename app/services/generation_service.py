@@ -1458,11 +1458,18 @@ Guidelines:
 
 
 def generate_sql_for_request(request: GenerateSQLRequest, previous_sql: Optional[str] = None, query_history: Optional[str] = None) -> Generator[Union[AgentStatus, Dict[str, Any]], None, None]:
+    # Build context-aware query by combining with conversation history at the very start
+    # This ensures ALL branches (plan, search, database) maintain context from previous queries
+    combined_query = request.query
+    if query_history:
+        combined_query = f"{query_history}. {request.query}"
+        logging.info(f"[Context] Combined query with history: {combined_query}")
+    
     # Check for plan mode first - conversational planning
     if request.queryMode == "plan":
         yield AgentStatus(step_id=1, message="Thinking about your data needs...")
         result = planning_conversation(
-            request.query, 
+            combined_query, 
             request.planning_context,
             user_selected_tables=request.user_selected_tables
         )
@@ -1473,7 +1480,7 @@ def generate_sql_for_request(request: GenerateSQLRequest, previous_sql: Optional
     # Check for search mode - user explicitly chose to search objects
     if request.queryMode == "search":
         yield AgentStatus(step_id=1, message="Searching database objects...")
-        result = search_data_objects(request.query)
+        result = search_data_objects(combined_query)
         yield {"type": "result", "payload": result}
         yield {"type": "done"}
         return
@@ -1507,20 +1514,23 @@ def generate_sql_for_request(request: GenerateSQLRequest, previous_sql: Optional
         db_description = "Primary database"
         db_keywords = []
     
+    # combined_query was already built at the start of the function with conversation history
+    
     # Stage 1: Intent Classification & Query Analysis
     yield AgentStatus(step_id=2, message="Classifying query intent...")
     
     # If forceGeneral flag is set (user explicitly chose "General Answer"), skip classification
     if request.forceGeneral:
         yield AgentStatus(step_id=3, message="Processing general query...")
-        result = _handle_general_query(request, llm_service)
+        result = _handle_general_query(combined_query, llm_service)
         yield {"type": "result", "payload": result}
         yield {"type": "done"}
         return
 
     # 3-way LLM intent classification: data_query / system_metadata / off_topic
+    # Use combined query so classifier has full conversation context
     query_intent = classify_query_intent(
-        request.query, llm_service,
+        combined_query, llm_service,
         db_name=friendly_name,
         db_description=db_description,
         db_keywords=db_keywords,
@@ -1531,7 +1541,7 @@ def generate_sql_for_request(request: GenerateSQLRequest, previous_sql: Optional
     # --- Off-Topic Branch ---
     if query_intent == "off_topic":
         yield AgentStatus(step_id=4, message="Off-topic query detected. Generating general response...")
-        result = _handle_general_query(request, llm_service)
+        result = _handle_general_query(combined_query, llm_service)
         yield {"type": "result", "payload": result}
         yield {"type": "done"}
         return
@@ -1541,7 +1551,7 @@ def generate_sql_for_request(request: GenerateSQLRequest, previous_sql: Optional
         yield AgentStatus(step_id=4, message="System metadata query detected. Accessing SQL Server catalogs...")
 
         database_info = f"Database: {friendly_name}\nDescription: {db_description}"
-        system_prompt = build_system_catalog_prompt(request.query, database_info=database_info)
+        system_prompt = build_system_catalog_prompt(combined_query, database_info=database_info)
 
         max_system_attempts = 2
         last_error = ""
@@ -1552,7 +1562,7 @@ def generate_sql_for_request(request: GenerateSQLRequest, previous_sql: Optional
             if attempt > 0 and last_error:
                 retry_prompt += f"\n\n### PREVIOUS ATTEMPT FAILED\nError: {last_error}\nPlease fix the query and try again."
 
-            sql = llm_service.generate_sql_with_context(request.query, retry_prompt)
+            sql = llm_service.generate_sql_with_context(combined_query, retry_prompt)
             is_valid, error_msg, _ = validate_sql_with_db(sql)
 
             if is_valid:
@@ -1582,12 +1592,8 @@ def generate_sql_for_request(request: GenerateSQLRequest, previous_sql: Optional
         return
 
     # --- Data Query Branch (continues to Stage 2: Discovery) ---
-    # Build context-aware query for discovery by combining with conversation history
-    # This ensures follow-up questions maintain context from previous queries
-    discovery_query = request.query
-    if query_history:
-        discovery_query = f"{query_history}. {request.query}"
-        logging.info(f"[Context] Combined query for discovery: {discovery_query}")
+    # Use the combined query (with conversation history) for discovery
+    discovery_query = combined_query
     
     # Extract entities and score complexity for database queries (using context-aware query)
     entities, date_ranges = extract_entities(discovery_query)
@@ -1992,7 +1998,7 @@ Alternatively, if these table references are incorrect, please rephrase your que
             
             # Stage 2.5: Value Index Lookup
             yield AgentStatus(step_id=9, message="Checking value index for specific data mappings...")
-            value_mappings = lookup_values_for_query(request.query)
+            value_mappings = lookup_values_for_query(combined_query)
             
             # Stage 2.6: Schema Sufficiency Pre-Flight Check
             from app.core.config import settings as app_settings
@@ -2203,17 +2209,14 @@ First attempt.
 ### 7. OUTPUT FORMAT
 - When generating T-SQL queries, always provide the explanation at the very top of the response, enclosed within a /* ... */ comment block. The code should follow immediately after the comment block.
 
-Target Request: {request.query}
+Target Request: {combined_query}
 """
 
     # Stage 3: Reasoning-First Generation & Iterative Validation
     current_context_history = []
     error_msg = "Unknown error"
     
-    # Build accumulated query history (all user requests from conversation start)
-    combined_query = request.query
-    if query_history:
-        combined_query = f"{query_history}. {request.query}"
+    # combined_query was already built at the start of the function with conversation history
     
     for attempt in range(5):
         yield AgentStatus(step_id=10 + attempt, message=f"Generating SQL (Attempt {attempt + 1})..." if attempt == 0 else f"Refining SQL (Attempt {attempt + 1})...")
@@ -2296,8 +2299,8 @@ Extracted Entities: {', '.join(entities) if entities else 'None'}
 {target_request_section}
 """
 
-        # Generate SQL query
-        sql = llm_service.generate_sql_with_context(request.query, current_prompt)
+        # Generate SQL query using combined query (with conversation history)
+        sql = llm_service.generate_sql_with_context(combined_query, current_prompt)
         
         # Store the generated SQL for later use in attempt history
         generated_sql = sql.strip() if sql else ""
@@ -2414,11 +2417,11 @@ Extracted Entities: {', '.join(entities) if entities else 'None'}
     yield {"type": "result", "payload": result}
     yield {"type": "done"}
 
-def _handle_general_query(request, llm_service):
+def _handle_general_query(query: str, llm_service):
     # (Helper function logic for general classification to keep main function clean)
     system_prompt = "You are a helpful AI assistant for the database."
     response_text = llm_service.chat_completion(
-        messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": request.query}],
+        messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": query}],
         temperature=0.7
     )
     return GenerateSQLResponse(sql="", explanation=response_text, query_type="general")
