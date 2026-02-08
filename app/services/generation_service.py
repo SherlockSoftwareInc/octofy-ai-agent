@@ -220,7 +220,15 @@ def score_query_complexity(query: str) -> str:
     query_lower = query.lower()
     
     # Complex indicators
-    complex_keywords = ['join', 'aggregate', 'group by', 'multiple', 'compare', 'relationship', 'across', 'between', 'correlate']
+    complex_keywords = [
+        'join', 'aggregate', 'group by', 'multiple', 'compare',
+        'relationship', 'across', 'between', 'correlate',
+        'average', 'above average', 'below average', 'exceed',
+        'top n', 'rank', 'percentile', 'cumulative',
+        'step by step', 'first find', 'then', 'based on',
+        'who spent more than', 'having', 'subquery',
+        'dependency', 'dependencies', 'multi-step',
+    ]
     complex_count = sum(1 for kw in complex_keywords if kw in query_lower)
     
     if complex_count >= 2:
@@ -2142,6 +2150,25 @@ Alternatively, if these table references are incorrect, please rephrase your que
     if use_table_override:
         context_guard = "### USER-SELECTED CONTEXT\nYou must only use the following schema context provided by the user. Do not reference tables outside of this selection.\n\n"
 
+    # Build scripting authorization based on complexity
+    scripting_instruction = ""
+    if query_complexity == 'complex':
+        scripting_instruction = """### SCRIPTING AUTHORIZATION
+This is a COMPLEX query. You are encouraged to use:
+- `SET NOCOUNT ON;` at the top of the script
+- `DECLARE @variables` for intermediate scalar values
+- `#TemporaryTables` for intermediate result sets
+- Multiple sequential SELECT/INSERT INTO statements
+- `DROP TABLE IF EXISTS #TempTable` for cleanup at the end
+Prefer a multi-statement script over a single massive JOIN when the logic involves multiple steps.
+
+"""
+    elif query_complexity == 'moderate':
+        scripting_instruction = """### SCRIPTING AUTHORIZATION
+This is a MODERATE complexity query. You may use variables (`DECLARE`) or CTEs if they improve clarity, but a single query is acceptable if it remains readable.
+
+"""
+
     initial_prompt = f"""{database_info}
 
 ### QUERY ANALYSIS
@@ -2156,18 +2183,18 @@ Date Ranges: {', '.join(date_ranges) if date_ranges else 'None'}
 {initial_schema_text}
 
 ### REASONING PROCESS
-1. Identify the entities and values in the user's request.
-2. Look at the "VERIFIED DATA MAPPINGS" to see which tables contain the specific data values (e.g., 'Canada' in Customers).
-3. Look at the "DATABASE SCHEMA" to find the relationships between these tables.
-4. If tables are disjoint (e.g., Categories and Customers), find the "bridge" tables (like Orders, OrderDetails) to join them.
-5. Construct the JOIN path step-by-step.
+1. **Decomposition**: Break the request into logical steps (e.g., Step 1: Filter Users; Step 2: Aggregate Sales; Step 3: Join results).
+2. **Variable Mapping**: Identify values that should be stored in variables (e.g., @StartDate, @AvgSpend) for reuse across steps.
+3. **Drafting**: For complex queries, use #TempTables to hold intermediate results so each step stays clean and readable.
+4. **Joins & Bridges**: Look at the "VERIFIED DATA MAPPINGS" to see which tables contain specific data values. If tables are disjoint, find "bridge" tables to join them.
+5. **Final Selection**: Return the final result set from the temp tables, variables, or direct query.
 
 ### VIEW HANDLING
 - If both a base table and its view variant appear in schemas, prefer the base table
 - Views ending in _YYYY, _vw, or _view are typically filtered subsets of base tables
 - Base tables with datetime columns support flexible date filtering via WHERE clauses
 
-### ATTEMPT HISTORY
+{scripting_instruction}### ATTEMPT HISTORY
 First attempt.
 
 ## CRITICAL SQL RULES
@@ -2207,7 +2234,17 @@ First attempt.
 - If a required table is missing, return: "TABLE_VALIDATION_ERROR: Cannot find table [table_name]".
 
 ### 7. OUTPUT FORMAT
-- When generating T-SQL queries, always provide the explanation at the very top of the response, enclosed within a /* ... */ comment block. The code should follow immediately after the comment block.
+- Provide the explanation in a `/* ... */` comment block at the very top of the response.
+- Follow immediately with the T-SQL script. The script MAY contain multiple statements, variable declarations (`DECLARE`), and temporary table operations (`SELECT INTO #Temp`, `DROP TABLE IF EXISTS`).
+- Always begin multi-statement scripts with `SET NOCOUNT ON;` to suppress intermediate row-count messages.
+
+### 8. COMPLEX LOGIC & SCRIPTING
+- **Multi-Statement Scripts**: If the request involves multi-step aggregations, complex filtering, or data dependencies, use a multi-statement script instead of one massive JOIN.
+- **Variables**: Use `DECLARE @VariableName AS DataType` to store intermediate scalar values (like date ranges, averages, or specific IDs).
+- **Temporary Tables**: Use `#TempTables` to store intermediate result sets. This improves readability and performance for multi-step logic.
+  - *Example*: Store a list of filtered IDs into `#FilteredCustomers` before joining with large transaction tables.
+- **CTE vs. Temp Tables**: Use Common Table Expressions (CTEs) for simple recursive or readability needs; use `#TempTables` for complex logic requiring multiple passes over intermediate data.
+- **Clean Up**: Always include `DROP TABLE IF EXISTS #TempTable` at the end of your script to clean up temporary tables.
 
 Target Request: {combined_query}
 """
@@ -2257,7 +2294,7 @@ Extracted Entities: {', '.join(entities) if entities else 'None'}
 
 {attempt_history_section}
 
-## CRITICAL SQL RULES
+{scripting_instruction}## CRITICAL SQL RULES
 
 ### 1. SCHEMA ADHERENCE
 - Use ONLY the tables and columns defined in the provided schema.
@@ -2294,7 +2331,16 @@ Extracted Entities: {', '.join(entities) if entities else 'None'}
 - If a required table is missing, return: "TABLE_VALIDATION_ERROR: Cannot find table [table_name]".
 
 ### 7. OUTPUT FORMAT
-- When generating T-SQL queries, always provide the explanation at the very top of the response, enclosed within a /* ... */ comment block. The code should follow immediately after the comment block.
+- Provide the explanation in a `/* ... */` comment block at the very top of the response.
+- Follow immediately with the T-SQL script. The script MAY contain multiple statements, variable declarations (`DECLARE`), and temporary table operations (`SELECT INTO #Temp`, `DROP TABLE IF EXISTS`).
+- Always begin multi-statement scripts with `SET NOCOUNT ON;` to suppress intermediate row-count messages.
+
+### 8. COMPLEX LOGIC & SCRIPTING
+- **Multi-Statement Scripts**: If the request involves multi-step aggregations, complex filtering, or data dependencies, use a multi-statement script instead of one massive JOIN.
+- **Variables**: Use `DECLARE @VariableName AS DataType` to store intermediate scalar values (like date ranges, averages, or specific IDs).
+- **Temporary Tables**: Use `#TempTables` to store intermediate result sets. This improves readability and performance for multi-step logic.
+- **CTE vs. Temp Tables**: Use CTEs for simple recursive or readability needs; use `#TempTables` for complex logic requiring multiple passes over intermediate data.
+- **Clean Up**: Always include `DROP TABLE IF EXISTS #TempTable` at the end of your script.
 
 {target_request_section}
 """
@@ -2398,9 +2444,9 @@ Extracted Entities: {', '.join(entities) if entities else 'None'}
             recovery_instruction = f"Query Error: {error_msg}\nReview the SQL syntax and schema constraints."
 
         # Record this failure into history with clear SQL query and error message
-        # Only include "Failed Query:" if generated_sql contains "select" (actual SQL query)
-        if generated_sql and "select" in generated_sql.lower():
-            failure_entry = f"Attempt {attempt+1}:\nUser Request: {combined_query}\nFailed Query:\n{generated_sql}\n\nError Message:\n{error_msg}{discovery_feedback}\n\nRecovery Strategy:\n{recovery_instruction}"
+        # Include full script in failure entry so LLM can see variable/temp table context
+        if generated_sql and ("select" in generated_sql.lower() or "declare" in generated_sql.lower() or "#" in generated_sql):
+            failure_entry = f"Attempt {attempt+1}:\nUser Request: {combined_query}\nFailed Script:\n{generated_sql}\n\nError Message:\n{error_msg}{discovery_feedback}\n\nRecovery Strategy:\n{recovery_instruction}"
         else:
             failure_entry = f"Attempt {attempt+1}:\nUser Request: {combined_query}\nError Message:\n{error_msg}{discovery_feedback}\n\nRecovery Strategy:\n{recovery_instruction}"
         current_context_history.append(failure_entry)
@@ -2488,8 +2534,14 @@ COMMON ERROR PATTERNS:
 - "Type mismatch" → Use CAST() or CONVERT()
 - "Syntax error" → Check T-SQL syntax (JOIN conditions, WHERE clause, etc.)
 
+MULTI-STATEMENT SCRIPTS:
+- The failed code may be a multi-statement script with DECLARE, #TempTables, and multiple SELECTs.
+- Preserve the overall script structure when fixing errors.
+- Always include SET NOCOUNT ON; at the top of multi-statement scripts.
+- Ensure DROP TABLE IF EXISTS for any #TempTables at the end.
+
 OUTPUT:
-Return ONLY the corrected SQL query, with no additional text, markdown, or explanation.
+Return ONLY the corrected SQL script, with no additional text, markdown, or explanation.
 """
     
     try:

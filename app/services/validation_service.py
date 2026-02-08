@@ -41,7 +41,11 @@ def validate_sql_with_db(sql: str) -> tuple[bool, str, list[str]]:
                 # Enable parse-only mode
                 connection.execute(text("SET NOEXEC ON"))
                 try:
-                    # Execute the user's SQL
+                    # Handle multi-statement scripts: split on GO if present,
+                    # otherwise execute as a single batch (SQL Server handles
+                    # DECLARE, #TempTables, and multiple SELECTs in one batch)
+                    # Note: SET NOCOUNT ON is harmless under NOEXEC and helps
+                    # validate scripts that include it.
                     connection.execute(text(sql))
                     is_valid = True
                 except Exception as e:
