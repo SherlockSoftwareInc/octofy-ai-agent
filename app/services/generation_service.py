@@ -14,6 +14,7 @@ from app.services.vector_store import get_vector_store
 from app.services.settings_service import get_settings_for_display
 from app.services.relationship_graph import get_relationship_graph
 from collections import defaultdict
+from app.services.system_query_service import detect_system_query_intent, build_system_catalog_prompt
 
 def parse_table_override_name(raw_name: str) -> Tuple[str, str]:
     cleaned = raw_name.strip().replace('[', '').replace(']', '')
@@ -1524,7 +1525,58 @@ def generate_sql_for_request(request: GenerateSQLRequest, previous_sql: Optional
     query_complexity = score_query_complexity(request.query)
     
     yield AgentStatus(step_id=3, message=f"Analyzed query. Complexity: {query_complexity}. Entities: {', '.join(entities) if entities else 'None'}")
-    
+
+    # --- System Metadata Query Fast Path ---
+    # Bypass discovery entirely for queries about database internals.
+    if detect_system_query_intent(request.query):
+        yield AgentStatus(step_id=4, message="System metadata intent detected. Accessing SQL Server catalogs...")
+
+        # Build database info string (same as used later in the normal path)
+        database_info = f"Database: {friendly_name}\nDescription: {db_description}"
+
+        system_prompt = build_system_catalog_prompt(request.query, database_info=database_info)
+
+        max_system_attempts = 2
+        last_error = ""
+        for attempt in range(max_system_attempts):
+            yield AgentStatus(step_id=10 + attempt, message=f"Generating system catalog SQL (Attempt {attempt + 1}/{max_system_attempts})...")
+
+            # On retry, append error feedback to prompt
+            retry_prompt = system_prompt
+            if attempt > 0 and last_error:
+                retry_prompt += f"\n\n### PREVIOUS ATTEMPT FAILED\nError: {last_error}\nPlease fix the query and try again."
+
+            sql = llm_service.generate_sql_with_context(request.query, retry_prompt)
+
+            is_valid, error_msg, _ = validate_sql_with_db(sql)
+
+            if is_valid:
+                result = GenerateSQLResponse(
+                    sql=sql,
+                    explanation="System metadata query generated from SQL Server catalog views.",
+                    query_type="database",
+                    context_text=retry_prompt,
+                    discovery_branch="system_catalog"
+                )
+                yield {"type": "result", "payload": result}
+                yield {"type": "done"}
+                return
+
+            last_error = error_msg
+            logging.warning(f"System catalog SQL attempt {attempt + 1} failed: {error_msg}")
+
+        # Exhausted retries
+        result = GenerateSQLResponse(
+            sql="",
+            explanation=f"Failed to generate a valid system metadata query after {max_system_attempts} attempts. Last error: {last_error}",
+            query_type="database",
+            context_text=system_prompt,
+            discovery_branch="system_catalog"
+        )
+        yield {"type": "result", "payload": result}
+        yield {"type": "done"}
+        return
+
     # Stage 2: Discovery & Context Synthesis (Multi-Source Retrieval)
     yield AgentStatus(step_id=4, message="Discovering relevant tables and schemas...")
     
