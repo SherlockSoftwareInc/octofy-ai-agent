@@ -6,33 +6,84 @@ and a specialized prompt builder for system catalog queries.
 """
 
 import logging
-from typing import Optional
+from typing import List, Optional
 
 logger = logging.getLogger(__name__)
 
 # The three valid intent categories
 VALID_INTENTS = {"data_query", "system_metadata", "off_topic"}
 
-# Classification prompt — kept minimal to reduce latency and token cost.
-CLASSIFICATION_SYSTEM_PROMPT = """You are a query intent classifier for a SQL Server database assistant.
+# Base classification prompt — kept minimal to reduce latency and token cost.
+# Database context is appended dynamically by _build_classification_prompt().
+CLASSIFICATION_SYSTEM_PROMPT_BASE = """You are a query intent classifier for a SQL Server database assistant.
 
 Classify the user's message into exactly ONE of these categories:
 
 - **data_query** — The user wants to retrieve, analyze, or aggregate BUSINESS DATA stored in the database (e.g., sales figures, customer counts, revenue trends, employee records).
 - **system_metadata** — The user wants information about the DATABASE STRUCTURE or SERVER itself (e.g., list tables, show columns, table row counts, SQL Server version, indexes, schemas, which tables have a certain column).
-- **off_topic** — The user's message is NOT related to querying or exploring the database at all (e.g., greetings, general knowledge questions, jokes, SQL syntax explanations).
+- **off_topic** — The user's message is NOT related to querying or exploring the database at all (e.g., greetings, general knowledge questions, jokes, SQL syntax explanations). This includes requests about business data that does NOT exist in this database."""
 
+
+CLASSIFICATION_DB_CONTEXT_TEMPLATE = """
+This database is: {db_name} — {db_description}
+It contains data about: {db_keywords}.
+If the user asks about data that clearly does NOT relate to these topics, classify it as off_topic."""
+
+CLASSIFICATION_REPLY_INSTRUCTION = """
 Reply with EXACTLY one word: data_query, system_metadata, or off_topic
 Do NOT include any other text."""
 
 
-def classify_query_intent(query: str, llm_service) -> str:
+def _build_classification_prompt(
+    db_name: Optional[str] = None,
+    db_description: Optional[str] = None,
+    db_keywords: Optional[List[str]] = None,
+) -> str:
+    """
+    Build the classification system prompt, optionally including database context.
+
+    When database context is provided, the LLM can distinguish between relevant
+    business queries and queries about data that doesn't exist in this database
+    (classifying the latter as off_topic).
+
+    Args:
+        db_name: Friendly name of the database (e.g., "Northwind Database").
+        db_description: Short description of the database's domain.
+        db_keywords: List of topic keywords (e.g., ["sales", "customers"]).
+
+    Returns:
+        A complete system prompt string for the classifier.
+    """
+    prompt = CLASSIFICATION_SYSTEM_PROMPT_BASE
+
+    if db_name and db_description:
+        keywords_str = ", ".join(db_keywords) if db_keywords else "various topics"
+        prompt += CLASSIFICATION_DB_CONTEXT_TEMPLATE.format(
+            db_name=db_name,
+            db_description=db_description,
+            db_keywords=keywords_str,
+        )
+
+    prompt += CLASSIFICATION_REPLY_INSTRUCTION
+    return prompt
+
+
+def classify_query_intent(
+    query: str,
+    llm_service,
+    db_name: Optional[str] = None,
+    db_description: Optional[str] = None,
+    db_keywords: Optional[List[str]] = None,
+) -> str:
     """
     Classify user query intent using the LLM.
 
     Args:
         query: The user's natural language query.
         llm_service: An LLM service instance with a chat_completion() method.
+        db_name: Optional friendly name of the database.
+        db_description: Optional description of the database's domain.
+        db_keywords: Optional list of topic keywords for the database.
 
     Returns:
         One of: "data_query", "system_metadata", "off_topic".
@@ -43,8 +94,9 @@ def classify_query_intent(query: str, llm_service) -> str:
         return "off_topic"
 
     try:
+        system_prompt = _build_classification_prompt(db_name, db_description, db_keywords)
         messages = [
-            {"role": "system", "content": CLASSIFICATION_SYSTEM_PROMPT},
+            {"role": "system", "content": system_prompt},
             {"role": "user", "content": query},
         ]
 

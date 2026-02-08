@@ -12,9 +12,11 @@ from app.models.schemas import GenerateSQLRequest, GenerateSQLResponse, AgentSta
 def _make_skills_mock():
     """Create a standard mock for skills_service."""
     mock_skills_instance = MagicMock()
-    mock_skills_instance.load_primary_data_source.return_value = MagicMock(
-        name="TestDB", description="Test database", keywords=[]
-    )
+    mock_data_source = MagicMock()
+    mock_data_source.name = "TestDB"
+    mock_data_source.description = "Test database for unit testing"
+    mock_data_source.keywords = ["testing", "units"]
+    mock_skills_instance.load_primary_data_source.return_value = mock_data_source
     return mock_skills_instance
 
 
@@ -191,3 +193,35 @@ class TestIntentClassificationRouting:
             assert len(result_items) == 1
             payload = result_items[0]["payload"]
             assert payload.query_type == "general"
+
+    @patch("app.services.generation_service.classify_query_intent", return_value="data_query")
+    @patch("app.services.generation_service.get_llm_service")
+    @patch("app.services.generation_service.get_vector_store")
+    @patch("app.services.skills_service.get_skills_service")
+    def test_classifier_receives_database_context(self, mock_skills, mock_vs, mock_llm_factory, mock_classify):
+        """classify_query_intent should be called with db_name, db_description, db_keywords from data source"""
+        from app.services.generation_service import generate_sql_for_request
+
+        mock_skills.return_value = _make_skills_mock()
+
+        mock_llm = MagicMock()
+        mock_llm_factory.return_value = mock_llm
+
+        request = GenerateSQLRequest(query="show me total sales by region")
+
+        # Will fail in discovery (no real vector store), but that's fine —
+        # we only care about verifying the classify call arguments.
+        try:
+            for _ in generate_sql_for_request(request):
+                pass
+        except Exception:
+            pass
+
+        mock_classify.assert_called_once()
+        call_kwargs = mock_classify.call_args
+        # Positional args: query, llm_service
+        assert call_kwargs[0][0] == "show me total sales by region"
+        # Keyword args: db context
+        assert call_kwargs[1]["db_name"] == "TestDB"
+        assert call_kwargs[1]["db_description"] == "Test database for unit testing"
+        assert call_kwargs[1]["db_keywords"] == ["testing", "units"]

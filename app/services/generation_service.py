@@ -1519,7 +1519,12 @@ def generate_sql_for_request(request: GenerateSQLRequest, previous_sql: Optional
         return
 
     # 3-way LLM intent classification: data_query / system_metadata / off_topic
-    query_intent = classify_query_intent(request.query, llm_service)
+    query_intent = classify_query_intent(
+        request.query, llm_service,
+        db_name=friendly_name,
+        db_description=db_description,
+        db_keywords=db_keywords,
+    )
     
     yield AgentStatus(step_id=3, message=f"Intent classified as: {query_intent}")
 

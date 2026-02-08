@@ -5,6 +5,7 @@ Tests for query intent classification and system catalog prompt building.
 from unittest.mock import MagicMock
 from app.services.system_query_service import classify_query_intent
 from app.services.system_query_service import build_system_catalog_prompt
+from app.services.system_query_service import _build_classification_prompt
 
 
 class TestClassifyQueryIntent:
@@ -115,6 +116,145 @@ class TestClassifyQueryIntent:
         assert "data_query" in system_content
         assert "system_metadata" in system_content
         assert "off_topic" in system_content
+
+    # --- Database context integration ---
+
+    def test_db_context_included_in_prompt(self):
+        """When db context is provided, the prompt should mention the database name and keywords"""
+        llm = self._make_llm("data_query")
+        classify_query_intent(
+            "show me patient records", llm,
+            db_name="Northwind Database",
+            db_description="Sales database for imported and exported specialty foods",
+            db_keywords=["sales", "customers", "orders", "products"],
+        )
+        messages = llm.chat_completion.call_args[0][0]
+        system_content = messages[0]["content"]
+        assert "Northwind Database" in system_content
+        assert "specialty foods" in system_content
+        assert "sales" in system_content
+        assert "customers" in system_content
+
+    def test_no_db_context_still_works(self):
+        """Without db context, the prompt should still contain the base categories"""
+        llm = self._make_llm("data_query")
+        classify_query_intent("show me sales", llm)
+        messages = llm.chat_completion.call_args[0][0]
+        system_content = messages[0]["content"]
+        # Should NOT contain db context template markers
+        assert "This database is:" not in system_content
+        assert "It contains data about:" not in system_content
+        # Should still contain the base classification categories
+        assert "data_query" in system_content
+
+    def test_db_context_with_empty_keywords(self):
+        """When keywords list is empty, should use 'various topics' fallback"""
+        llm = self._make_llm("data_query")
+        classify_query_intent(
+            "show me sales", llm,
+            db_name="TestDB",
+            db_description="A test database",
+            db_keywords=[],
+        )
+        messages = llm.chat_completion.call_args[0][0]
+        system_content = messages[0]["content"]
+        assert "various topics" in system_content
+
+    def test_db_context_without_name_is_ignored(self):
+        """If db_name is None but description is provided, context should be skipped"""
+        llm = self._make_llm("data_query")
+        classify_query_intent(
+            "show me sales", llm,
+            db_name=None,
+            db_description="A test database",
+            db_keywords=["sales"],
+        )
+        messages = llm.chat_completion.call_args[0][0]
+        system_content = messages[0]["content"]
+        assert "This database is:" not in system_content
+
+    def test_db_context_without_description_is_ignored(self):
+        """If db_description is None but name is provided, context should be skipped"""
+        llm = self._make_llm("data_query")
+        classify_query_intent(
+            "show me sales", llm,
+            db_name="TestDB",
+            db_description=None,
+            db_keywords=["sales"],
+        )
+        messages = llm.chat_completion.call_args[0][0]
+        system_content = messages[0]["content"]
+        assert "This database is:" not in system_content
+
+
+class TestBuildClassificationPrompt:
+    """Test suite for _build_classification_prompt helper"""
+
+    def test_base_prompt_without_context(self):
+        """Without db context, returns base prompt + reply instruction"""
+        prompt = _build_classification_prompt()
+        assert "data_query" in prompt
+        assert "system_metadata" in prompt
+        assert "off_topic" in prompt
+        assert "Reply with EXACTLY one word" in prompt
+        assert "This database is:" not in prompt
+
+    def test_with_full_context(self):
+        """With full db context, includes database name, description, and keywords"""
+        prompt = _build_classification_prompt(
+            db_name="Northwind Database",
+            db_description="Sales database for specialty foods",
+            db_keywords=["sales", "customers", "orders"],
+        )
+        assert "Northwind Database" in prompt
+        assert "specialty foods" in prompt
+        assert "sales, customers, orders" in prompt
+        assert "does NOT relate to these topics" in prompt
+
+    def test_empty_keywords_fallback(self):
+        """Empty keywords list produces 'various topics' fallback"""
+        prompt = _build_classification_prompt(
+            db_name="TestDB",
+            db_description="Test database",
+            db_keywords=[],
+        )
+        assert "various topics" in prompt
+
+    def test_none_keywords_fallback(self):
+        """None keywords produces 'various topics' fallback"""
+        prompt = _build_classification_prompt(
+            db_name="TestDB",
+            db_description="Test database",
+            db_keywords=None,
+        )
+        assert "various topics" in prompt
+
+    def test_missing_name_skips_context(self):
+        """Without db_name, db context block is not included"""
+        prompt = _build_classification_prompt(
+            db_name=None,
+            db_description="Test database",
+            db_keywords=["sales"],
+        )
+        assert "This database is:" not in prompt
+
+    def test_missing_description_skips_context(self):
+        """Without db_description, db context block is not included"""
+        prompt = _build_classification_prompt(
+            db_name="TestDB",
+            db_description=None,
+            db_keywords=["sales"],
+        )
+        assert "This database is:" not in prompt
+
+    def test_always_ends_with_reply_instruction(self):
+        """Prompt always ends with the reply instruction regardless of context"""
+        prompt_no_ctx = _build_classification_prompt()
+        prompt_with_ctx = _build_classification_prompt(
+            db_name="DB", db_description="Desc", db_keywords=["k"]
+        )
+        assert prompt_no_ctx.rstrip().endswith("Do NOT include any other text.")
+        assert prompt_with_ctx.rstrip().endswith("Do NOT include any other text.")
 
 
 class TestBuildSystemCatalogPrompt:
