@@ -47,7 +47,7 @@ class EmbeddingFactory:
         if not api_key:
             # Fallback to env var if not in config
             if config.provider == "openai":
-                api_key = settings.OPENAI_API_KEY
+                api_key = settings.EMBEDDING_API_KEY or settings.LLM_API_KEY or settings.OPENAI_API_KEY
                 
         # Resolve Base URL
         base_url = config.base_url
@@ -55,8 +55,8 @@ class EmbeddingFactory:
              # Default OpenAI URL is handled by the generic client, but we can be explicit
              base_url = "https://api.openai.com/v1"
              # If using env var override (e.g. for proxy)
-             if hasattr(settings, "OPENAI_EMBEDDING_ENDPOINT") and settings.OPENAI_EMBEDDING_ENDPOINT:
-                 base_url = settings.OPENAI_EMBEDDING_ENDPOINT
+             if settings.EMBEDDING_BASE_URL or settings.OPENAI_EMBEDDING_ENDPOINT:
+                 base_url = settings.EMBEDDING_BASE_URL or settings.OPENAI_EMBEDDING_ENDPOINT
 
         # If still no key and no local base_url, we might have an issue
         # But for local providers (openai_compatible), key might be dummy

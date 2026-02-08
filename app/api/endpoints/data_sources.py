@@ -10,7 +10,6 @@ from app.models.schemas import (
     AddDataSourceRequest, DataSourceResponse, DataSourceListResponse,
     ConnectionTestRequest, ConnectionTestResponse, TargetDBConfigV2
 )
-from app.services.settings_service import load_settings, save_settings
 from app.services.vector_store import get_vector_store
 from app.services.skills_service import SkillsService
 from app.core.auth import verify_api_key
@@ -25,14 +24,13 @@ def list_data_sources(api_key: str = Depends(verify_api_key)):
     """
     List all configured data sources.
     
-    Returns data sources from both agent_settings.json AND skills/data-sources/_index.md.
-    Skills-based sources are read-only and represent the current skills catalog.
+    Returns data sources from skills/data-sources/_index.md.
+    All data sources are managed via the skills directory (.md files).
     """
     import logging
     logger = logging.getLogger(__name__)
     
     try:
-        settings = load_settings()
         skills_service = SkillsService()
         
         sources = []
@@ -69,33 +67,7 @@ def list_data_sources(api_key: str = Depends(verify_api_key)):
             # Log but don't fail if skills directory is empty/missing
             logger.warning(f"Could not load skills sources: {skills_error}", exc_info=True)
         
-        # Then, add sources from agent_settings.json (if v2 config)
-        if hasattr(settings, 'data_sources'):
-            for source in settings.data_sources:
-                obj_count = _get_object_count(source.source_id)
-                total_objects += obj_count
-                sources.append(_build_source_response(
-                    source, 
-                    is_primary=(source.source_id == settings.primary_source_id),
-                    object_count=obj_count
-                ))
-        elif hasattr(settings, 'target_db') and settings.target_db is not None:
-            # Legacy v1 config - return single source wrapped in v2 format
-            source = TargetDBConfigV2(
-                **settings.target_db.model_dump(),
-                source_id=str(uuid.uuid4()),
-                enabled=True
-            )
-            obj_count = _get_object_count(source.source_id)
-            total_objects += obj_count
-            sources.append(_build_source_response(source, is_primary=True, object_count=obj_count))
-        
-        # Determine primary source (prefer settings-based, fallback to first skills source)
-        primary_source_id = None
-        if hasattr(settings, 'primary_source_id'):
-            primary_source_id = settings.primary_source_id
-        elif sources:
-            primary_source_id = sources[0].source_id
+        primary_source_id = sources[0].source_id if sources else None
         
         logger.info(f"Returning {len(sources)} data sources with {total_objects} total objects")
         return DataSourceListResponse(
@@ -121,107 +93,36 @@ def add_data_source(request: AddDataSourceRequest, api_key: str = Depends(verify
     4. Add to configuration
     5. Save settings
     """
-    try:
-        # Test connection first
-        test_req = ConnectionTestRequest(
-            driver=request.driver,
-            server=request.server,
-            database=request.database_name,
-            auth_type=request.auth_type,
-            username=request.username,
-            password=request.password,
-            trust_server_certificate=request.trust_server_certificate
-        )
-        
-        test_result = test_connection(test_req)
-        if not test_result.success:
-            raise HTTPException(status_code=400, detail=f"Connection test failed: {test_result.message}")
-        
-        # Load current settings
-        settings = load_settings()
-        
-        # Ensure v2 format
-        if not hasattr(settings, 'data_sources'):
-            # Need to migrate - this shouldn't happen if migration ran on startup
-            raise HTTPException(
-                status_code=500, 
-                detail="Configuration not migrated to v2 format. Please restart the application."
-            )
-        
-        # Build connection string and encrypt it
-        from app.services.settings_service import build_connection_string, encrypt_connection_string
-        
-        conn_str = build_connection_string(
-            db_type=request.db_type if hasattr(request, 'db_type') else "mssql",
-            driver=request.driver,
-            server=request.server,
-            database=request.database_name,
-            auth_type=request.auth_type,
-            username=request.username,
-            password=request.password,
-            trust_server_certificate=request.trust_server_certificate
-        )
-        
-        encrypted_conn_str = encrypt_connection_string(conn_str)
-        
-        # Generate source_id
-        source_id = str(uuid.uuid4())
-        
-        # Create new source config
-        new_source = TargetDBConfigV2(
-            source_id=source_id,
-            friendly_name=request.friendly_name,
-            description=request.description,
-            keywords=request.keywords,
-            db_type="mssql",
-            server=request.server,
-            database_name=request.database_name,
-            connection_string_encrypted=encrypted_conn_str,
-            driver=request.driver,
-            auth_type=request.auth_type,
-            username=request.username,
-            trust_server_certificate=request.trust_server_certificate,
-            enabled=True,
-            last_synced=None,
-            object_count=0
-        )
-        
-        # Add to settings
-        settings.data_sources.append(new_source)
-        
-        # If this is the first source, set it as primary
-        if settings.primary_source_id is None:
-            settings.primary_source_id = source_id
-        
-        # Save settings
-        save_settings(settings)
-        
-        return _build_source_response(new_source, is_primary=(source_id == settings.primary_source_id))
-    
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to add data source: {str(e)}")
+    raise HTTPException(
+        status_code=409,
+        detail="Data sources are managed via the skills library. Configuration comes from .env file."
+    )
 
 
 @router.get("/data-sources/{source_id}", response_model=DataSourceResponse)
 def get_data_source(source_id: str, api_key: str = Depends(verify_api_key)):
     """Get details of a specific data source."""
     try:
-        settings = load_settings()
-        
-        if not hasattr(settings, 'data_sources'):
-            raise HTTPException(status_code=404, detail="Data source not found (v1 configuration)")
-        
-        source = next((s for s in settings.data_sources if s.source_id == source_id), None)
-        if not source:
-            raise HTTPException(status_code=404, detail=f"Data source {source_id} not found")
-        
-        return _build_source_response(
-            source,
-            is_primary=(source_id == settings.primary_source_id),
-            object_count=_get_object_count(source_id)
-        )
+        skills_service = SkillsService()
+        skills_sources = skills_service.load_data_sources_index()
+        for skill_source in skills_sources:
+            skill_source_id = f"skill_{re.sub(r'[^a-zA-Z0-9]', '_', skill_source.name.lower())}"
+            if skill_source_id == source_id:
+                obj_count = _get_object_count_by_name(skill_source.name)
+                return DataSourceResponse(
+                    source_id=skill_source_id,
+                    friendly_name=skill_source.name,
+                    description=skill_source.description,
+                    keywords=skill_source.keywords,
+                    server="(Defined in schema library)",
+                    database_name="(Defined in schema library)",
+                    db_type="mssql",
+                    enabled=skill_source.status.lower() == "active",
+                    is_primary=False,
+                    object_count=obj_count,
+                    last_synced=None
+                )
+        raise HTTPException(status_code=404, detail=f"Data source {source_id} not found")
     
     except HTTPException:
         raise
@@ -232,79 +133,10 @@ def get_data_source(source_id: str, api_key: str = Depends(verify_api_key)):
 @router.put("/data-sources/{source_id}", response_model=DataSourceResponse)
 def update_data_source(source_id: str, request: AddDataSourceRequest, api_key: str = Depends(verify_api_key)):
     """Update an existing data source."""
-    try:
-        settings = load_settings()
-        
-        if not hasattr(settings, 'data_sources'):
-            raise HTTPException(status_code=404, detail="Data source not found (v1 configuration)")
-        
-        # Find source
-        source_index = next((i for i, s in enumerate(settings.data_sources) if s.source_id == source_id), None)
-        if source_index is None:
-            raise HTTPException(status_code=404, detail=f"Data source {source_id} not found")
-        
-        existing_source = settings.data_sources[source_index]
-        
-        # If connection details changed, test new connection
-        if (request.server != existing_source.server or 
-            request.database_name != existing_source.database_name or
-            request.password is not None):
-            
-            test_req = ConnectionTestRequest(
-                driver=request.driver,
-                server=request.server,
-                database=request.database_name,
-                auth_type=request.auth_type,
-                username=request.username,
-                password=request.password,
-                trust_server_certificate=request.trust_server_certificate
-            )
-            
-            test_result = test_connection(test_req)
-            if not test_result.success:
-                raise HTTPException(status_code=400, detail=f"Connection test failed: {test_result.message}")
-            
-            # Rebuild and encrypt connection string
-            from app.services.settings_service import build_connection_string, encrypt_connection_string
-            
-            conn_str = build_connection_string(
-                db_type="mssql",
-                driver=request.driver,
-                server=request.server,
-                database=request.database_name,
-                auth_type=request.auth_type,
-                username=request.username,
-                password=request.password,
-                trust_server_certificate=request.trust_server_certificate
-            )
-            
-            existing_source.connection_string_encrypted = encrypt_connection_string(conn_str)
-        
-        # Update fields
-        existing_source.friendly_name = request.friendly_name
-        existing_source.description = request.description
-        existing_source.keywords = request.keywords
-        existing_source.server = request.server
-        existing_source.database_name = request.database_name
-        existing_source.driver = request.driver
-        existing_source.auth_type = request.auth_type
-        existing_source.username = request.username
-        existing_source.trust_server_certificate = request.trust_server_certificate
-        
-        # Save
-        settings.data_sources[source_index] = existing_source
-        save_settings(settings)
-        
-        return _build_source_response(
-            existing_source,
-            is_primary=(source_id == settings.primary_source_id),
-            object_count=_get_object_count(source_id)
-        )
-    
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to update data source: {str(e)}")
+    raise HTTPException(
+        status_code=409,
+        detail="Data sources are managed via the skills library. Configuration comes from .env file."
+    )
 
 
 @router.delete("/data-sources/{source_id}")
@@ -314,138 +146,37 @@ def delete_data_source(source_id: str, api_key: str = Depends(verify_api_key)):
     
     This will also remove all associated objects from the vector store.
     """
-    try:
-        settings = load_settings()
-        
-        if not hasattr(settings, 'data_sources'):
-            raise HTTPException(status_code=404, detail="Data source not found (v1 configuration)")
-        
-        # Find source
-        source_index = next((i for i, s in enumerate(settings.data_sources) if s.source_id == source_id), None)
-        if source_index is None:
-            raise HTTPException(status_code=404, detail=f"Data source {source_id} not found")
-        
-        # Cannot delete primary source if there are other sources
-        if source_id == settings.primary_source_id and len(settings.data_sources) > 1:
-            raise HTTPException(
-                status_code=400, 
-                detail="Cannot delete primary data source. Set another source as primary first."
-            )
-        
-        # Remove from settings
-        settings.data_sources.pop(source_index)
-        
-        # Update primary if needed
-        if source_id == settings.primary_source_id:
-            settings.primary_source_id = settings.data_sources[0].source_id if settings.data_sources else None
-        
-        # Save settings
-        save_settings(settings)
-        
-        # Remove from vector store
-        try:
-            vector_store = get_vector_store()
-            vector_store.clear_source_objects_v2(source_id)
-        except Exception as e:
-            print(f"Warning: Failed to clear vector store objects for {source_id}: {e}")
-        
-        return {"status": "success", "message": f"Data source {source_id} deleted"}
-    
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to delete data source: {str(e)}")
+    raise HTTPException(
+        status_code=409,
+        detail="Data sources are managed via the skills library. Configuration comes from .env file."
+    )
 
 
 @router.post("/data-sources/{source_id}/test", response_model=ConnectionTestResponse)
 def test_data_source_connection(source_id: str, api_key: str = Depends(verify_api_key)):
     """Test connection to a data source."""
-    try:
-        settings = load_settings()
-        
-        if not hasattr(settings, 'data_sources'):
-            raise HTTPException(status_code=404, detail="Data source not found (v1 configuration)")
-        
-        source = next((s for s in settings.data_sources if s.source_id == source_id), None)
-        if not source:
-            raise HTTPException(status_code=404, detail=f"Data source {source_id} not found")
-        
-        # Build connection test request
-        from app.services.settings_service import decrypt_connection_string
-        
-        # Decrypt connection string to extract password
-        conn_str = decrypt_connection_string(source.connection_string_encrypted)
-        
-        # Extract password from connection string (simple parsing)
-        password = None
-        if "PWD=" in conn_str:
-            password = conn_str.split("PWD=")[1].split(";")[0]
-        
-        test_req = ConnectionTestRequest(
-            driver=source.driver,
-            server=source.server,
-            database=source.database_name,
-            auth_type=source.auth_type,
-            username=source.username,
-            password=password,
-            trust_server_certificate=source.trust_server_certificate
-        )
-        
-        return test_connection(test_req)
-    
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to test connection: {str(e)}")
+    raise HTTPException(
+        status_code=409,
+        detail="Data sources are managed via the skills library. Configuration comes from .env file."
+    )
 
 
 @router.post("/data-sources/{source_id}/enable")
 def toggle_data_source(source_id: str, enabled: bool = True, api_key: str = Depends(verify_api_key)):
     """Enable or disable a data source."""
-    try:
-        settings = load_settings()
-        
-        if not hasattr(settings, 'data_sources'):
-            raise HTTPException(status_code=404, detail="Data source not found (v1 configuration)")
-        
-        source = next((s for s in settings.data_sources if s.source_id == source_id), None)
-        if not source:
-            raise HTTPException(status_code=404, detail=f"Data source {source_id} not found")
-        
-        source.enabled = enabled
-        save_settings(settings)
-        
-        status_text = "enabled" if enabled else "disabled"
-        return {"status": "success", "message": f"Data source {status_text}"}
-    
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to toggle data source: {str(e)}")
+    raise HTTPException(
+        status_code=409,
+        detail="Data sources are managed via the skills library. Configuration comes from .env file."
+    )
 
 
 @router.post("/data-sources/{source_id}/set-primary")
 def set_primary_data_source(source_id: str, api_key: str = Depends(verify_api_key)):
     """Set a data source as the primary (default) source for queries."""
-    try:
-        settings = load_settings()
-        
-        if not hasattr(settings, 'data_sources'):
-            raise HTTPException(status_code=404, detail="Data source not found (v1 configuration)")
-        
-        source = next((s for s in settings.data_sources if s.source_id == source_id), None)
-        if not source:
-            raise HTTPException(status_code=404, detail=f"Data source {source_id} not found")
-        
-        settings.primary_source_id = source_id
-        save_settings(settings)
-        
-        return {"status": "success", "message": f"Data source set as primary"}
-    
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to set primary source: {str(e)}")
+    raise HTTPException(
+        status_code=409,
+        detail="Data sources are managed via the skills library. Configuration comes from .env file."
+    )
 
 
 # --- Helper Functions ---

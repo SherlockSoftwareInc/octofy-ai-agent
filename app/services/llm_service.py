@@ -1630,7 +1630,7 @@ def fetch_available_models(endpoint: str, api_key: str = None) -> List[Any]:
         from app.core.config import settings
         
         # Use provided key or fallback to env var
-        final_api_key = api_key or settings.OPENAI_API_KEY
+        final_api_key = api_key or settings.LLM_API_KEY or settings.OPENAI_API_KEY
         
         if not final_api_key:
             # Some local endpoints (like standard Ollama) might not need a key, but OpenAI client requires one.

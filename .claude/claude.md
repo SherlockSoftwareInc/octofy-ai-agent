@@ -53,7 +53,7 @@ cd frontend && npm run dev
 - **Milvus Ingestion:** Collections are dropped & recreated on ingest - not idempotent!
 - **Frontend Port:** Vite runs on `45678`, not default 5173
 - **Connection Strings:** Must be URL-encoded for SQLAlchemy
-- **Settings File:** `config/agent_settings.json` - loaded at runtime
+- **Settings File:** `.env` - loaded at runtime
 
 ## 🚫 Do NOT
 - Use `LIMIT` clause (T-SQL uses `TOP`)

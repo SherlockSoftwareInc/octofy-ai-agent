@@ -1,18 +1,15 @@
 """
 Settings Service - Manages agent configuration with encryption for sensitive data
 """
-import json
 import os
 import logging
 import hashlib
 from typing import Optional, Union
 from cryptography.fernet import Fernet
 import base64
+from dotenv import dotenv_values
 from app.models.schemas import AgentSettings, TargetDBConfig, LLMConfig, VectorConfig, EmbeddingConfig, AppMeta, AgentSettingsV2, TargetDBConfigV2
 from app.core.config import settings as app_settings
-
-# Path to store settings file
-SETTINGS_FILE = os.path.join(os.path.dirname(__file__), "../../config/agent_settings.json")
 
 # Encryption key derivation (in production, use a proper secret management system)
 def get_encryption_key() -> bytes:
@@ -98,140 +95,104 @@ def build_connection_string(driver: str, server: str, database: str, auth_type: 
 
     return ";".join(parts)
 
+def _get_env_path() -> str:
+    return os.path.abspath(os.path.join(os.path.dirname(__file__), "../../.env"))
+
+
+def _read_env_lines() -> list[str]:
+    env_path = _get_env_path()
+    if not os.path.exists(env_path):
+        return []
+    with open(env_path, "r", encoding="utf-8") as handle:
+        return handle.readlines()
+
+
+def _write_env_lines(lines: list[str]) -> None:
+    env_path = _get_env_path()
+    os.makedirs(os.path.dirname(env_path), exist_ok=True)
+    with open(env_path, "w", encoding="utf-8") as handle:
+        handle.writelines(lines)
+
+
+def _update_env_value(lines: list[str], key: str, value: Optional[str]) -> None:
+    updated_line = f"{key}={value or ''}\n"
+    found = False
+    for index, line in enumerate(lines):
+        if line.lstrip().startswith(f"{key}="):
+            lines[index] = updated_line
+            found = True
+            break
+    if not found:
+        if lines and not lines[-1].endswith("\n"):
+            lines[-1] = lines[-1] + "\n"
+        lines.append(updated_line)
+
+
+def _is_masked_secret(value: Optional[str]) -> bool:
+    if not value or not isinstance(value, str):
+        return False
+    return value.startswith("sk-") and "..." in value
+
+
+def _resolve_value(value: Optional[str], existing: Optional[str]) -> Optional[str]:
+    if value is None:
+        return existing
+    return value
+
+
+def _resolve_secret(value: Optional[str], existing: Optional[str]) -> Optional[str]:
+    if _is_masked_secret(value):
+        return existing
+    return _resolve_value(value, existing)
+
+
 def get_default_settings() -> AgentSettings:
-    """Return default settings if no configuration exists"""
+    """Return settings derived from environment variables (.env)."""
+    llm_api_key = app_settings.LLM_API_KEY or app_settings.OPENAI_API_KEY
+    llm_model = app_settings.LLM_MODEL or app_settings.OPENAI_MODEL
+    llm_endpoint = app_settings.LLM_ENDPOINT
+    if not llm_endpoint and llm_api_key and str(llm_api_key).startswith("sk-"):
+        llm_endpoint = "https://api.openai.com/v1"
+
+    embedding_api_key = app_settings.EMBEDDING_API_KEY or app_settings.OPENAI_API_KEY
+    embedding_base_url = app_settings.EMBEDDING_BASE_URL or app_settings.OPENAI_EMBEDDING_ENDPOINT
+    embedding_model = app_settings.EMBEDDING_MODEL or "text-embedding-3-small"
+    embedding_dimensions = app_settings.EMBEDDING_DIMENSIONS or 1536
+
+    vector_host = app_settings.VECTOR_HOST or app_settings.MILVUS_HOST
+    vector_port = app_settings.VECTOR_PORT or app_settings.MILVUS_PORT
+
     # Note: target_db removed - connection info now comes from _data-source.md
     return AgentSettings(
         llm_config=LLMConfig(
-            llm_model=app_settings.OPENAI_MODEL,
-            temperature=0.0
+            llm_model=llm_model,
+            temperature=app_settings.LLM_TEMPERATURE,
+            llm_endpoint=llm_endpoint,
+            llm_api_key=llm_api_key
         ),
         embedding_config=EmbeddingConfig(
-            provider="openai",
-            model="text-embedding-3-small",
-            dimensions=1536,
-            api_key=app_settings.OPENAI_API_KEY or None,
-            base_url=app_settings.OPENAI_EMBEDDING_ENDPOINT or None
+            provider=app_settings.EMBEDDING_PROVIDER,
+            model=embedding_model,
+            dimensions=embedding_dimensions,
+            api_key=embedding_api_key,
+            base_url=embedding_base_url
         ),
         vector_config=VectorConfig(
-            provider="milvus",
-            host="localhost",
-            port="19630"
+            provider=app_settings.VECTOR_PROVIDER,
+            host=vector_host,
+            port=vector_port
         ),
         app_meta=AppMeta(
-            app_name="Octofy AI Agent",
-            version="1.0.0",
+            app_name=app_settings.APP_NAME,
+            version=app_settings.APP_VERSION,
             project_name=app_settings.PROJECT_NAME
         )
     )
 
-def _apply_runtime_defaults(settings_obj: Union[AgentSettings, AgentSettingsV2]) -> Union[AgentSettings, AgentSettingsV2]:
-    """Apply environment-based fallbacks without overwriting explicit config."""
-
-    # LLM defaults
-    if not settings_obj.llm_config.llm_api_key and app_settings.OPENAI_API_KEY:
-        settings_obj.llm_config.llm_api_key = app_settings.OPENAI_API_KEY
-
-    if not settings_obj.llm_config.llm_model and app_settings.OPENAI_MODEL:
-        settings_obj.llm_config.llm_model = app_settings.OPENAI_MODEL
-
-    if (not settings_obj.llm_config.llm_endpoint
-            and settings_obj.llm_config.llm_api_key
-            and str(settings_obj.llm_config.llm_api_key).startswith("sk-")):
-        settings_obj.llm_config.llm_endpoint = "https://api.openai.com/v1"
-
-    # Embedding defaults
-    if not settings_obj.embedding_config.api_key and app_settings.OPENAI_API_KEY:
-        settings_obj.embedding_config.api_key = app_settings.OPENAI_API_KEY
-    if not settings_obj.embedding_config.base_url and app_settings.OPENAI_EMBEDDING_ENDPOINT:
-        settings_obj.embedding_config.base_url = app_settings.OPENAI_EMBEDDING_ENDPOINT
-
-    # Vector defaults (stay within config file values when possible)
-    if not settings_obj.vector_config.host:
-        settings_obj.vector_config.host = "localhost"
-    if not settings_obj.vector_config.port:
-        settings_obj.vector_config.port = "19630"
-
-    return settings_obj
-
-
-def _load_v1_settings(data: dict) -> AgentSettings:
-    """Load v1 settings format.
-    
-    Note: Data sources are NEVER loaded from agent_settings.json.
-    They are always loaded from skills/_data-source.md files.
-    """
-    data = data.copy()
-
-    # Legacy migration for embedding config
-    if "embedding_config" not in data:
-        vec_conf = data.get("vector_config", {})
-        old_model = vec_conf.get("embedding_model", "text-embedding-3-small")
-        data["embedding_config"] = {
-            "provider": "openai",
-            "model": old_model,
-            "dimensions": 1536,
-            "api_key": None,
-            "base_url": None
-        }
-
-    # IMPORTANT: target_db is now deprecated - connection info comes from _data-source.md
-    # Remove it from data to avoid validation errors
-    data.pop("target_db", None)
-    
-    data.setdefault("llm_config", {})
-    data.setdefault("embedding_config", {})
-    data.setdefault("vector_config", {})
-    data.setdefault("app_meta", {})
-
-    settings = AgentSettings(**data)
-    return _apply_runtime_defaults(settings)
-
-
-def _load_v2_settings(data: dict) -> AgentSettingsV2:
-    """Load v2 settings format.
-    
-    Note: Data sources are NEVER loaded from agent_settings.json.
-    They are always loaded from skills/_data-source.md files.
-    The data_sources field is deprecated and ignored.
-    """
-    normalized = {
-        "data_sources": [],  # Always empty - data sources come from skills directory
-        "primary_source_id": None,  # Not used when loading from skills
-        "llm_config": data.get("llm_config", {}),
-        "embedding_config": data.get("embedding_config", {}),
-        "vector_config": data.get("vector_config", {}),
-        "app_meta": data.get("app_meta", {})
-    }
-
-    settings_v2 = AgentSettingsV2(**normalized)
-    return _apply_runtime_defaults(settings_v2)
-
 
 def load_settings() -> Union[AgentSettings, AgentSettingsV2]:
-    """Load settings from file, handling both v1 and v2 formats.
-    
-    Note: Data sources are NEVER loaded from agent_settings.json.
-    The presence of 'data_sources' key is ignored - all data sources
-    are loaded from skills/_data-source.md files.
-    """
-    if not os.path.exists(SETTINGS_FILE):
-        return get_default_settings()
-
-    try:
-        with open(SETTINGS_FILE, 'r') as f:
-            data = json.load(f)
-
-        if not isinstance(data, dict):
-            raise ValueError("Settings file must be a JSON object")
-
-        # Always load as v1 format (skills-based data sources)
-        # The 'data_sources' key is deprecated and ignored
-        return _load_v1_settings(data)
-
-    except Exception as e:
-        print(f"Error loading settings: {e}")
-        return get_default_settings()
+    """Load settings from environment variables (.env)."""
+    return get_default_settings()
 
 
 # --- Multi-Source Helper Functions (V2) ---
@@ -254,7 +215,7 @@ def decrypt_connection_string(encrypted_string: str) -> str:
 
 def get_data_source(source_id: str) -> Optional[TargetDBConfigV2]:
     """
-    DEPRECATED: Data sources are no longer stored in agent_settings.json.
+    DEPRECATED: Data sources are stored in skills/_data-source.md files.
     Use skills_service.load_data_source() instead to load from skills directory.
     
     Args:
@@ -273,7 +234,7 @@ def get_data_source(source_id: str) -> Optional[TargetDBConfigV2]:
 
 def add_data_source(source: TargetDBConfigV2) -> None:
     """
-    DEPRECATED: Data sources are no longer stored in agent_settings.json.
+    DEPRECATED: Data sources are stored in skills/_data-source.md files.
     Use the Admin UI to add data sources via skills directory.
     
     Args:
@@ -290,7 +251,7 @@ def add_data_source(source: TargetDBConfigV2) -> None:
 
 def remove_data_source(source_id: str) -> bool:
     """
-    DEPRECATED: Data sources are no longer stored in agent_settings.json.
+    DEPRECATED: Data sources are stored in skills/_data-source.md files.
     Use the Admin UI to manage data sources via skills directory.
     
     Args:
@@ -382,101 +343,64 @@ def update_source_object_count(source_id: str, count: int) -> bool:
 
 
 def save_settings(agent_settings: AgentSettings) -> bool:
-    """Save settings to file.
-    
-    Note: Data sources are NEVER saved to agent_settings.json.
-    They are only managed via skills/_data-source.md files.
-    """
+    """Persist settings to .env (source of truth)."""
     try:
-        # Ensure config directory exists
-        os.makedirs(os.path.dirname(SETTINGS_FILE), exist_ok=True)
-        
-        # Prepare for save - remove debug fields
-        data = agent_settings.model_dump()
-        
-        # CRITICAL: Remove data_sources and primary_source_id if present
-        # Data sources are ONLY stored in skills directory, never in agent_settings.json
-        data.pop('data_sources', None)
-        data.pop('primary_source_id', None)
-        
-        if 'target_db' in data:
-             if 'connection_string_decrypted' in data['target_db']:
-                del data['target_db']['connection_string_decrypted']
-             if 'python_connection_string_decrypted' in data['target_db']:
-                del data['target_db']['python_connection_string_decrypted']
+        env_path = _get_env_path()
+        existing_env = dotenv_values(env_path) if os.path.exists(env_path) else {}
+        lines = _read_env_lines()
 
-        # Ensure env defaults are persisted if missing in the object to be saved
-        # This handles cases where frontend might send empty values but we want to persist active env config
-        llm_conf = data.get('llm_config', {})
-        
-        # Check API Key
-        # Force check if key is falsy (None or empty string)
-        if not llm_conf.get('llm_api_key') and app_settings.OPENAI_API_KEY:
-             llm_conf['llm_api_key'] = app_settings.OPENAI_API_KEY
-             
-        # Check Model
-        if not llm_conf.get('llm_model') and app_settings.OPENAI_MODEL:
-             llm_conf['llm_model'] = app_settings.OPENAI_MODEL
-             
-        # Check Endpoint
-        # If endpoint is missing, and we have a valid OpenAI key (either existing or just populated), default to OpenAI
-        current_key = llm_conf.get('llm_api_key')
-        if not llm_conf.get('llm_endpoint') and current_key and str(current_key).startswith("sk-"):
-             llm_conf['llm_endpoint'] = "https://api.openai.com/v1"
-             
-        data['llm_config'] = llm_conf
+        llm_api_key = _resolve_secret(agent_settings.llm_config.llm_api_key, existing_env.get("LLM_API_KEY") or existing_env.get("OPENAI_API_KEY"))
+        embedding_api_key = _resolve_secret(agent_settings.embedding_config.api_key, existing_env.get("EMBEDDING_API_KEY") or existing_env.get("OPENAI_API_KEY"))
 
-        # Embedding config defaults
-        emb_conf = data.get('embedding_config', {})
-        if not emb_conf.get('api_key') and app_settings.OPENAI_API_KEY:
-            emb_conf['api_key'] = app_settings.OPENAI_API_KEY
-        if not emb_conf.get('base_url') and app_settings.OPENAI_EMBEDDING_ENDPOINT:
-            emb_conf['base_url'] = app_settings.OPENAI_EMBEDDING_ENDPOINT
-        data['embedding_config'] = emb_conf
+        llm_endpoint = _resolve_value(agent_settings.llm_config.llm_endpoint, existing_env.get("LLM_ENDPOINT"))
+        llm_model = _resolve_value(agent_settings.llm_config.llm_model, existing_env.get("LLM_MODEL") or existing_env.get("OPENAI_MODEL"))
+        llm_temperature = _resolve_value(str(agent_settings.llm_config.temperature), existing_env.get("LLM_TEMPERATURE"))
 
-        # Vector config defaults (persist existing file values, not .env)
-        vec_conf = data.get('vector_config', {})
-        current_settings_on_disk = load_settings()
-        if not vec_conf.get('host'):
-            vec_conf['host'] = current_settings_on_disk.vector_config.host
-        if not vec_conf.get('port'):
-            vec_conf['port'] = current_settings_on_disk.vector_config.port
-        data['vector_config'] = vec_conf
+        embedding_provider = _resolve_value(agent_settings.embedding_config.provider, existing_env.get("EMBEDDING_PROVIDER"))
+        embedding_base_url = _resolve_value(agent_settings.embedding_config.base_url, existing_env.get("EMBEDDING_BASE_URL") or existing_env.get("OPENAI_EMBEDDING_ENDPOINT"))
+        embedding_model = _resolve_value(agent_settings.embedding_config.model, existing_env.get("EMBEDDING_MODEL"))
+        embedding_dimensions = _resolve_value(str(agent_settings.embedding_config.dimensions), existing_env.get("EMBEDDING_DIMENSIONS"))
 
-        # --- FIX: Handle Masked Text from Frontend ---
-        # If the frontend sends back a masked string (e.g. "sk-...1234"), 
-        # we must NOT save that literal string. We should keep the existing key.
-        
-        # Load current settings from disk to compare
-        current_settings_on_disk = load_settings()
-        
-        # 1. Check Embedding API Key
-        incoming_emb_key = data.get('embedding_config', {}).get('api_key')
-        if incoming_emb_key and isinstance(incoming_emb_key, str):
-            if "..." in incoming_emb_key and incoming_emb_key.startswith("sk-"):
-                # It looks like a masked key. 
-                # Be conservative: if it matches the masked version of the current key, or just looks masked, restore original.
-                current_emb_key = current_settings_on_disk.embedding_config.api_key
-                if current_emb_key:
-                    # Check if restoring is appropriate
-                    # (Simple check: if we mask the current key, does it equal the incoming one?)
-                    key_str = str(current_emb_key)
-                    expected_mask = f"{key_str[:3]}...{key_str[-4:]}" if len(key_str) > 10 else key_str
-                    
-                    if incoming_emb_key == expected_mask:
-                        data['embedding_config']['api_key'] = current_emb_key
-                    else:
-                        # Fallback: If it definitely looks like a mask but doesn't match roughly, 
-                        # it's safer to keep the old valid key than save "..." which will break everything.
-                        # Unless the user literally typed "sk-...".
-                        # For now, let's assume if it has "..." it's a mask.
-                        data['embedding_config']['api_key'] = current_emb_key
+        vector_provider = _resolve_value(agent_settings.vector_config.provider, existing_env.get("VECTOR_PROVIDER"))
+        vector_host = _resolve_value(agent_settings.vector_config.host, existing_env.get("VECTOR_HOST") or existing_env.get("MILVUS_HOST"))
+        vector_port = _resolve_value(agent_settings.vector_config.port, existing_env.get("VECTOR_PORT") or existing_env.get("MILVUS_PORT"))
 
-        with open(SETTINGS_FILE, 'w') as f:
-            json.dump(data, f, indent=2)
+        app_name = _resolve_value(agent_settings.app_meta.app_name, existing_env.get("APP_NAME"))
+        app_version = _resolve_value(agent_settings.app_meta.version, existing_env.get("APP_VERSION"))
+        project_name = _resolve_value(agent_settings.app_meta.project_name, existing_env.get("PROJECT_NAME"))
+
+        updates = {
+            "LLM_API_KEY": llm_api_key,
+            "LLM_ENDPOINT": llm_endpoint,
+            "LLM_MODEL": llm_model,
+            "LLM_TEMPERATURE": llm_temperature,
+            "EMBEDDING_PROVIDER": embedding_provider,
+            "EMBEDDING_BASE_URL": embedding_base_url,
+            "EMBEDDING_API_KEY": embedding_api_key,
+            "EMBEDDING_MODEL": embedding_model,
+            "EMBEDDING_DIMENSIONS": embedding_dimensions,
+            "VECTOR_PROVIDER": vector_provider,
+            "VECTOR_HOST": vector_host,
+            "VECTOR_PORT": vector_port,
+            "APP_NAME": app_name,
+            "APP_VERSION": app_version,
+            "PROJECT_NAME": project_name
+        }
+
+        openai_api_key = llm_api_key or embedding_api_key or existing_env.get("OPENAI_API_KEY")
+        updates["OPENAI_API_KEY"] = openai_api_key
+        updates["OPENAI_MODEL"] = llm_model or existing_env.get("OPENAI_MODEL")
+        updates["OPENAI_EMBEDDING_ENDPOINT"] = embedding_base_url or existing_env.get("OPENAI_EMBEDDING_ENDPOINT")
+        updates["MILVUS_HOST"] = vector_host or existing_env.get("MILVUS_HOST")
+        updates["MILVUS_PORT"] = vector_port or existing_env.get("MILVUS_PORT")
+
+        for key, value in updates.items():
+            _update_env_value(lines, key, value)
+
+        _write_env_lines(lines)
         return True
     except Exception as e:
-        print(f"Failed to save settings: {e}")
+        print(f"Failed to save settings to .env: {e}")
         return False
 
 
@@ -561,5 +485,6 @@ def get_settings_for_display() -> Union[AgentSettings, AgentSettingsV2]:
 
     # Note: target_db handling removed - connection info now comes from _data-source.md
     # Mask sensitive API keys for display
+    settings.llm_config.llm_api_key = _mask_api_key(settings.llm_config.llm_api_key)
     settings.embedding_config.api_key = _mask_api_key(settings.embedding_config.api_key)
     return settings

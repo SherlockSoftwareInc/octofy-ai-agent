@@ -67,11 +67,11 @@ Trusted_Connection=yes  # ← Windows Authentication
 
 ## Verification Results
 
-### ✅ Configuration File
-- **File**: `config/agent_settings.json`
-- **Auth Type**: `windows`
-- **Username**: `null` (not needed for Windows auth)
-- **Connection Strings**: Regenerated with `Trusted_Connection=yes`
+### ✅ Configuration
+- **Data Sources**: Defined in `skills/data-sources/*/data-source.md` files
+- **Server/Database**: Parsed from markdown metadata
+- **Auth Type**: `windows` (default in code)
+- **Connection Strings**: Built dynamically with `Trusted_Connection=yes`
 
 ### ✅ Python Connection String
 ```
@@ -104,9 +104,9 @@ Trusted_Connection=yes  # ← Windows Authentication
 |------|---------|--------------|
 | `app/api/endpoints/generation.py` | Injects connection string into execution context | ✅ YES |
 | `app/services/execution_service.py` | Executes Python code with injected context | ✅ YES |
-| `app/services/settings_service.py` | Builds Windows auth connection strings | ✅ YES |
-| `app/core/database.py` | Database engine management | ✅ YES |
-| `config/agent_settings.json` | Runtime configuration | ✅ YES |
+| `app/services/settings_service.py` | Loads config from `.env` | ✅ YES |
+| `app/core/database.py` | Builds connection strings from skills metadata | ✅ YES |
+| `skills/data-sources/*/` | Data source definitions | ✅ YES |
 
 ---
 

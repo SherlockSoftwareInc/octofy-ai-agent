@@ -18,8 +18,8 @@ All SQL Server connections have been successfully changed to Windows Authenticat
 |------|--------|
 | `app/models/schemas.py` | Changed default `auth_type` from `"sql"` to `"windows"` (3 locations) |
 | `app/services/settings_service.py` | Changed default `auth_type` in `get_default_settings()` |
-| `config/agent_settings.json` | Updated `auth_type` and regenerated encrypted connection strings |
-| `.env.example` | Updated documentation to show Windows auth as default |
+| `skills/data-sources/*/data-source.md` | Database connection metadata (no auth details stored) |
+| `.env` | Application configuration (LLM, embedding, vector settings only) |
 
 ## Scripts Created
 

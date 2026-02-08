@@ -89,15 +89,6 @@ def update_settings(settings: AgentSettings, api_key: str = Depends(verify_api_k
     try:
         current_settings = load_settings()
 
-        # Encrypt connection string before saving (if it's provided in plaintext)
-        if settings.target_db.connection_string_encrypted and not settings.target_db.connection_string_encrypted.startswith("gAAAAA"):
-            # Looks like plaintext, encrypt it
-            settings.target_db.connection_string_encrypted = encrypt_string(settings.target_db.connection_string_encrypted)
-
-        # Encrypt python connection string before saving (if provided in plaintext)
-        if settings.target_db.python_connection_string_encrypted and not settings.target_db.python_connection_string_encrypted.startswith("gAAAAA"):
-            settings.target_db.python_connection_string_encrypted = encrypt_string(settings.target_db.python_connection_string_encrypted)
-
         # Validate Milvus settings only when host/port/provider changes
         vector_changed = (
             settings.vector_config.host != current_settings.vector_config.host or
@@ -276,25 +267,21 @@ def verify_settings(api_key: str = Depends(verify_api_key)):
 
     # 1. Verify Database
     try:
-        conn_str_encrypted = settings_obj.target_db.connection_string_encrypted
-        if conn_str_encrypted:
-            conn_str = decrypt_string(conn_str_encrypted)
-            
-            # Convert to SQLAlchemy URL format
+        from app.core.config import settings as app_settings
+        conn_str = app_settings.SQL_SERVER_CONNECTION_STRING
+        if conn_str:
             params = urllib.parse.quote_plus(conn_str)
             engine_url = f"mssql+pyodbc:///?odbc_connect={params}"
-            
-            # Attempt connection
             engine = create_engine(engine_url, pool_pre_ping=True, connect_args={"timeout": 5})
             with engine.connect() as connection:
                 connection.execute(text("SELECT 1"))
             engine.dispose()
-            
+
             results["db_connected"] = True
             results["db_message"] = "Successfully connected to the database."
         else:
             results["db_message"] = "No connection string configured."
-            
+
     except Exception as e:
         results["db_connected"] = False
         results["db_message"] = f"Database connection failed: {str(e)}"

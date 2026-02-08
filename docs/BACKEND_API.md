@@ -546,27 +546,16 @@ data: {"current":100,"total":100,"percentage":100,"status":"complete"}
 ### AgentSettings
 ```json
 {
-  "target_db": {
-    "friendly_name": "Northwind Database",
-    "description": "Sales database...",
-    "keywords": ["sales", "customers"],
-    "db_type": "mssql",
-    "server": "localhost",
-    "database_name": "Northwind",
-    "driver": "ODBC Driver 17 for SQL Server",
-    "auth_type": "sql | windows | ad_integrated | ad_password",
-    "username": "string | null"
-  },
   "llm_config": {
     "llm_model": "gpt-4o",
     "temperature": 0.0,
-    "llm_endpoint": "string | null",
-    "llm_api_key": "string | null"
+    "llm_endpoint": "https://api.openai.com/v1",
+    "llm_api_key": "sk-..."
   },
   "embedding_config": {
     "provider": "openai",
-    "base_url": "string | null",
-    "api_key": "string | null",
+    "base_url": "https://api.openai.com/v1",
+    "api_key": "sk-...",
     "model": "text-embedding-3-small",
     "dimensions": 1536
   },
@@ -577,10 +566,13 @@ data: {"current":100,"total":100,"percentage":100,"status":"complete"}
   },
   "app_meta": {
     "app_name": "Octofy AI Agent",
-    "version": "1.0.0"
+    "version": "1.0.0",
+    "project_name": "Octofy AI Agent"
   }
 }
 ```
+
+**Note**: Database connection info is NOT in settings. Data sources are defined in `skills/data-sources/*/data-source.md` files.
 
 ---
 
@@ -645,9 +637,11 @@ VECTOR_DB_ENABLED=true
 
 ### Runtime Configuration
 
-Settings are stored in `config/agent_settings.json` and can be modified via:
+Settings are loaded from `.env` file and can be modified via:
 - Admin UI Settings page
-- `PUT /api/v1/admin/settings` API
+- `PUT /api/v1/admin/settings` API (updates `.env` file)
+
+**Note**: Database connections are defined in `skills/data-sources/*/` directories, not in settings.
 
 ---
 

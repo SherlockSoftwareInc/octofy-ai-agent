@@ -15,10 +15,11 @@ All SQL Server connections have been changed from SQL authentication to Windows 
 ### 2. Settings Service (`app/services/settings_service.py`)
 - **get_default_settings()**: Changed default `auth_type` from `"sql"` to `"windows"`
 
-### 3. Configuration File (`config/agent_settings.json`)
-- Changed `auth_type` from `"sql"` to `"windows"`
-- Set `username` to `null` (not needed for Windows auth)
-- Regenerated encrypted connection strings with `Trusted_Connection=yes`
+### 3. Configuration Architecture
+- Moved database config from `agent_settings.json` to `skills/_data-source.md` files
+- Application config now in `.env` file (LLM, embedding, vector settings)
+- Connection strings built dynamically from markdown metadata
+- Windows authentication enabled by default in `app/core/database.py`
 
 ### 4. Environment Template (`.env.example`)
 - Updated documentation to show Windows authentication as default
@@ -111,20 +112,15 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON SCHEMA::dbo TO [DOMAIN\Username];
 
 ## Rollback Procedure
 
-If you need to revert to SQL authentication:
+Windows authentication is now the default. To use SQL authentication for specific data sources:
 
-1. Restore backup configuration:
-   ```powershell
-   copy config\agent_settings.v1.backup.json.* config\agent_settings.json
-   ```
+1. Edit the data source's `_data-source.md` file to add authentication details
+2. Update `app/core/database.py` to support multiple auth types per source
+3. Store SQL credentials securely in `.env` if needed
 
-2. Update schema defaults in `app/models/schemas.py`:
-   - Change `auth_type: AuthType = "windows"` back to `auth_type: AuthType = "sql"`
-
-3. Update settings service defaults in `app/services/settings_service.py`:
-   - Change `auth_type="windows"` back to `auth_type="sql"`
-
-4. Restart application
+**Note**: The old `agent_settings.json` configuration file no longer exists. Configuration is now split between:
+- `.env` - Application settings (LLM, embedding, vector)
+- `skills/_data-source.md` - Database connection metadata
 
 ## Security Considerations
 
@@ -144,10 +140,10 @@ If you need to revert to SQL authentication:
 ## Files Modified
 
 1. `app/models/schemas.py` - Updated default auth_type in 3 model classes
-2. `app/services/settings_service.py` - Updated default settings function
-3. `config/agent_settings.json` - Updated runtime configuration
-4. `.env.example` - Updated documentation
-5. `scripts/update_to_windows_auth.py` - New migration script (created)
+2. `app/services/settings_service.py` - Removed agent_settings.json, now uses `.env`
+3. `app/core/database.py` - Builds connection strings from skills metadata
+4. `skills/data-sources/*/data-source.md` - Data source definitions
+5. `.env` - Application configuration (LLM, embedding, vector settings)
 
 ## Next Steps
 

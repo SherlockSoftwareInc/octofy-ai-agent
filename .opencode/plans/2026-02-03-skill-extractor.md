@@ -21,7 +21,7 @@ Based on user input:
 |----------|--------|
 | Integration Strategy | Extend existing skills system (add `business/` and `data/` alongside `data-sources/`) |
 | Source Files | Scan `.py`, `.sql`, `.r`, `.sas` files from external path via `--scan-path` flag |
-| LLM Provider | Use existing LiteLLM config from `agent_settings.json` |
+| LLM Provider | Use existing LiteLLM config from `.env` file |
 | Execution Mode | CLI script only (`scripts/generate_skills.py`) |
 | Skill Discovery | Keyword matching (same as existing `search_data_groups_by_keywords`) |
 | Business vs Data Skills | Separate (not linked to existing Data Sources) |

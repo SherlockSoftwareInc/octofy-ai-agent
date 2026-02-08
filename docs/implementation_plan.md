@@ -22,5 +22,5 @@
     *   The UI displays a combined status message: success if verified, or specific error messages if verification failed despite saving.
 
 ## Verification
-*   **Database**: The system uses the encrypted connection string stored in `agent_settings.json` (decrypted on the fly by the backend) to verify connectivity. This solves the issue where the frontend might not have the password if it wasn't re-entered.
-*   **LLM**: The system uses the stored endpoint and API key to fetch models, verifying that the LLM service is reachable and authorized.
+*   **Database**: Connection info is loaded from `skills/_data-source.md` files. The system parses Server/Database metadata and builds connection strings dynamically.
+*   **LLM**: The system uses settings from `.env` file (endpoint and API key) to fetch models, verifying that the LLM service is reachable and authorized.

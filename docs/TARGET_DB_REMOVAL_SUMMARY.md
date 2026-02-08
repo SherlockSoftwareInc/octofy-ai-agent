@@ -48,17 +48,12 @@ January 31, 2025
 - `_load_v1_settings()`: Removes target_db from loaded data via `data.pop("target_db", None)`
 - `get_settings_for_display()`: Removed all target_db handling (no decryption, no server/database population)
 
-✅ **Removed from Configuration File** (`config/agent_settings.json`)
+✅ **Removed Database Configuration**
 
-- Completely removed target_db section including:
-  - connection_string_encrypted
-  - python_connection_string_encrypted
-  - driver
-  - auth_type
-  - username
-  - trust_server_certificate
-  - server
-  - database_name
+- Database connection info removed from configuration files entirely
+- All connection details now come from `skills/_data-source.md` files
+- Configuration moved to `.env` file for LLM, embedding, and vector settings
+- No more `agent_settings.json` - replaced with environment-based config
 
 ✅ **Updated Data Schemas**
 
@@ -95,8 +90,7 @@ January 31, 2025
 ### Old Flow
 
 ```code
-agent_settings.json 
-  → target_db 
+.env (fallback)
   → encrypted connection string 
   → decrypt 
   → database engine
@@ -113,12 +107,13 @@ skills/_data-source.md
 
 ## Key Benefits
 
-1. **Centralized Configuration**: All database metadata in one place (_data-source.md)
-2. **Simplified Settings**: No complex connection string encryption/decryption
-3. **Windows Authentication Default**: No password storage required
-4. **Better Separation**: Configuration data separated from runtime settings
-5. **Cleaner Codebase**: Removed 400+ lines of unused code
-6. **Maintainability**: Single source of truth for database information
+1. **Centralized Configuration**: All database metadata in `skills/_data-source.md`
+2. **Environment-Based Config**: LLM/embedding/vector settings in `.env` file
+3. **Simplified Settings**: No complex connection string encryption/decryption
+4. **Windows Authentication Default**: No password storage required
+5. **Better Separation**: Database info separated from application config
+6. **Cleaner Codebase**: Removed migration service and 400+ lines of UI code
+7. **Maintainability**: Single source of truth for each concern (.env for app, skills for data)
 
 ## Testing Results
 
@@ -155,8 +150,8 @@ skills/_data-source.md
 ## Code Removed
 
 - **Frontend**: ~400 lines (ConnectionDialog, auth helpers, state management)
-- **Backend**: Simplified settings service, removed encryption logic
-- **Config**: Removed target_db section from agent_settings.json
+- **Backend**: Migration service, simplified settings service
+- **Config**: Entire `config/agent_settings.json` file removed
 
 ## Skills File Format
 
@@ -185,7 +180,7 @@ Sales database for imported and exported specialty foods...
 
 ### Documentation to Update
 
-- `METADATA_MIGRATION.md` - Reflect target_db removal
+- ~~`METADATA_MIGRATION.md`~~ - Removed (obsolete migration guide)
 - `WINDOWS_AUTH_FLOW_DIAGRAM.md` - Update connection string flow
 - API documentation - Remove target_db references
 
@@ -194,9 +189,10 @@ Sales database for imported and exported specialty foods...
 ### Backend
 
 - `app/core/database.py` - Connection string building from markdown
-- `app/services/settings_service.py` - Removed target_db handling
-- `config/agent_settings.json` - Removed target_db section
-- `app/models/schemas.py` - Made target_db optional
+- `app/services/settings_service.py` - Loads config from `.env` only
+- `app/services/migration_service.py` - Removed (obsolete)
+- `app/models/schemas.py` - Made target_db optional (legacy support)
+- `.env` - Primary configuration source for app settings
 
 ### Frontend
 

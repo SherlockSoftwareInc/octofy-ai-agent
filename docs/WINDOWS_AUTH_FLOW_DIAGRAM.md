@@ -79,9 +79,10 @@
 ## Key Security Features
 
 ### 🔒 Configuration Level
-- **Auth Type**: Set to `"windows"` in `config/agent_settings.json`
-- **No Credentials**: Username field is `null`
-- **Encrypted Storage**: Connection strings stored with AES encryption
+- **Auth Type**: Windows Authentication (default in code)
+- **Data Sources**: Defined in `skills/_data-source.md` files
+- **App Config**: LLM/embedding/vector settings in `.env` file
+- **No Credentials**: Username field is `null` (Windows auth)
 
 ### 🔒 Code Injection Level
 - **Pre-Decrypted**: Connection string decrypted before code execution
@@ -102,22 +103,32 @@
 
 ## Configuration Sources
 
-### Primary Source
-**File**: `config/agent_settings.json`
-```json
-{
-  "target_db": {
-    "auth_type": "windows",
-    "username": null,
-    "connection_string_encrypted": "gAAAAAB...",
-    "python_connection_string_encrypted": "gAAAAAB..."
-  }
-}
+### Data Source Definition
+**File**: `skills/data-sources/[Name]/_data-source.md`
+```markdown
+# Northwind Database
+
+**Type:** SQL Server  
+**Server:** localhost
+**Database:** northwind
+
+**Friendly Name:** Northwind Database  
+**Keywords:** sales, customers, orders
+
+## Description
+
+Sales database for imported and exported specialty foods.
 ```
 
-### Encryption Key
-**Location**: Derived from application secret
-**Algorithm**: Fernet (symmetric encryption)
+### Application Settings
+**File**: `.env`
+```env
+LLM_MODEL=gpt-4o
+LLM_API_KEY=sk-...
+EMBEDDING_MODEL=text-embedding-3-small
+MILVUS_HOST=localhost
+MILVUS_PORT=19530
+```
 **Key Derivation**: PBKDF2 with salt
 
 ---
@@ -183,6 +194,6 @@ GRANT SELECT ON SCHEMA::dbo TO [DOMAIN\Username];
 
 - `app/api/endpoints/generation.py` - Connection string injection
 - `app/services/execution_service.py` - Python code execution
-- `app/services/settings_service.py` - Configuration management
-- `config/agent_settings.json` - Runtime configuration
+- `app/services/settings_service.py` - Configuration management (`.env`)
+- `skills/data-sources/*/` - Data source definitions
 - `scripts/verify_python_execution_auth.py` - Verification script

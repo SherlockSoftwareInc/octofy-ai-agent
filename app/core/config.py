@@ -1,8 +1,12 @@
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic import Field, AliasChoices
 from typing import Optional
+from pathlib import Path
+
+_ROOT_ENV = str(Path(__file__).resolve().parents[2] / ".env")
 
 class Settings(BaseSettings):
+    model_config = SettingsConfigDict(env_file=_ROOT_ENV, env_file_encoding="utf-8")
     PROJECT_NAME: str = "Database AI Agent"
     API_V1_STR: str = "/api/v1"
     
@@ -28,6 +32,23 @@ class Settings(BaseSettings):
             "openai_embedding",
         ),
     )
+    LLM_API_KEY: Optional[str] = None
+    LLM_MODEL: Optional[str] = None
+    LLM_ENDPOINT: Optional[str] = None
+    LLM_TEMPERATURE: float = 0.0
+
+    EMBEDDING_PROVIDER: str = "openai"
+    EMBEDDING_BASE_URL: Optional[str] = None
+    EMBEDDING_API_KEY: Optional[str] = None
+    EMBEDDING_MODEL: str = "text-embedding-3-small"
+    EMBEDDING_DIMENSIONS: int = 1536
+
+    VECTOR_PROVIDER: str = "milvus"
+    VECTOR_HOST: str = "localhost"
+    VECTOR_PORT: str = "19630"
+
+    APP_NAME: str = "Octofy AI Agent"
+    APP_VERSION: str = "1.0.0"
     
     # Database
     SQL_SERVER_CONNECTION_STRING: Optional[str] = None

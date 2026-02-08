@@ -460,14 +460,13 @@ raw_sql = response.choices[0].message.content
 
 - Uses `litellm` library for vendor abstraction
 - Supports: OpenAI, Azure OpenAI, Anthropic, Ollama, etc.
-- Configured via `config/agent_settings.json`:
+- Configured via `.env` file:
 
-  ```json
-  {
-    "llm_config": {
-      "llm_model": "gpt-4o",
-      "llm_endpoint": "https://api.openai.com/v1",
-      "llm_api_key": "sk-..."
+  ```env
+  LLM_MODEL=gpt-4o
+  LLM_ENDPOINT=https://api.openai.com/v1
+  LLM_API_KEY=sk-...
+  ```
     }
   }
   ```
@@ -899,7 +898,8 @@ if (result.query_type === 'uncertain') {
 
 ### Key Configuration Files
 
-1. **`config/agent_settings.json`** - LLM and feature flags
+1. **`.env`** - LLM and feature flags
+2. **`skills/_data-source.md`** - Database metadata
 
    ```json
    {
