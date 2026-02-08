@@ -1,91 +1,67 @@
 """
 System Query Service - Handles SQL Server system metadata queries.
 
-Detects when users ask about database internals (tables, columns, views,
-server version, etc.) and generates T-SQL using system catalog views
-instead of the business schema discovery pipeline.
+Provides LLM-based intent classification (data_query / system_metadata / off_topic)
+and a specialized prompt builder for system catalog queries.
 """
 
-import re
 import logging
 from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-# Patterns that indicate a system metadata query.
-# Each pattern is a compiled regex tested against the lowercased query.
-# Order does not matter - any match triggers system intent.
-SYSTEM_QUERY_PATTERNS = [
-    # Table discovery
-    re.compile(r'\b(list|show|get|find|what|which|display)\b.*\btables?\b'),
-    # Column / structure inspection
-    re.compile(r'\b(list|show|get|find|what|which|display)\b.*\bcolumns?\b'),
-    re.compile(r'\bcolumn\s*(info|information|details?|metadata)\b'),
-    re.compile(r'\btable\s*(structure|definition|schema|layout|design)\b'),
-    re.compile(r'\b(describe|definition\s+of)\b.*\btable\b'),
-    # View discovery
-    re.compile(r'\b(list|show|get|find|what|which|display)\b.*\bviews?\b'),
-    # Schema discovery
-    re.compile(r'\b(list|show|get|find|what|which|display)\b.*\bschemas?\b'),
-    # Index inspection
-    re.compile(r'\b(list|show|get|find|what|which|display)\b.*\bindexe?s\b'),
-    # Stored procedure discovery
-    re.compile(r'\b(list|show|get|find|what|which|display)\b.*\b(stored\s+)?procedures?\b'),
-    # Database-level metadata
-    re.compile(r'\b(list|show|get|find|what|which)\b.*\bdatabases?\b'),
-    re.compile(r'\bdatabase\s*(size|info|information|details?|metadata|properties)\b'),
-    re.compile(r'\brow\s*counts?\b.*\btables?\b'),
-    # Server version
-    re.compile(r'\bsql\s*(server)?\s*version\b'),
-    re.compile(r'\bserver\s*version\b'),
-    re.compile(r'\b(what|which)\s+version\b'),
-    # Describe pattern (common DBA shorthand)
-    re.compile(r'\bdescribe\b.*\b\w+\b'),
-    # "how many tables" pattern
-    re.compile(r'\bhow\s+many\s+tables\b'),
-]
+# The three valid intent categories
+VALID_INTENTS = {"data_query", "system_metadata", "off_topic"}
 
-# Negative patterns - if these match, it is likely a business query even
-# if a positive pattern also matched (e.g. "show me sales from the orders table").
-BUSINESS_OVERRIDE_PATTERNS = [
-    re.compile(r'\b(total|sum|average|avg|count|revenue|sales|profit|cost|amount)\b'),
-    re.compile(r'\b(by|per|group\s+by|order\s+by|where|having|between|from\s+\d)\b'),
-    re.compile(r'\b(compare|trend|forecast|growth|decline|ratio|percentage)\b'),
-    re.compile(r'\b(customers?|employees?|products?|orders?|invoices?|shipments?)\b.*\b(who|how many|total|last|this)\b'),
-]
+# Classification prompt — kept minimal to reduce latency and token cost.
+CLASSIFICATION_SYSTEM_PROMPT = """You are a query intent classifier for a SQL Server database assistant.
+
+Classify the user's message into exactly ONE of these categories:
+
+- **data_query** — The user wants to retrieve, analyze, or aggregate BUSINESS DATA stored in the database (e.g., sales figures, customer counts, revenue trends, employee records).
+- **system_metadata** — The user wants information about the DATABASE STRUCTURE or SERVER itself (e.g., list tables, show columns, table row counts, SQL Server version, indexes, schemas, which tables have a certain column).
+- **off_topic** — The user's message is NOT related to querying or exploring the database at all (e.g., greetings, general knowledge questions, jokes, SQL syntax explanations).
+
+Reply with EXACTLY one word: data_query, system_metadata, or off_topic
+Do NOT include any other text."""
 
 
-def detect_system_query_intent(query: str) -> bool:
+def classify_query_intent(query: str, llm_service) -> str:
     """
-    Detect whether a query is asking about SQL Server system metadata.
-
-    Returns True if the query is about database internals (tables, columns,
-    views, version, etc.) rather than business data.
+    Classify user query intent using the LLM.
 
     Args:
         query: The user's natural language query.
+        llm_service: An LLM service instance with a chat_completion() method.
 
     Returns:
-        True if system metadata intent is detected, False otherwise.
+        One of: "data_query", "system_metadata", "off_topic".
+        Defaults to "data_query" on any error (safest fallback — lets the
+        existing pipeline handle it).
     """
     if not query or not query.strip():
-        return False
+        return "off_topic"
 
-    query_lower = query.lower().strip()
+    try:
+        messages = [
+            {"role": "system", "content": CLASSIFICATION_SYSTEM_PROMPT},
+            {"role": "user", "content": query},
+        ]
 
-    # Check positive patterns
-    has_system_signal = any(p.search(query_lower) for p in SYSTEM_QUERY_PATTERNS)
-    if not has_system_signal:
-        return False
+        response = llm_service.chat_completion(messages, temperature=0)
+        intent = (response or "").strip().lower()
 
-    # Check negative overrides - business context overrules system signals
-    has_business_signal = any(p.search(query_lower) for p in BUSINESS_OVERRIDE_PATTERNS)
-    if has_business_signal:
-        logger.debug(f"System intent suppressed by business signal for: {query[:80]}")
-        return False
+        if intent in VALID_INTENTS:
+            logger.info(f"Query classified as '{intent}': {query[:80]}")
+            return intent
 
-    logger.info(f"System metadata intent detected for: {query[:80]}")
-    return True
+        # LLM returned something unexpected — default to data_query
+        logger.warning(f"LLM returned unrecognized intent '{intent}' for: {query[:80]}. Defaulting to data_query.")
+        return "data_query"
+
+    except Exception as e:
+        logger.error(f"Intent classification failed: {e}. Defaulting to data_query.")
+        return "data_query"
 
 
 # --- System View Reference (constant) ---

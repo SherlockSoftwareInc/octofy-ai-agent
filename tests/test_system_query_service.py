@@ -1,89 +1,124 @@
 """
-Tests for system query intent detection and prompt building.
+Tests for query intent classification and system catalog prompt building.
 """
 
-import pytest
-from app.services.system_query_service import detect_system_query_intent
+from unittest.mock import MagicMock
+from app.services.system_query_service import classify_query_intent
 from app.services.system_query_service import build_system_catalog_prompt
 
 
-class TestDetectSystemQueryIntent:
-    """Test suite for detect_system_query_intent function"""
+class TestClassifyQueryIntent:
+    """Test suite for LLM-based classify_query_intent function"""
 
-    # --- Positive cases: should detect as system query ---
+    def _make_llm(self, response_text: str) -> MagicMock:
+        """Create a mock LLM service that returns the given text."""
+        llm = MagicMock()
+        llm.chat_completion.return_value = response_text
+        return llm
+
+    # --- system_metadata cases ---
 
     def test_list_tables(self):
-        assert detect_system_query_intent("list all tables in the database") is True
+        llm = self._make_llm("system_metadata")
+        assert classify_query_intent("list all tables in the database", llm) == "system_metadata"
 
-    def test_show_tables(self):
-        assert detect_system_query_intent("show me the tables") is True
-
-    def test_what_tables(self):
-        assert detect_system_query_intent("what tables are available?") is True
-
-    def test_list_columns(self):
-        assert detect_system_query_intent("list the columns in the Orders table") is True
-
-    def test_column_info(self):
-        assert detect_system_query_intent("give me column info for Products") is True
-
-    def test_table_structure(self):
-        assert detect_system_query_intent("show me the table structure of Customers") is True
+    def test_show_columns(self):
+        llm = self._make_llm("system_metadata")
+        assert classify_query_intent("show columns for the Orders table", llm) == "system_metadata"
 
     def test_sql_version(self):
-        assert detect_system_query_intent("what SQL Server version are we running?") is True
+        llm = self._make_llm("system_metadata")
+        assert classify_query_intent("what SQL Server version are we running?", llm) == "system_metadata"
 
-    def test_database_size(self):
-        assert detect_system_query_intent("what is the database size?") is True
+    def test_how_many_tables_have_column(self):
+        """The query that originally broke the regex approach"""
+        llm = self._make_llm("system_metadata")
+        assert classify_query_intent("How many tables have EmployeeID column", llm) == "system_metadata"
 
-    def test_list_databases(self):
-        assert detect_system_query_intent("list all databases on this server") is True
+    # --- data_query cases ---
 
-    def test_show_schemas(self):
-        assert detect_system_query_intent("show all schemas in the database") is True
+    def test_business_sales(self):
+        llm = self._make_llm("data_query")
+        assert classify_query_intent("show me total sales by region", llm) == "data_query"
 
-    def test_list_views(self):
-        assert detect_system_query_intent("list all views") is True
+    def test_business_customers(self):
+        llm = self._make_llm("data_query")
+        assert classify_query_intent("how many customers ordered last month?", llm) == "data_query"
 
-    def test_show_indexes(self):
-        assert detect_system_query_intent("show indexes on the Orders table") is True
+    # --- off_topic cases ---
 
-    def test_table_row_counts(self):
-        assert detect_system_query_intent("show row counts for all tables") is True
+    def test_off_topic_greeting(self):
+        llm = self._make_llm("off_topic")
+        assert classify_query_intent("What a nice day!", llm) == "off_topic"
 
-    def test_list_stored_procedures(self):
-        assert detect_system_query_intent("list stored procedures") is True
+    def test_off_topic_general_knowledge(self):
+        llm = self._make_llm("off_topic")
+        assert classify_query_intent("What is the capital of France?", llm) == "off_topic"
 
-    def test_describe_table(self):
-        assert detect_system_query_intent("describe the Employees table") is True
+    # --- Robustness: LLM returns unexpected text ---
 
-    def test_case_insensitive(self):
-        assert detect_system_query_intent("LIST ALL TABLES") is True
+    def test_strips_whitespace(self):
+        llm = self._make_llm("  system_metadata  \n")
+        assert classify_query_intent("list tables", llm) == "system_metadata"
 
-    # --- Negative cases: should NOT detect as system query ---
+    def test_defaults_to_data_query_on_garbage(self):
+        """If LLM returns something unrecognized, default to data_query (safest)"""
+        llm = self._make_llm("I think this is about tables")
+        assert classify_query_intent("list tables", llm) == "data_query"
 
-    def test_business_query_sales(self):
-        assert detect_system_query_intent("show me total sales by region") is False
+    def test_empty_query_returns_off_topic(self):
+        """Empty or blank queries should be classified as off_topic without calling LLM"""
+        llm = self._make_llm("data_query")
+        assert classify_query_intent("", llm) == "off_topic"
+        llm.chat_completion.assert_not_called()
 
-    def test_business_query_customers(self):
-        assert detect_system_query_intent("how many customers ordered last month?") is False
+    def test_none_query_returns_off_topic(self):
+        llm = self._make_llm("data_query")
+        assert classify_query_intent(None, llm) == "off_topic"
+        llm.chat_completion.assert_not_called()
 
-    def test_business_query_join(self):
-        assert detect_system_query_intent("compare revenue across product categories") is False
+    def test_whitespace_only_query_returns_off_topic(self):
+        """Whitespace-only queries should be classified as off_topic without calling LLM"""
+        llm = self._make_llm("data_query")
+        assert classify_query_intent("   ", llm) == "off_topic"
+        llm.chat_completion.assert_not_called()
 
-    def test_business_query_with_table_word(self):
-        """'table' in a business context should not trigger system intent"""
-        assert detect_system_query_intent("show me the sales figures from the quarterly report table") is False
+    def test_llm_returns_none_defaults_to_data_query(self):
+        """If LLM returns None instead of a string, default to data_query"""
+        llm = MagicMock()
+        llm.chat_completion.return_value = None
+        assert classify_query_intent("list all tables", llm) == "data_query"
 
-    def test_general_question(self):
-        assert detect_system_query_intent("what is a LEFT JOIN?") is False
+    def test_llm_exception_defaults_to_data_query(self):
+        """If LLM call fails, default to data_query to avoid blocking the user"""
+        llm = MagicMock()
+        llm.chat_completion.side_effect = Exception("API error")
+        assert classify_query_intent("list all tables", llm) == "data_query"
 
-    def test_empty_query(self):
-        assert detect_system_query_intent("") is False
+    # --- Verify prompt structure ---
+
+    def test_sends_system_and_user_message(self):
+        llm = self._make_llm("data_query")
+        classify_query_intent("show me sales", llm)
+        llm.chat_completion.assert_called_once()
+        messages = llm.chat_completion.call_args[0][0]
+        assert len(messages) == 2
+        assert messages[0]["role"] == "system"
+        assert messages[1]["role"] == "user"
+        assert "show me sales" in messages[1]["content"]
+
+    def test_system_prompt_mentions_three_categories(self):
+        llm = self._make_llm("data_query")
+        classify_query_intent("test query", llm)
+        messages = llm.chat_completion.call_args[0][0]
+        system_content = messages[0]["content"]
+        assert "data_query" in system_content
+        assert "system_metadata" in system_content
+        assert "off_topic" in system_content
 
 
 class TestBuildSystemCatalogPrompt:
-    """Test suite for build_system_catalog_prompt function"""
+    """Test suite for build_system_catalog_prompt function (unchanged)"""
 
     def test_returns_string(self):
         result = build_system_catalog_prompt("list all tables")
@@ -115,48 +150,9 @@ class TestBuildSystemCatalogPrompt:
         assert "T-SQL" in result
 
     def test_includes_no_business_data_rule(self):
-        """Prompt should instruct LLM to avoid business schemas"""
         result = build_system_catalog_prompt("list tables")
         assert "business" in result.lower() or "user data" in result.lower()
 
     def test_with_database_info(self):
         result = build_system_catalog_prompt("list tables", database_info="Database: SalesDB")
         assert "SalesDB" in result
-
-
-class TestDetectSystemQueryIntentEdgeCases:
-    """Edge cases and boundary conditions for system intent detection"""
-
-    def test_mixed_case_keywords(self):
-        assert detect_system_query_intent("List All Tables") is True
-
-    def test_extra_whitespace(self):
-        assert detect_system_query_intent("  list   tables  ") is True
-
-    def test_conversational_phrasing(self):
-        assert detect_system_query_intent("can you show me what tables exist?") is True
-
-    def test_specific_table_columns(self):
-        assert detect_system_query_intent("what are the columns in dbo.Orders?") is True
-
-    def test_version_question(self):
-        assert detect_system_query_intent("what version of SQL Server is this?") is True
-
-    def test_ambiguous_but_system(self):
-        """'describe table' is a system operation even without specifying 'system'"""
-        assert detect_system_query_intent("describe the Employees table") is True
-
-    def test_business_with_table_mention(self):
-        """Business queries mentioning tables should not trigger system path"""
-        assert detect_system_query_intent("show me total revenue from the sales table") is False
-
-    def test_business_aggregation(self):
-        assert detect_system_query_intent("list the top 10 customers by revenue") is False
-
-    def test_system_query_with_count_tables(self):
-        """Asking how many tables exist is a system query"""
-        assert detect_system_query_intent("how many tables are in the database?") is True
-
-    def test_none_input(self):
-        """Should handle None gracefully by returning False"""
-        assert detect_system_query_intent(None) is False
