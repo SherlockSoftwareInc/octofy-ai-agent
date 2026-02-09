@@ -212,6 +212,28 @@ class SkillsService:
             file_path=str(file_path)
         )
     
+    def load_primary_data_source_by_name(self, name: str) -> Optional[DataSource]:
+        """
+        Load a specific data source by name from its _data-source.md file.
+        
+        Args:
+            name: The data source name
+            
+        Returns:
+            DataSource object or None if not found
+        """
+        slug = re.sub(r'[^\w\s-]', '', name.lower()).replace(' ', '-')
+        ds_file = self.skills_path / slug / "_data-source.md"
+        if ds_file.exists():
+            return self._parse_data_source_file(ds_file)
+        
+        # Fallback: search all _data-source.md files
+        for f in self.skills_path.rglob("_data-source.md"):
+            ds = self._parse_data_source_file(f)
+            if ds and ds.name.lower() == name.lower():
+                return ds
+        return None
+    
     def _parse_data_group_file(self, file_path: Path) -> Optional[DataGroup]:
         """
         Parse a single _data-group.md file
@@ -721,11 +743,12 @@ class SkillsService:
         Returns:
             Dictionary mapping schema name to object index data
         """
-        if self._object_indices_cache is not None and not force_reload:
-            return self._object_indices_cache.get(data_source, {})
-        
         if self._object_indices_cache is None:
             self._object_indices_cache = {}
+        
+        # Return from cache if this specific data source was already loaded
+        if data_source in self._object_indices_cache and not force_reload:
+            return self._object_indices_cache[data_source]
         
         indices = {}
         
@@ -764,7 +787,18 @@ class SkillsService:
             List of matching objects with metadata
         """
         query_lower = query.lower()
-        query_terms = set(re.findall(r'\w+', query_lower))
+        # Filter out stop words and very short terms for better precision
+        stop_words = {'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 
+                     'of', 'with', 'by', 'from', 'up', 'about', 'into', 'through', 'during',
+                     'show', 'me', 'get', 'find', 'list', 'all', 'what', 'which', 'who', 'where',
+                     'when', 'how', 'is', 'are', 'was', 'were', 'be', 'been', 'being', 'have',
+                     'has', 'had', 'do', 'does', 'did', 'will', 'would', 'could', 'should',
+                     'i', 'want', 'need', 'information', 'records', 'data',
+                     'table', 'tables', 'view', 'views', 'column', 'columns',
+                     'stored', 'stores', 'store', 'contains', 'contain', 'containing',
+                     'database', 'schema', 'object', 'objects', 'field', 'fields'}
+        query_terms = set(word for word in re.findall(r'\w+', query_lower) 
+                        if word not in stop_words and len(word) > 2)
         
         results = []
         

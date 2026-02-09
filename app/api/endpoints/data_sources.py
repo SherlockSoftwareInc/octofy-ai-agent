@@ -1,20 +1,27 @@
 """
 Data source management endpoints for multi-source schema tree.
 """
-from fastapi import APIRouter, HTTPException, Depends
-from typing import List
+from fastapi import APIRouter, HTTPException, Depends, BackgroundTasks
+from typing import List, Dict
 from datetime import datetime
 import re
+import logging
 
 from app.models.schemas import (
     AddDataSourceRequest, DataSourceResponse, DataSourceListResponse,
-    ConnectionTestRequest, ConnectionTestResponse, TargetDBConfigV2
+    ConnectionTestRequest, ConnectionTestResponse, TargetDBConfigV2,
+    ScanDataSourceRequest
 )
 from app.services.vector_store import get_vector_store
 from app.services.skills_service import SkillsService
 from app.core.auth import verify_api_key
 from app.core.database import test_connection
 import uuid
+
+logger = logging.getLogger(__name__)
+
+# In-memory scan status store (source_id -> status dict)
+_scan_status: Dict[str, Dict] = {}
 
 router = APIRouter()
 
@@ -82,18 +89,21 @@ def list_data_sources(api_key: str = Depends(verify_api_key)):
 
 
 @router.post("/data-sources", response_model=DataSourceResponse)
-def add_data_source(request: AddDataSourceRequest, api_key: str = Depends(verify_api_key)):
+def add_data_source(
+    request: AddDataSourceRequest,
+    background_tasks: BackgroundTasks,
+    api_key: str = Depends(verify_api_key),
+):
     """
     Add a new data source via the skills library.
-    
+
     Creates the data source folder structure and _data-source.md in skills/data-sources/.
+    If server and database_name are provided (SQL Server), a background scan is
+    automatically started to discover and generate schema skill files.
     """
-    import logging
-    logger = logging.getLogger(__name__)
-    
     try:
         from app.services.skills_admin_service import create_data_source as create_ds
-        
+
         # Map AddDataSourceRequest fields to skills format
         data = {
             "name": request.friendly_name,
@@ -101,12 +111,33 @@ def add_data_source(request: AddDataSourceRequest, api_key: str = Depends(verify
             "keywords": request.keywords,
             "type": "SQL Server",
             "status": "Active",
+            "server": request.server,
+            "database": request.database_name,
         }
-        
+
         result = create_ds(data)
-        
+
         # Build response
         source_id = f"skill_{re.sub(r'[^a-zA-Z0-9]', '_', request.friendly_name.lower())}"
+
+        # If SQL Server connection info provided, auto-scan in background
+        if request.server and request.database_name:
+            _scan_status[source_id] = {"status": "running", "message": "Scan queued..."}
+            background_tasks.add_task(
+                _run_schema_scan,
+                source_id=source_id,
+                data_source_name=request.friendly_name,
+                server=request.server,
+                database=request.database_name,
+                auth_type=request.auth_type or "windows",
+                driver=request.driver or "ODBC Driver 17 for SQL Server",
+                username=request.username,
+                password=request.password,
+                trust_server_certificate=request.trust_server_certificate,
+                description=request.description,
+                keywords=request.keywords,
+            )
+
         return DataSourceResponse(
             source_id=source_id,
             friendly_name=request.friendly_name,
@@ -114,7 +145,7 @@ def add_data_source(request: AddDataSourceRequest, api_key: str = Depends(verify
             keywords=request.keywords,
             server=request.server or "(Defined in schema library)",
             database_name=request.database_name or "(Defined in schema library)",
-            db_type="mssql",
+            db_type=request.db_type or "mssql",
             enabled=True,
             is_primary=False,
             object_count=0,
@@ -125,6 +156,177 @@ def add_data_source(request: AddDataSourceRequest, api_key: str = Depends(verify
     except Exception as e:
         logger.error(f"Failed to create data source: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to create data source: {str(e)}")
+
+
+@router.post("/data-sources/{source_id}/scan")
+def scan_data_source(
+    source_id: str,
+    background_tasks: BackgroundTasks,
+    body: ScanDataSourceRequest = None,
+    api_key: str = Depends(verify_api_key),
+):
+    """
+    Trigger a schema scan for an existing data source.
+
+    Connection info can come from:
+    1. The request body (highest priority)
+    2. The _data-source.md file
+    If provided via body, the _data-source.md is also updated.
+    """
+    from app.services.skills_service import SkillsService
+
+    skills_service = SkillsService()
+    skills_service._data_sources_cache = None  # Clear cache
+    skills_sources = skills_service.load_data_sources_index()
+    actual_name = None
+    for s in skills_sources:
+        sid = f"skill_{re.sub(r'[^a-zA-Z0-9]', '_', s.name.lower())}"
+        if sid == source_id:
+            actual_name = s.name
+            break
+
+    if not actual_name:
+        raise HTTPException(status_code=404, detail=f"Data source {source_id} not found")
+
+    server = None
+    database = None
+    auth_type = "windows"
+    driver = "ODBC Driver 17 for SQL Server"
+    username = None
+    password = None
+    trust_cert = True
+
+    # 1. Try request body first
+    if body and body.server and body.database_name:
+        server = body.server
+        database = body.database_name
+        auth_type = body.auth_type or "windows"
+        driver = body.driver or driver
+        username = body.username
+        password = body.password
+        trust_cert = body.trust_server_certificate
+
+        # Persist to _data-source.md so future scans don't need body
+        from app.services.schema_scan_service import _ensure_connection_fields
+        from pathlib import Path
+        slug = re.sub(r'[^\w\s-]', '', actual_name.lower()).replace(' ', '-')
+        ds_dir = Path("skills/data-sources") / slug
+        if ds_dir.exists():
+            _ensure_connection_fields(ds_dir, server, database)
+
+    # 2. Fallback to _data-source.md
+    if not server or not database:
+        ds = skills_service.load_primary_data_source_by_name(actual_name)
+        if ds and hasattr(ds, 'connection_info') and ds.connection_info:
+            server = server or ds.connection_info.get('server')
+            database = database or ds.connection_info.get('database')
+
+    if not server or not database:
+        conn = _read_connection_from_md(actual_name)
+        server = server or conn.get('server')
+        database = database or conn.get('database')
+
+    if not server or not database:
+        raise HTTPException(
+            status_code=400,
+            detail="missing_connection_info"
+        )
+
+    _scan_status[source_id] = {"status": "running", "message": "Scan started..."}
+    background_tasks.add_task(
+        _run_schema_scan,
+        source_id=source_id,
+        data_source_name=actual_name,
+        server=server,
+        database=database,
+        auth_type=auth_type,
+        driver=driver,
+        username=username,
+        password=password,
+        trust_server_certificate=trust_cert,
+    )
+
+    return {"status": "started", "message": f"Schema scan started for {actual_name}"}
+
+
+@router.get("/data-sources/{source_id}/scan-status")
+def get_scan_status(source_id: str, api_key: str = Depends(verify_api_key)):
+    """Get the current scan status for a data source."""
+    if source_id in _scan_status:
+        return _scan_status[source_id]
+    return {"status": "idle", "message": "No scan running"}
+
+
+def _run_schema_scan(
+    source_id: str,
+    data_source_name: str,
+    server: str,
+    database: str,
+    auth_type: str = "windows",
+    driver: str = "ODBC Driver 17 for SQL Server",
+    username: str = None,
+    password: str = None,
+    trust_server_certificate: bool = True,
+    description: str = "",
+    keywords: List[str] = None,
+):
+    """Background task wrapper for schema scanning."""
+    try:
+        _scan_status[source_id] = {"status": "running", "message": "Connecting to database..."}
+        from app.services.schema_scan_service import scan_database_objects
+
+        result = scan_database_objects(
+            data_source_name=data_source_name,
+            server=server,
+            database=database,
+            auth_type=auth_type,
+            driver=driver,
+            username=username,
+            password=password,
+            trust_server_certificate=trust_server_certificate,
+            description=description,
+            keywords=keywords or [],
+        )
+        _scan_status[source_id] = {
+            "status": "completed",
+            "message": f"Scan complete: {result['total_objects']} objects discovered ({result['tables_created']} tables, {result['views_created']} views) across {result['schemas_scanned']} schemas.",
+            "result": result,
+        }
+    except Exception as e:
+        logger.error(f"Schema scan failed for {data_source_name}: {e}", exc_info=True)
+        _scan_status[source_id] = {
+            "status": "error",
+            "message": f"Scan failed: {str(e)}",
+        }
+
+
+def _read_connection_from_md(data_source_name: str) -> Dict[str, str]:
+    """Read Server/Database from _data-source.md."""
+    from pathlib import Path
+    slug = re.sub(r'[^\w\s-]', '', data_source_name.lower()).replace(' ', '-')
+    ds_file = Path("skills/data-sources") / slug / "_data-source.md"
+    result = {}
+    if ds_file.exists():
+        content = ds_file.read_text(encoding='utf-8')
+        server_m = re.search(r'\*\*Server:\*\*\s*([^\n]+)', content)
+        db_m = re.search(r'\*\*Database:\*\*\s*([^\n]+)', content)
+        if server_m:
+            result['server'] = server_m.group(1).strip()
+        if db_m:
+            result['database'] = db_m.group(1).strip()
+    return result
+
+
+def _load_data_source_md(name: str):
+    """Try to load data source info by name."""
+    try:
+        skills_service = SkillsService()
+        for ds in skills_service.load_data_sources_index():
+            if ds.name.lower() == name.lower():
+                return ds
+    except Exception:
+        pass
+    return None
 
 
 @router.get("/data-sources/{source_id}", response_model=DataSourceResponse)

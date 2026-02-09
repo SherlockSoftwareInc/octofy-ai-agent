@@ -1089,6 +1089,14 @@ export const api = {
         },
         toggleEnabled: async (sourceId: string, enabled: boolean): Promise<void> => {
             await axios.post(`${API_BASE_URL}/admin/data-sources/${encodeURIComponent(sourceId)}/enable`, { enabled });
+        },
+        scanDatabase: async (sourceId: string, connInfo?: { server: string; database_name: string; auth_type?: string; driver?: string; trust_server_certificate?: boolean }): Promise<{ status: string; message: string }> => {
+            const response = await axios.post(`${API_BASE_URL}/admin/data-sources/${encodeURIComponent(sourceId)}/scan`, connInfo || {});
+            return response.data;
+        },
+        getScanStatus: async (sourceId: string): Promise<{ status: string; message: string; result?: Record<string, unknown> }> => {
+            const response = await axios.get(`${API_BASE_URL}/admin/data-sources/${encodeURIComponent(sourceId)}/scan-status`);
+            return response.data;
         }
     },
 

@@ -404,11 +404,14 @@ def expand_context_for_missing_data(
 def search_data_objects(query: str) -> GenerateSQLResponse:
     """
     Search for relevant database objects based on user query.
-    Queries both schema and value indexes and returns unique [schema].[table] objects sorted by relevance.
+    Queries skills-based schema library (filesystem), Milvus vector indexes, 
+    and returns unique [schema].[table] objects sorted by relevance.
     
-    Uses a two-tier approach:
-    1. Semantic search with score threshold
-    2. Fallback keyword search if no semantic matches found
+    Uses a multi-source approach:
+    1. Skills-based keyword search on filesystem schema library (.object-index.json)
+    2. Skills-based data group search for broader coverage
+    3. Semantic search on Milvus with score threshold (if enabled)
+    4. Fallback keyword search on Milvus if no semantic matches found
     
     Args:
         query: User's search query
@@ -417,15 +420,8 @@ def search_data_objects(query: str) -> GenerateSQLResponse:
         GenerateSQLResponse with objects list in explanation field
     """
     try:
-        vector_store = get_vector_store()
         from app.core.config import settings as app_settings
-        if not app_settings.VECTOR_DB_ENABLED:
-            return GenerateSQLResponse(
-                sql="",
-                explanation="Vector search is disabled on this server. Enable VECTOR_DB_ENABLED to use object search.",
-                query_type="search",
-                context_text=f"Searched for: {query}"
-            )
+        
         # Track objects with their best (lowest) score - L2 distance where lower = more similar
         object_scores: Dict[str, float] = {}
         object_metadata: Dict[str, Dict[str, Optional[str]]] = {}
@@ -440,131 +436,179 @@ def search_data_objects(query: str) -> GenerateSQLResponse:
                 return "View"
             return raw_type.strip()
         
-        # Search schema index for relevant tables
-        # Use the internal _search_collection to get scores
-        from pymilvus import utility
-        
-        # Diagnostic: track search statistics
-        schema_total_hits = 0
-        schema_filtered_hits = 0
-        all_schema_scores = []  # Track all scores for debugging
-        
-        if utility.has_collection(app_settings.MILVUS_COLLECTION_SCHEMA):
-            embedding = vector_store._get_embedding(query)
+        # ================================================================
+        # SOURCE 1: Skills-based schema library search (filesystem indexes)
+        # ================================================================
+        try:
+            from app.services.skills_service import get_skills_service
+            skills_service = get_skills_service()
             
-            # First, get results with a very high threshold to see what's available
-            schema_results_unfiltered = vector_store._search_collection(
-                app_settings.MILVUS_COLLECTION_SCHEMA,
-                embedding,
-                ['schema_name', 'table_name', 'table_type'],
-                top_k=10,
-                score_threshold=10.0  # Very high to see all candidates
-            )
-            schema_total_hits = len(schema_results_unfiltered)
+            # 1a. Search object indexes by keyword (searches .object-index.json files)
+            # This is the primary skills-based search - matches against object names, 
+            # keywords, and descriptions in all data sources
+            skills_results = skills_service.search_objects_by_keyword(query, top_k=20)
+            logging.info(f"Skills object search for '{query}': {len(skills_results)} hits")
             
-            # Collect all scores for diagnostics
-            for result in schema_results_unfiltered:
-                score = result.get('score', 999)
-                all_schema_scores.append(score)
-            
-            # Now filter with actual threshold (increased from 1.5 to 2.0 for better recall)
-            SCORE_THRESHOLD = 2.0
-            schema_results = [r for r in schema_results_unfiltered if r.get('score', 999) <= SCORE_THRESHOLD]
-            schema_filtered_hits = len(schema_results)
-            
-            logging.info(f"Schema search for '{query}': {schema_total_hits} total hits, {schema_filtered_hits} after threshold ({SCORE_THRESHOLD})")
-            if all_schema_scores:
-                logging.info(f"Score distribution: min={min(all_schema_scores):.3f}, max={max(all_schema_scores):.3f}, scores={[f'{s:.2f}' for s in sorted(all_schema_scores)[:5]]}")
-            
-            for result in schema_results:
-                entity = result.get('entity', result)
-                schema_name = entity.get('schema_name') or 'dbo'
-                table_name = entity.get('table_name', '')
-                table_type = normalize_table_type(entity.get('table_type'))
-                score = result.get('score', 999)
-                if table_name:
-                    obj_key = f"[{schema_name}].[{table_name}]"
-                    # Keep the best (lowest) score for each object
-                    if obj_key not in object_scores or score < object_scores[obj_key]:
-                        object_scores[obj_key] = score
-                    if obj_key not in object_metadata or (table_type and not object_metadata[obj_key].get("type")):
+            for result in skills_results:
+                schema_name = result.get('schema_name') or 'dbo'
+                obj_name = result.get('object_name', '')
+                obj_type = normalize_table_type(result.get('object_type'))
+                skill_score = result.get('score', 0)
+                
+                if obj_name:
+                    obj_key = f"[{schema_name}].[{obj_name}]"
+                    # Convert skills score (higher=better) to L2-like score (lower=better)
+                    # Skills scores range from ~1.0 to ~10.0+; map to 0.0-3.0 range
+                    normalized_score = max(0.1, 3.0 - (skill_score * 0.3))
+                    
+                    if obj_key not in object_scores or normalized_score < object_scores[obj_key]:
+                        object_scores[obj_key] = normalized_score
+                    if obj_key not in object_metadata or (obj_type and not object_metadata[obj_key].get("type")):
                         object_metadata[obj_key] = {
                             "schema": schema_name,
-                            "name": table_name,
-                            "type": table_type
+                            "name": obj_name,
+                            "type": obj_type
                         }
-        else:
-            logging.warning(f"Schema collection '{app_settings.MILVUS_COLLECTION_SCHEMA}' not found in Milvus")
+        except Exception as e:
+            logging.warning(f"Skills-based search failed (non-fatal): {e}")
         
-        # Search value index for relevant tables
-        value_results = vector_store.search_values(query, top_k=10)
-        logging.info(f"Value search for '{query}': {len(value_results)} hits")
-        for result in value_results:
-            entity = result.get('entity', result)
-            schema_name = entity.get('schema_name') or 'dbo'
-            table_name = entity.get('table_name', '')
-            score = result.get('score', 999)
-            if table_name:
-                obj_key = f"[{schema_name}].[{table_name}]"
-                # Keep the best (lowest) score for each object
-                if obj_key not in object_scores or score < object_scores[obj_key]:
-                    object_scores[obj_key] = score
-                if obj_key not in object_metadata:
-                    object_metadata[obj_key] = {
-                        "schema": schema_name,
-                        "name": table_name,
-                        "type": None
-                    }
-        
-        # Fallback: If no semantic matches, try keyword-based search on table names
-        if not object_scores and utility.has_collection(app_settings.MILVUS_COLLECTION_SCHEMA):
-            logging.info(f"No semantic matches for '{query}', attempting keyword fallback search")
-            
-            # Extract keywords from query (words with 3+ chars, excluding common words)
-            stop_words = {'the', 'and', 'for', 'are', 'but', 'not', 'you', 'all', 'can', 'had', 'her', 
-                         'was', 'one', 'our', 'out', 'has', 'have', 'been', 'find', 'get', 'show', 
-                         'list', 'what', 'which', 'where', 'how', 'top', 'best', 'most'}
-            query_words = set(word.lower() for word in re.findall(r'\b\w{3,}\b', query) if word.lower() not in stop_words)
-            
-            if query_words:
-                # Load collection and search all entities
-                from pymilvus import Collection
-                collection = Collection(app_settings.MILVUS_COLLECTION_SCHEMA)
-                collection.load()
+        # ================================================================
+        # SOURCE 2: Milvus vector search (if enabled)
+        # ================================================================
+        if app_settings.VECTOR_DB_ENABLED:
+            try:
+                vector_store = get_vector_store()
+                from pymilvus import utility
                 
-                # Query all table names (limited to avoid memory issues)
-                try:
-                    all_tables = collection.query(
-                        expr="table_name != ''",
-                        output_fields=['schema_name', 'table_name', 'table_type'],
-                        limit=500
-                    )
+                # Diagnostic: track search statistics
+                schema_total_hits = 0
+                schema_filtered_hits = 0
+                all_schema_scores = []  # Track all scores for debugging
+                
+                if utility.has_collection(app_settings.MILVUS_COLLECTION_SCHEMA):
+                    embedding = vector_store._get_embedding(query)
                     
-                    # Score tables by keyword matches in name
-                    for table in all_tables:
-                        table_name = table.get('table_name', '').lower()
-                        schema_name = table.get('schema_name', 'dbo')
-                        table_type = normalize_table_type(table.get('table_type'))
-                        
-                        # Check for keyword matches
-                        matches = sum(1 for word in query_words if word in table_name)
-                        if matches > 0:
-                            obj_key = f"[{schema_name}].[{table.get('table_name', '')}]"
-                            # Use negative match count as score (more matches = better = lower score)
-                            keyword_score = 5.0 - (matches * 0.5)  # Score between 3.0-4.5 for fallback results
-                            
-                            if obj_key not in object_scores or keyword_score < object_scores[obj_key]:
-                                object_scores[obj_key] = keyword_score
-                            if obj_key not in object_metadata:
+                    # First, get results with a very high threshold to see what's available
+                    schema_results_unfiltered = vector_store._search_collection(
+                        app_settings.MILVUS_COLLECTION_SCHEMA,
+                        embedding,
+                        ['schema_name', 'table_name', 'table_type'],
+                        top_k=10,
+                        score_threshold=10.0  # Very high to see all candidates
+                    )
+                    schema_total_hits = len(schema_results_unfiltered)
+                    
+                    # Collect all scores for diagnostics
+                    for result in schema_results_unfiltered:
+                        score = result.get('score', 999)
+                        all_schema_scores.append(score)
+                    
+                    # Now filter with actual threshold
+                    # If skills already found strong results, tighten Milvus threshold to reduce noise
+                    skills_found_strong = any(
+                        object_scores.get(k, 999) < 1.0 for k in object_scores
+                    )
+                    SCORE_THRESHOLD = 1.2 if skills_found_strong else 2.0
+                    schema_results = [r for r in schema_results_unfiltered if r.get('score', 999) <= SCORE_THRESHOLD]
+                    schema_filtered_hits = len(schema_results)
+                    
+                    logging.info(f"Schema search for '{query}': {schema_total_hits} total hits, {schema_filtered_hits} after threshold ({SCORE_THRESHOLD})")
+                    if all_schema_scores:
+                        logging.info(f"Score distribution: min={min(all_schema_scores):.3f}, max={max(all_schema_scores):.3f}, scores={[f'{s:.2f}' for s in sorted(all_schema_scores)[:5]]}")
+                    
+                    for result in schema_results:
+                        entity = result.get('entity', result)
+                        schema_name = entity.get('schema_name') or 'dbo'
+                        table_name = entity.get('table_name', '')
+                        table_type = normalize_table_type(entity.get('table_type'))
+                        score = result.get('score', 999)
+                        if table_name:
+                            obj_key = f"[{schema_name}].[{table_name}]"
+                            # Keep the best (lowest) score for each object
+                            if obj_key not in object_scores or score < object_scores[obj_key]:
+                                object_scores[obj_key] = score
+                            if obj_key not in object_metadata or (table_type and not object_metadata[obj_key].get("type")):
                                 object_metadata[obj_key] = {
                                     "schema": schema_name,
-                                    "name": table.get('table_name', ''),
+                                    "name": table_name,
                                     "type": table_type
                                 }
+                else:
+                    logging.warning(f"Schema collection '{app_settings.MILVUS_COLLECTION_SCHEMA}' not found in Milvus")
+                
+                # Search value index for relevant tables
+                value_results = vector_store.search_values(query, top_k=10)
+                logging.info(f"Value search for '{query}': {len(value_results)} hits")
+                for result in value_results:
+                    entity = result.get('entity', result)
+                    schema_name = entity.get('schema_name') or 'dbo'
+                    table_name = entity.get('table_name', '')
+                    score = result.get('score', 999)
+                    if table_name:
+                        obj_key = f"[{schema_name}].[{table_name}]"
+                        # Keep the best (lowest) score for each object
+                        if obj_key not in object_scores or score < object_scores[obj_key]:
+                            object_scores[obj_key] = score
+                        if obj_key not in object_metadata:
+                            object_metadata[obj_key] = {
+                                "schema": schema_name,
+                                "name": table_name,
+                                "type": None
+                            }
+                
+                # Fallback: If no results at all (including skills), try keyword-based search on Milvus
+                if not object_scores and utility.has_collection(app_settings.MILVUS_COLLECTION_SCHEMA):
+                    logging.info(f"No semantic matches for '{query}', attempting keyword fallback search")
                     
-                    logging.info(f"Keyword fallback found {len(object_scores)} matching tables for keywords: {query_words}")
-                except Exception as e:
-                    logging.warning(f"Keyword fallback search failed: {e}")
+                    # Extract keywords from query (words with 3+ chars, excluding common words)
+                    stop_words = {'the', 'and', 'for', 'are', 'but', 'not', 'you', 'all', 'can', 'had', 'her', 
+                                 'was', 'one', 'our', 'out', 'has', 'have', 'been', 'find', 'get', 'show', 
+                                 'list', 'what', 'which', 'where', 'how', 'top', 'best', 'most'}
+                    query_words = set(word.lower() for word in re.findall(r'\b\w{3,}\b', query) if word.lower() not in stop_words)
+                    
+                    if query_words:
+                        # Load collection and search all entities
+                        from pymilvus import Collection
+                        collection = Collection(app_settings.MILVUS_COLLECTION_SCHEMA)
+                        collection.load()
+                        
+                        # Query all table names (limited to avoid memory issues)
+                        try:
+                            all_tables = collection.query(
+                                expr="table_name != ''",
+                                output_fields=['schema_name', 'table_name', 'table_type'],
+                                limit=500
+                            )
+                            
+                            # Score tables by keyword matches in name
+                            for table in all_tables:
+                                table_name = table.get('table_name', '').lower()
+                                schema_name = table.get('schema_name', 'dbo')
+                                table_type = normalize_table_type(table.get('table_type'))
+                                
+                                # Check for keyword matches
+                                matches = sum(1 for word in query_words if word in table_name)
+                                if matches > 0:
+                                    obj_key = f"[{schema_name}].[{table.get('table_name', '')}]"
+                                    # Use negative match count as score (more matches = better = lower score)
+                                    keyword_score = 5.0 - (matches * 0.5)  # Score between 3.0-4.5 for fallback results
+                                    
+                                    if obj_key not in object_scores or keyword_score < object_scores[obj_key]:
+                                        object_scores[obj_key] = keyword_score
+                                    if obj_key not in object_metadata:
+                                        object_metadata[obj_key] = {
+                                            "schema": schema_name,
+                                            "name": table.get('table_name', ''),
+                                            "type": table_type
+                                        }
+                            
+                            logging.info(f"Keyword fallback found {len(object_scores)} matching tables for keywords: {query_words}")
+                        except Exception as e:
+                            logging.warning(f"Keyword fallback search failed: {e}")
+            except Exception as e:
+                logging.warning(f"Milvus vector search failed (non-fatal): {e}")
+        else:
+            logging.info("Vector DB disabled, using skills-based search only")
         
         # Sort objects by score (lower = more relevant)
         sorted_objects = sorted(object_scores.keys(), key=lambda x: object_scores[x])
@@ -1266,7 +1310,19 @@ Be helpful, not interrogative."""
         suggested_objects = []
         auto_checked_tables = []
         
-        if intent_data.get("ready_for_search"):
+        # Always search on the first turn (turn_count == 1) since the user came to plan mode
+        # with a specific question. Also search when LLM says ready, or when query explicitly
+        # asks to find/search for tables.
+        is_first_turn = planning_context.get("turn_count", 0) == 1
+        llm_says_ready = intent_data.get("ready_for_search", False)
+        explicitly_searching = bool(re.search(
+            r'\b(find|search|look\s+for|show|list|discover|locate|identify|where)\b.*\b(table|view|schema|object|column|stored|data)\b',
+            query, re.IGNORECASE
+        ))
+        
+        should_search = llm_says_ready or is_first_turn or explicitly_searching
+        
+        if should_search:
             search_query = planning_context.get("goal", "") + " " + query
             search_result = search_data_objects(search_query)
             suggested_objects = search_result.objects or []

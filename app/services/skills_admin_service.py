@@ -118,7 +118,8 @@ def create_data_source(data: Dict) -> Dict:
     Create a new data source
     
     Args:
-        data: Dictionary with name, type, description, keywords, status
+        data: Dictionary with name, type, description, keywords, status,
+              and optionally server, database for SQL Server sources
         
     Returns:
         Dictionary with created data source info
@@ -133,6 +134,8 @@ def create_data_source(data: Dict) -> Dict:
     description = data.get('description', '')
     keywords = data.get('keywords', [])
     status = data.get('status', 'Active')
+    server = data.get('server', '').strip()
+    database = data.get('database', '').strip()
     
     # Create directory
     slug = _slugify(name)
@@ -148,16 +151,48 @@ def create_data_source(data: Dict) -> Dict:
     ds_file = ds_dir / "_data-source.md"
     keywords_str = ', '.join(keywords) if isinstance(keywords, list) else keywords
     
+    # Build connection fields if provided
+    connection_lines = ""
+    if server:
+        connection_lines += f"**Server:** {server}\n"
+    if database:
+        connection_lines += f"**Database:** {database}\n"
+    
+    description_text = description if description else f"Data source for {name}."
+    
     content = f"""# {name}
 
-**Type:** {ds_type}
-**Status:** {status}
-**Description:** {description}
+**Type:** {ds_type}  
+{connection_lines}
+**Friendly Name:** {name}  
 **Keywords:** {keywords_str}
 
-## Configuration
+## Description
 
-Connection information and additional configuration can be added here.
+{description_text}
+
+## Data Coverage
+
+- **Time Range:** Unknown (requires manual update)
+- **Update Frequency:** Unknown (requires manual update)
+
+## Schema Notes
+
+- Specific time ranges
+- Update frequency
+- Cross-schema references
+- Access restrictions
+
+## Connection Method
+
+```python
+# SQL Server connection via pyodbc
+# See app settings for connection string
+```
+
+## Physical Schemas
+
+All table schemas are stored in the `schemas/` directory, organized by database schema:
 """
     
     ds_file.write_text(content, encoding='utf-8')

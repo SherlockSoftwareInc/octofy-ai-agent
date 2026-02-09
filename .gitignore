@@ -54,6 +54,7 @@ milvus_data/
 secrets.json
 myenv/
 config/agent_settings.json
+skills/
 
 ### --- Docker --- ###
 # Ignore local data persistence for Docker containers
@@ -99,3 +100,4 @@ config/agent_settings.json
 # Git worktree directories (should never be committed)
 .worktrees/
 worktrees/
+skills/data-sources/jcm/schemas/Ausper/Ausper.DT_DEV.md

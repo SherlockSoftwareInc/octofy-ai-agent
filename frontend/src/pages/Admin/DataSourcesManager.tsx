@@ -1,7 +1,7 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useRef, useCallback } from 'react';
 import { api } from '../../api/client';
 import type { DataSourceResponse, AddDataSourceRequest, ConnectionTestResponse } from '../../api/client';
-import { Database, Plus, RefreshCw, Edit, Trash2, Loader2, Settings, AlertCircle, CheckCircle } from 'lucide-react';
+import { Database, Plus, RefreshCw, Edit, Trash2, Loader2, Settings, AlertCircle, CheckCircle, Search } from 'lucide-react';
 
 export const DataSourcesManager: React.FC = () => {
     const [dataSources, setDataSources] = useState<DataSourceResponse[]>([]);
@@ -10,6 +10,12 @@ export const DataSourcesManager: React.FC = () => {
     const [editingSourceId, setEditingSourceId] = useState<string | null>(null);
     const [testingConnection, setTestingConnection] = useState<string | null>(null);
     const [connectionTestResult, setConnectionTestResult] = useState<{ sourceId: string; result: ConnectionTestResponse } | null>(null);
+    const [scanningSourceId, setScanningSourceId] = useState<string | null>(null);
+    const [scanStatus, setScanStatus] = useState<{ [key: string]: { status: string; message: string; result?: Record<string, unknown> } }>({});
+    const scanPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+    const [showScanModal, setShowScanModal] = useState(false);
+    const [scanModalSourceId, setScanModalSourceId] = useState<string | null>(null);
+    const [scanConnInfo, setScanConnInfo] = useState({ server: '', database_name: '', auth_type: 'windows' as string, driver: 'ODBC Driver 17 for SQL Server', trust_server_certificate: true });
 
     // Form state
     const [formData, setFormData] = useState<AddDataSourceRequest>({
@@ -33,13 +39,12 @@ export const DataSourcesManager: React.FC = () => {
             const response = await api.dataSources.getAll();
             console.log('Data sources response:', response);
             setDataSources(response.data_sources || []);
-        } catch (error: any) {
+        } catch (error: unknown) {
             console.error('Failed to fetch data sources:', error);
-            console.error('Error details:', error.response || error.message);
-            setDataSources([]); // Ensure we always have an array
-            
-            // Show more helpful error message
-            const errorMessage = error.response?.data?.detail || error.message || 'Unknown error';
+            console.error('Error details:', (error as { response?: unknown })?.response || (error as Error)?.message);
+            setDataSources([]);
+
+            const errorMessage = (error as { response?: { data?: { detail?: string } } })?.response?.data?.detail || (error as Error)?.message || 'Unknown error';
             alert(`Failed to load data sources: ${errorMessage}\n\nPlease check:\n- Backend is running\n- You are logged in\n- API key is valid`);
         } finally {
             setLoading(false);
@@ -48,7 +53,66 @@ export const DataSourcesManager: React.FC = () => {
 
     useEffect(() => {
         fetchDataSources();
+        return () => {
+            if (scanPollRef.current) clearInterval(scanPollRef.current);
+        };
     }, []);
+
+    const pollScanStatus = useCallback((sourceId: string) => {
+        if (scanPollRef.current) clearInterval(scanPollRef.current);
+        setScanningSourceId(sourceId);
+        scanPollRef.current = setInterval(async () => {
+            try {
+                const status = await api.dataSources.getScanStatus(sourceId);
+                setScanStatus(prev => ({ ...prev, [sourceId]: status }));
+                if (status.status === 'completed' || status.status === 'error') {
+                    if (scanPollRef.current) clearInterval(scanPollRef.current);
+                    scanPollRef.current = null;
+                    setScanningSourceId(null);
+                    if (status.status === 'completed') {
+                        await fetchDataSources();
+                    }
+                }
+            } catch {
+                if (scanPollRef.current) clearInterval(scanPollRef.current);
+                scanPollRef.current = null;
+                setScanningSourceId(null);
+            }
+        }, 2000);
+    }, []);
+
+    const handleScanDatabase = async (sourceId: string, connInfo?: { server: string; database_name: string; auth_type?: string; driver?: string; trust_server_certificate?: boolean }) => {
+        try {
+            setScanStatus(prev => ({ ...prev, [sourceId]: { status: 'running', message: 'Starting scan...' } }));
+            await api.dataSources.scanDatabase(sourceId, connInfo);
+            pollScanStatus(sourceId);
+        } catch (error: unknown) {
+            const detail = (error as { response?: { data?: { detail?: string } } })?.response?.data?.detail || 'Failed to start scan';
+            if (detail === 'missing_connection_info') {
+                // Show modal to collect connection info
+                setScanStatus(prev => { const next = { ...prev }; delete next[sourceId]; return next; });
+                // Pre-fill from data source card if available
+                const source = dataSources.find(s => s.source_id === sourceId);
+                setScanConnInfo({
+                    server: (source?.server && source.server !== '(Defined in schema library)') ? source.server : '',
+                    database_name: (source?.database_name && source.database_name !== '(Defined in schema library)') ? source.database_name : '',
+                    auth_type: 'windows',
+                    driver: 'ODBC Driver 17 for SQL Server',
+                    trust_server_certificate: true,
+                });
+                setScanModalSourceId(sourceId);
+                setShowScanModal(true);
+            } else {
+                setScanStatus(prev => ({ ...prev, [sourceId]: { status: 'error', message: detail } }));
+            }
+        }
+    };
+
+    const handleScanModalSubmit = async () => {
+        if (!scanModalSourceId || !scanConnInfo.server || !scanConnInfo.database_name) return;
+        setShowScanModal(false);
+        await handleScanDatabase(scanModalSourceId, scanConnInfo);
+    };
 
     const handleAdd = () => {
         setEditingSourceId(null);
@@ -160,7 +224,15 @@ export const DataSourcesManager: React.FC = () => {
             if (editingSourceId) {
                 await api.dataSources.update(editingSourceId, payload);
             } else {
-                await api.dataSources.add(payload);
+                const result = await api.dataSources.add(payload);
+                // Auto-scan starts on backend if server + database were provided
+                if (payload.server && payload.database_name && result.source_id) {
+                    setScanStatus(prev => ({
+                        ...prev,
+                        [result.source_id]: { status: 'running', message: 'Auto-scanning database objects...' }
+                    }));
+                    pollScanStatus(result.source_id);
+                }
             }
             setShowAddModal(false);
             await fetchDataSources();
@@ -296,10 +368,26 @@ export const DataSourcesManager: React.FC = () => {
                                         )}
                                     </>
                                 )}
+                                <button
+                                    onClick={() => handleScanDatabase(source.source_id)}
+                                    disabled={scanningSourceId === source.source_id || scanStatus[source.source_id]?.status === 'running'}
+                                    className="p-2 bg-purple-500/10 text-purple-400 rounded hover:bg-purple-500/20 disabled:opacity-50"
+                                    title="Scan Database Objects"
+                                >
+                                    {scanningSourceId === source.source_id || scanStatus[source.source_id]?.status === 'running' ? (
+                                        <Loader2 size={16} className="animate-spin" />
+                                    ) : (
+                                        <Search size={16} />
+                                    )}
+                                </button>
                                 {source.source_id.startsWith('skill_') && (
-                                    <div className="text-xs text-slate-500 italic">
-                                        Edit <span className="font-mono">skills/data-sources/</span> files
-                                    </div>
+                                    <button
+                                        onClick={() => handleDelete(source.source_id, source.friendly_name)}
+                                        className="p-2 bg-red-500/10 text-red-400 rounded hover:bg-red-500/20"
+                                        title="Delete"
+                                    >
+                                        <Trash2 size={16} />
+                                    </button>
                                 )}
                             </div>
                         </div>
@@ -322,6 +410,50 @@ export const DataSourcesManager: React.FC = () => {
                                     }`}>
                                         {connectionTestResult.result.message}
                                     </p>
+                                </div>
+                            </div>
+                        )}
+
+                        {/* Scan Status */}
+                        {scanStatus[source.source_id] && scanStatus[source.source_id].status !== 'idle' && (
+                            <div className={`mb-3 p-3 rounded-lg flex items-start gap-2 ${
+                                scanStatus[source.source_id].status === 'completed'
+                                    ? 'bg-emerald-500/10 border border-emerald-500/30'
+                                    : scanStatus[source.source_id].status === 'error'
+                                    ? 'bg-red-500/10 border border-red-500/30'
+                                    : 'bg-purple-500/10 border border-purple-500/30'
+                            }`}>
+                                {scanStatus[source.source_id].status === 'completed' ? (
+                                    <CheckCircle size={16} className="text-emerald-400 flex-shrink-0 mt-0.5" />
+                                ) : scanStatus[source.source_id].status === 'error' ? (
+                                    <AlertCircle size={16} className="text-red-400 flex-shrink-0 mt-0.5" />
+                                ) : (
+                                    <Loader2 size={16} className="text-purple-400 flex-shrink-0 mt-0.5 animate-spin" />
+                                )}
+                                <div className="flex-1">
+                                    <p className={`text-sm font-medium ${
+                                        scanStatus[source.source_id].status === 'completed' ? 'text-emerald-300'
+                                        : scanStatus[source.source_id].status === 'error' ? 'text-red-300'
+                                        : 'text-purple-300'
+                                    }`}>
+                                        {scanStatus[source.source_id].status === 'running' ? 'Scanning Database...' :
+                                         scanStatus[source.source_id].status === 'completed' ? 'Scan Complete' : 'Scan Failed'}
+                                    </p>
+                                    <p className="text-xs text-slate-400 mt-1">
+                                        {scanStatus[source.source_id].message}
+                                    </p>
+                                    {scanStatus[source.source_id].status !== 'running' && (
+                                        <button
+                                            onClick={() => setScanStatus(prev => {
+                                                const next = { ...prev };
+                                                delete next[source.source_id];
+                                                return next;
+                                            })}
+                                            className="text-xs text-slate-500 hover:text-slate-300 mt-1"
+                                        >
+                                            Dismiss
+                                        </button>
+                                    )}
                                 </div>
                             </div>
                         )}
@@ -383,6 +515,22 @@ export const DataSourcesManager: React.FC = () => {
                                     }`}
                                 >
                                     {source.enabled ? 'Disable' : 'Enable'}
+                                </button>
+                            </div>
+                        )}
+
+                        {source.source_id.startsWith('skill_') && (
+                            <div className="flex gap-2 mt-3 pt-3 border-t border-slate-800">
+                                <button
+                                    onClick={() => handleScanDatabase(source.source_id)}
+                                    disabled={scanningSourceId === source.source_id || scanStatus[source.source_id]?.status === 'running'}
+                                    className="px-3 py-1 bg-purple-500/10 text-purple-400 rounded hover:bg-purple-500/20 text-sm flex items-center gap-1 disabled:opacity-50"
+                                >
+                                    {scanningSourceId === source.source_id || scanStatus[source.source_id]?.status === 'running' ? (
+                                        <><Loader2 size={14} className="animate-spin" /> Scanning...</>
+                                    ) : (
+                                        <><Search size={14} /> Scan Database</>
+                                    )}
                                 </button>
                             </div>
                         )}
@@ -500,6 +648,92 @@ export const DataSourcesManager: React.FC = () => {
                                 </button>
                             </div>
                         </form>
+                    </div>
+                </div>
+            )}
+
+            {/* Scan Connection Info Modal */}
+            {showScanModal && (
+                <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+                    <div className="bg-slate-900 border border-slate-800 rounded-xl p-6 max-w-lg w-full mx-4">
+                        <h3 className="text-xl font-bold text-white mb-2 flex items-center gap-2">
+                            <Search size={20} className="text-purple-400" />
+                            Database Connection
+                        </h3>
+                        <p className="text-sm text-slate-400 mb-4">
+                            Enter the connection details to scan this database for tables and views.
+                        </p>
+
+                        <div className="space-y-4">
+                            <div className="grid grid-cols-2 gap-4">
+                                <div>
+                                    <label className="block text-sm text-slate-400 mb-1">Server</label>
+                                    <input
+                                        type="text"
+                                        value={scanConnInfo.server}
+                                        onChange={(e) => setScanConnInfo({ ...scanConnInfo, server: e.target.value })}
+                                        className="w-full bg-slate-950 border border-slate-800 rounded p-2 text-white focus:ring-2 focus:ring-purple-500 outline-none"
+                                        placeholder="e.g., localhost"
+                                        autoFocus
+                                    />
+                                </div>
+                                <div>
+                                    <label className="block text-sm text-slate-400 mb-1">Database</label>
+                                    <input
+                                        type="text"
+                                        value={scanConnInfo.database_name}
+                                        onChange={(e) => setScanConnInfo({ ...scanConnInfo, database_name: e.target.value })}
+                                        className="w-full bg-slate-950 border border-slate-800 rounded p-2 text-white focus:ring-2 focus:ring-purple-500 outline-none"
+                                        placeholder="e.g., Northwind"
+                                    />
+                                </div>
+                            </div>
+
+                            <div className="grid grid-cols-2 gap-4">
+                                <div>
+                                    <label className="block text-sm text-slate-400 mb-1">Authentication</label>
+                                    <select
+                                        value={scanConnInfo.auth_type}
+                                        onChange={(e) => setScanConnInfo({ ...scanConnInfo, auth_type: e.target.value })}
+                                        className="w-full bg-slate-950 border border-slate-800 rounded p-2 text-white focus:ring-2 focus:ring-purple-500 outline-none"
+                                        title="Authentication type"
+                                    >
+                                        <option value="windows">Windows Auth</option>
+                                        <option value="sql">SQL Auth</option>
+                                    </select>
+                                </div>
+                                <div className="flex items-end">
+                                    <label className="flex items-center gap-2 text-sm text-slate-400 cursor-pointer">
+                                        <input
+                                            type="checkbox"
+                                            checked={scanConnInfo.trust_server_certificate}
+                                            onChange={(e) => setScanConnInfo({ ...scanConnInfo, trust_server_certificate: e.target.checked })}
+                                            className="rounded bg-slate-950 border-slate-700"
+                                        />
+                                        Trust Server Certificate
+                                    </label>
+                                </div>
+                            </div>
+
+                            <div className="flex justify-end gap-2 pt-4 border-t border-slate-800">
+                                <button
+                                    type="button"
+                                    onClick={() => { setShowScanModal(false); setScanModalSourceId(null); }}
+                                    className="px-4 py-2 text-slate-400 hover:text-white"
+                                >
+                                    Cancel
+                                </button>
+                                <button
+                                    type="button"
+                                    onClick={handleScanModalSubmit}
+                                    disabled={!scanConnInfo.server || !scanConnInfo.database_name}
+                                    className="px-4 py-2 bg-purple-600 rounded hover:bg-purple-500 text-white disabled:opacity-50 flex items-center gap-2"
+                                >
+                                    <Search size={16} />
+                                    Start Scan
+                                </button>
+                            </div>
+                        </div>
                     </div>
                 </div>
             )}

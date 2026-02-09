@@ -609,6 +609,16 @@ class AddDataSourceRequest(BaseModel):
     driver: str = "ODBC Driver 17 for SQL Server"
     trust_server_certificate: bool = False
 
+class ScanDataSourceRequest(BaseModel):
+    """Optional request body for scan endpoint to provide connection info"""
+    server: str = ""
+    database_name: str = ""
+    auth_type: AuthType = "windows"
+    driver: str = "ODBC Driver 17 for SQL Server"
+    username: Optional[str] = None
+    password: Optional[str] = None
+    trust_server_certificate: bool = True
+
 class DataSourceResponse(BaseModel):
     """Response for data source information"""
     source_id: str
