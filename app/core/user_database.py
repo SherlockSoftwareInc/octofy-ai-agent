@@ -4,11 +4,14 @@ PostgreSQL database connection for user management.
 Separate from the main SQL Server database used for data querying.
 This database stores user accounts, conversations, and API keys.
 """
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text, inspect
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session
 from app.core.config import settings
 from typing import Generator
+import logging
+
+logger = logging.getLogger(__name__)
 
 # Build PostgreSQL connection URL
 POSTGRES_URL = (
@@ -49,8 +52,26 @@ def init_user_db():
     """
     Initialize the user database.
     Creates all tables defined in models.
+    Runs lightweight migrations for new columns.
     
     Should be called during application startup.
     """
     from app.models.user_models import User, Conversation  # Import here to avoid circular imports
     Base.metadata.create_all(bind=engine)
+    
+    # Run lightweight migrations for existing databases
+    _run_migrations()
+
+
+def _run_migrations():
+    """Add missing columns to existing tables (for upgrades without Alembic)."""
+    inspector = inspect(engine)
+    
+    # Migration: Add 'extra_data' column to conversations table
+    if 'conversations' in inspector.get_table_names():
+        columns = [col['name'] for col in inspector.get_columns('conversations')]
+        if 'extra_data' not in columns:
+            logger.info("Migration: Adding 'extra_data' column to conversations table")
+            with engine.begin() as conn:
+                conn.execute(text("ALTER TABLE conversations ADD COLUMN extra_data JSON DEFAULT NULL"))
+            logger.info("Migration complete: 'extra_data' column added")

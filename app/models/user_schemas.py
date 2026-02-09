@@ -87,18 +87,33 @@ class Message(BaseModel):
     role: Literal["user", "assistant", "system"]
     content: str
     timestamp: datetime = Field(default_factory=datetime.utcnow)
+    
+    # Allow extra fields (sqlResult, executionResult, queryType, etc.)
+    model_config = ConfigDict(extra="allow")
 
 
 class ConversationCreate(BaseModel):
     """Schema for creating a new conversation."""
     title: Optional[str] = Field(None, max_length=255)
-    messages: List[Message] = Field(default_factory=list)
+    messages: List[dict] = Field(default_factory=list)
+    # Extra conversation metadata from frontend
+    lastGeneratedSQL: Optional[str] = None
+    queryHistory: Optional[str] = None
+    selectedObjects: Optional[List[str]] = None
+    planningContext: Optional[dict] = None
+    planningSummary: Optional[str] = None
 
 
 class ConversationUpdate(BaseModel):
     """Schema for updating a conversation."""
     title: Optional[str] = Field(None, max_length=255)
-    messages: Optional[List[Message]] = None
+    messages: Optional[List[dict]] = None
+    # Extra conversation metadata from frontend
+    lastGeneratedSQL: Optional[str] = None
+    queryHistory: Optional[str] = None
+    selectedObjects: Optional[List[str]] = None
+    planningContext: Optional[dict] = None
+    planningSummary: Optional[str] = None
 
 
 class ConversationResponse(BaseModel):
@@ -106,9 +121,11 @@ class ConversationResponse(BaseModel):
     id: int
     user_id: int
     title: Optional[str]
-    messages: List[Message]
+    messages: List[dict]
     created_at: datetime
     updated_at: datetime
+    # Extra conversation data
+    extra_data: Optional[dict] = None
     
     model_config = ConfigDict(from_attributes=True)
 

@@ -29,8 +29,8 @@ import {
   generateConversationId,
   generateMessageId,
   generateInitialTitle,
-  generateAutoTitle
-} from './utils/conversationStorage';
+} from './utils/conversationStorageBackend';
+import { generateAutoTitle } from './utils/conversationStorage';
 import { useAuth } from './contexts/AuthContext';
 import { Login } from './pages/Login';
 import { UserProfile } from './components/UserProfile';
@@ -38,7 +38,6 @@ import { ProtectedRoute } from './components/ProtectedRoute';
 
 function App() {
   const { isAuthenticated, isLoading } = useAuth();
-  const [showProfileModal, setShowProfileModal] = useState(false);
 
   // Show login page if not authenticated
   if (isLoading) {
@@ -58,23 +57,15 @@ function App() {
 
   return (
     <ProtectedRoute>
-      <AuthenticatedApp 
-        showProfileModal={showProfileModal}
-        setShowProfileModal={setShowProfileModal}
-      />
+      <AuthenticatedApp />
     </ProtectedRoute>
   );
 }
 
 // Separate component for authenticated app to keep state management clean
-function AuthenticatedApp({ 
-  showProfileModal, 
-  setShowProfileModal 
-}: { 
-  showProfileModal: boolean; 
-  setShowProfileModal: (show: boolean) => void;
-}) {
+function AuthenticatedApp() {
   const { user } = useAuth();
+  const [showProfileModal, setShowProfileModal] = useState(false);
   
   // Simple Router State (Hash based or state based)
   const [currentRoute, setCurrentRoute] = useState<'chat' | 'admin'>(() =>
@@ -111,59 +102,62 @@ function AuthenticatedApp({
   // Ref for auto-scrolling to bottom of chat
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  
+  // Track the current user ID to detect user switches
+  const currentUserIdRef = useRef<number | null>(null);
 
-  // Load conversations from localStorage on mount
+  // Load conversations from backend when component mounts or user changes
   useEffect(() => {
-    const loadedConversations = conversationStorage.loadConversations();
-    const loadedActiveId = conversationStorage.loadActiveConversationId();
-
-    console.log('=== LOADING CONVERSATIONS FROM STORAGE ===');
-    console.log('Loaded conversations:', loadedConversations.length);
-    if (loadedConversations.length > 0) {
-      const firstConv = loadedConversations[0];
-      console.log('First conversation messages:', firstConv.messages.length);
-
-      // Check for messages with sqlExecutionResult
-      const messagesWithSQLExecution = firstConv.messages.filter(msg => msg.sqlExecutionResult);
-      console.log('Messages with sqlExecutionResult:', messagesWithSQLExecution.length);
-      if (messagesWithSQLExecution.length > 0) {
-        console.log('Sample message with SQL execution:', {
-          id: messagesWithSQLExecution[0].id,
-          hasResult: !!messagesWithSQLExecution[0].sqlExecutionResult,
-          resultKeys: Object.keys(messagesWithSQLExecution[0].sqlExecutionResult || {})
-        });
+    const loadUserConversations = async () => {
+      const userId = user?.id ?? null;
+      
+      // If user changed, clear current conversations first
+      if (currentUserIdRef.current !== userId) {
+        if (currentUserIdRef.current !== null) {
+          // User switched — clear state immediately
+          setConversations([]);
+          setActiveConversationId(null);
+        }
+        currentUserIdRef.current = userId;
       }
-    }
-    console.log('==========================================');
-
-    if (loadedConversations.length > 0) {
-      setConversations(loadedConversations);
-      // If there's a saved active ID and it exists, use it. Otherwise use the first conversation
-      if (loadedActiveId && loadedConversations.some(c => c.id === loadedActiveId)) {
-        setActiveConversationId(loadedActiveId);
-      } else {
-        setActiveConversationId(loadedConversations[0].id);
+      
+      if (!userId) return; // No user logged in
+      
+      console.log(`=== LOADING CONVERSATIONS FOR USER ${user?.username} (ID: ${userId}) ===`);
+      
+      try {
+        // Load from backend (falls back to user-scoped localStorage on failure)
+        const loadedConversations = await conversationStorage.loadConversations();
+        const loadedActiveId = conversationStorage.loadActiveConversationId();
+        
+        console.log('Loaded conversations:', loadedConversations.length);
+        
+        if (loadedConversations.length > 0) {
+          setConversations(loadedConversations);
+          if (loadedActiveId && loadedConversations.some(c => c.id === loadedActiveId)) {
+            setActiveConversationId(loadedActiveId);
+          } else {
+            setActiveConversationId(loadedConversations[0].id);
+          }
+        } else {
+          setConversations([]);
+          setActiveConversationId(null);
+        }
+      } catch (error) {
+        console.error('Failed to load conversations:', error);
+        setConversations([]);
+        setActiveConversationId(null);
       }
-    }
-  }, []);
+      
+      console.log('==========================================');
+    };
+    
+    loadUserConversations();
+  }, [user?.id]);
 
-  // Save conversations to localStorage whenever they change
+  // Save conversations to user-scoped localStorage cache whenever they change
   useEffect(() => {
     if (conversations.length > 0) {
-      console.log('=== SAVING CONVERSATIONS TO STORAGE ===');
-      const messagesWithSQLExecution = conversations.flatMap(c =>
-        c.messages.filter(m => m.sqlExecutionResult)
-      );
-      console.log('Total messages with sqlExecutionResult:', messagesWithSQLExecution.length);
-      if (messagesWithSQLExecution.length > 0) {
-        console.log('Sample message being saved:', {
-          id: messagesWithSQLExecution[0].id,
-          hasResult: !!messagesWithSQLExecution[0].sqlExecutionResult,
-          resultKeys: Object.keys(messagesWithSQLExecution[0].sqlExecutionResult || {})
-        });
-      }
-      console.log('=======================================');
-
       conversationStorage.saveConversations(conversations);
     }
   }, [conversations]);
@@ -266,18 +260,57 @@ function AuthenticatedApp({
     generateSummary();
   }, [queryMode, planningContext, planningSummary, activeConversationId, activeConversation?.messages]);
 
-  // Update a conversation
+  // Debounced backend sync for conversation updates
+  const savePendingRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
+  
+  const syncConversationToBackend = (conversation: Conversation) => {
+    // Debounce: wait 2 seconds after last update before syncing
+    const existing = savePendingRef.current.get(conversation.id);
+    if (existing) clearTimeout(existing);
+    
+    const timeout = setTimeout(async () => {
+      savePendingRef.current.delete(conversation.id);
+      try {
+        const synced = await conversationStorage.saveConversation(conversation);
+        // If we got a new backendId, update the conversation in state
+        // IMPORTANT: Do NOT change the conversation's frontend `id` here.
+        // Changing `id` while handleSend holds a local reference to the old ID
+        // causes activeConversation to become undefined (blank screen) and
+        // subsequent updateConversation calls to silently fail (lost messages).
+        // The backendId is sufficient for all backend CRUD operations.
+        if (synced.backendId && !conversation.backendId) {
+          setConversations(prev =>
+            prev.map(c =>
+              c.id === conversation.id ? { ...c, backendId: synced.backendId } : c
+            )
+          );
+        }
+      } catch (error) {
+        console.error('Failed to sync conversation to backend:', error);
+      }
+    }, 2000);
+    
+    savePendingRef.current.set(conversation.id, timeout);
+  };
+
+  // Update a conversation (local state + backend sync)
   const updateConversation = (conversationId: string, updates: Partial<Conversation>) => {
-    setConversations(prev =>
-      prev.map(conv =>
+    setConversations(prev => {
+      const updated = prev.map(conv =>
         conv.id === conversationId
           ? { ...conv, ...updates, lastModified: new Date().toISOString() }
           : conv
-      )
-    );
+      );
+      // Trigger backend sync for the updated conversation
+      const updatedConv = updated.find(c => c.id === conversationId);
+      if (updatedConv) {
+        syncConversationToBackend(updatedConv);
+      }
+      return updated;
+    });
   };
 
-  // Create a new conversation
+  // Create a new conversation (local + backend sync)
   const handleNewConversation = () => {
     const newConv: Conversation = {
       id: generateConversationId(),
@@ -292,11 +325,28 @@ function AuthenticatedApp({
     setConversations(prev => [newConv, ...prev]);
     setActiveConversationId(newConv.id);
     setSelectedObjects([]);
+    
+    // Sync new conversation to backend
+    syncConversationToBackend(newConv);
+    
     return newConv;
   };
 
-  // Delete a conversation
+  // Delete a conversation (local + backend)
   const handleDeleteConversation = (conversationId: string) => {
+    // Find the conversation to delete from backend
+    const convToDelete = conversations.find(c => c.id === conversationId);
+    if (convToDelete) {
+      // Cancel any pending sync
+      const pending = savePendingRef.current.get(conversationId);
+      if (pending) {
+        clearTimeout(pending);
+        savePendingRef.current.delete(conversationId);
+      }
+      // Delete from backend
+      conversationStorage.deleteConversation(convToDelete);
+    }
+    
     setConversations(prev => {
       const filtered = prev.filter(c => c.id !== conversationId);
 

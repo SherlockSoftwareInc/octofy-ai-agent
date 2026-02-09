@@ -296,13 +296,27 @@ def create_conversation(
     Returns:
         Created conversation
     """
-    # Convert Pydantic Message models to dicts with JSON-serializable values
-    messages_data = [msg.model_dump(mode='json') for msg in conversation_create.messages]
+    # Messages are already dicts (raw JSON), store them directly
+    messages_data = conversation_create.messages
+    
+    # Build extra_data from extra fields
+    extra_data = {}
+    if conversation_create.lastGeneratedSQL is not None:
+        extra_data['lastGeneratedSQL'] = conversation_create.lastGeneratedSQL
+    if conversation_create.queryHistory is not None:
+        extra_data['queryHistory'] = conversation_create.queryHistory
+    if conversation_create.selectedObjects is not None:
+        extra_data['selectedObjects'] = conversation_create.selectedObjects
+    if conversation_create.planningContext is not None:
+        extra_data['planningContext'] = conversation_create.planningContext
+    if conversation_create.planningSummary is not None:
+        extra_data['planningSummary'] = conversation_create.planningSummary
     
     db_conversation = Conversation(
         user_id=user_id,
         title=conversation_create.title,
-        messages=messages_data
+        messages=messages_data,
+        extra_data=extra_data if extra_data else None
     )
     
     db.add(db_conversation)
@@ -344,8 +358,23 @@ def update_conversation(
     if conversation_update.title is not None:
         db_conversation.title = conversation_update.title
     if conversation_update.messages is not None:
-        messages_data = [msg.model_dump(mode='json') for msg in conversation_update.messages]
-        db_conversation.messages = messages_data
+        # Messages are already dicts (raw JSON), store directly
+        db_conversation.messages = conversation_update.messages
+    
+    # Update extra_data from extra fields
+    extra_data = db_conversation.extra_data or {}
+    if conversation_update.lastGeneratedSQL is not None:
+        extra_data['lastGeneratedSQL'] = conversation_update.lastGeneratedSQL
+    if conversation_update.queryHistory is not None:
+        extra_data['queryHistory'] = conversation_update.queryHistory
+    if conversation_update.selectedObjects is not None:
+        extra_data['selectedObjects'] = conversation_update.selectedObjects
+    if conversation_update.planningContext is not None:
+        extra_data['planningContext'] = conversation_update.planningContext
+    if conversation_update.planningSummary is not None:
+        extra_data['planningSummary'] = conversation_update.planningSummary
+    if extra_data:
+        db_conversation.extra_data = extra_data
     
     db.commit()
     db.refresh(db_conversation)

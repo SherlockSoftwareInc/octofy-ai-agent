@@ -284,20 +284,22 @@ export const api = {
                     const trimmedLine = line.trim();
                     if (trimmedLine.startsWith('data: ')) {
                         const jsonStr = trimmedLine.replace('data: ', '');
+                        let data;
                         try {
-                            const data = JSON.parse(jsonStr);
-                            if (data.type === 'status') {
-                                onStatus(data as AgentStatus);
-                            } else if (data.type === 'result') {
-                                finalResult = data.payload as GenerateSQLResponse;
-                            } else if (data.type === 'done') {
-                                // Stream explicitly completed
-                                return finalResult!;
-                            } else if (data.type === 'error') {
-                                throw new Error(data.message);
-                            }
+                            data = JSON.parse(jsonStr);
                         } catch (e) {
-                            console.error('Error parsing stream data:', e);
+                            console.error('Error parsing stream JSON:', e);
+                            continue;
+                        }
+                        if (data.type === 'status') {
+                            onStatus(data as AgentStatus);
+                        } else if (data.type === 'result') {
+                            finalResult = data.payload as GenerateSQLResponse;
+                        } else if (data.type === 'done') {
+                            // Stream explicitly completed
+                            return finalResult!;
+                        } else if (data.type === 'error') {
+                            throw new Error(data.message);
                         }
                     }
                 }
@@ -351,20 +353,22 @@ export const api = {
                     const trimmedLine = line.trim();
                     if (trimmedLine.startsWith('data: ')) {
                         const jsonStr = trimmedLine.replace('data: ', '');
+                        let data;
                         try {
-                            const data = JSON.parse(jsonStr);
-                            if (data.type === 'status') {
-                                onStatus(data as AgentStatus);
-                            } else if (data.type === 'result') {
-                                finalResult = data.payload as GenerateSQLResponse;
-                            } else if (data.type === 'done') {
-                                // Stream explicitly completed
-                                return finalResult!;
-                            } else if (data.type === 'error') {
-                                throw new Error(data.message);
-                            }
+                            data = JSON.parse(jsonStr);
                         } catch (e) {
-                            console.error('Error parsing stream data:', e);
+                            console.error('Error parsing stream JSON:', e);
+                            continue;
+                        }
+                        if (data.type === 'status') {
+                            onStatus(data as AgentStatus);
+                        } else if (data.type === 'result') {
+                            finalResult = data.payload as GenerateSQLResponse;
+                        } else if (data.type === 'done') {
+                            // Stream explicitly completed
+                            return finalResult!;
+                        } else if (data.type === 'error') {
+                            throw new Error(data.message);
                         }
                     }
                 }
@@ -418,20 +422,22 @@ export const api = {
                     const trimmedLine = line.trim();
                     if (trimmedLine.startsWith('data: ')) {
                         const jsonStr = trimmedLine.replace('data: ', '');
+                        let data;
                         try {
-                            const data = JSON.parse(jsonStr);
-                            if (data.type === 'status') {
-                                onStatus(data as AgentStatus);
-                            } else if (data.type === 'result') {
-                                finalResult = data.payload as GenerateSQLResponse;
-                            } else if (data.type === 'done') {
-                                // Stream explicitly completed
-                                return finalResult!;
-                            } else if (data.type === 'error') {
-                                throw new Error(data.message);
-                            }
+                            data = JSON.parse(jsonStr);
                         } catch (e) {
-                            console.error('Error parsing stream data:', e);
+                            console.error('Error parsing stream JSON:', e);
+                            continue;
+                        }
+                        if (data.type === 'status') {
+                            onStatus(data as AgentStatus);
+                        } else if (data.type === 'result') {
+                            finalResult = data.payload as GenerateSQLResponse;
+                        } else if (data.type === 'done') {
+                            // Stream explicitly completed
+                            return finalResult!;
+                        } else if (data.type === 'error') {
+                            throw new Error(data.message);
                         }
                     }
                 }
@@ -485,20 +491,22 @@ export const api = {
                     const trimmedLine = line.trim();
                     if (trimmedLine.startsWith('data: ')) {
                         const jsonStr = trimmedLine.replace('data: ', '');
+                        let data;
                         try {
-                            const data = JSON.parse(jsonStr);
-                            if (data.type === 'status') {
-                                onStatus(data as AgentStatus);
-                            } else if (data.type === 'result') {
-                                finalResult = data.payload as GenerateSQLResponse;
-                            } else if (data.type === 'done') {
-                                // Stream explicitly completed
-                                return finalResult!;
-                            } else if (data.type === 'error') {
-                                throw new Error(data.message);
-                            }
+                            data = JSON.parse(jsonStr);
                         } catch (e) {
-                            console.error('Error parsing stream data:', e);
+                            console.error('Error parsing stream JSON:', e);
+                            continue;
+                        }
+                        if (data.type === 'status') {
+                            onStatus(data as AgentStatus);
+                        } else if (data.type === 'result') {
+                            finalResult = data.payload as GenerateSQLResponse;
+                        } else if (data.type === 'done') {
+                            // Stream explicitly completed
+                            return finalResult!;
+                        } else if (data.type === 'error') {
+                            throw new Error(data.message);
                         }
                     }
                 }
@@ -552,20 +560,22 @@ export const api = {
                     const trimmedLine = line.trim();
                     if (trimmedLine.startsWith('data: ')) {
                         const jsonStr = trimmedLine.replace('data: ', '');
+                        let data;
                         try {
-                            const data = JSON.parse(jsonStr);
-                            if (data.type === 'status') {
-                                onStatus(data as AgentStatus);
-                            } else if (data.type === 'result') {
-                                finalResult = data.payload as GenerateSQLResponse;
-                            } else if (data.type === 'done') {
-                                // Stream explicitly completed
-                                return finalResult!;
-                            } else if (data.type === 'error') {
-                                throw new Error(data.message);
-                            }
+                            data = JSON.parse(jsonStr);
                         } catch (e) {
-                            console.error('Error parsing stream data:', e);
+                            console.error('Error parsing stream JSON:', e);
+                            continue;
+                        }
+                        if (data.type === 'status') {
+                            onStatus(data as AgentStatus);
+                        } else if (data.type === 'result') {
+                            finalResult = data.payload as GenerateSQLResponse;
+                        } else if (data.type === 'done') {
+                            // Stream explicitly completed
+                            return finalResult!;
+                        } else if (data.type === 'error') {
+                            throw new Error(data.message);
                         }
                     }
                 }
@@ -1166,17 +1176,19 @@ export const api = {
             const response = await axios.get(`${API_BASE_URL}/conversations/${conversationId}`);
             return response.data;
         },
-        create: async (title: string | null, messages: unknown[]) => {
+        create: async (title: string | null, messages: unknown[], metadata?: Record<string, unknown>) => {
             const response = await axios.post(`${API_BASE_URL}/conversations`, {
                 title,
-                messages
+                messages,
+                ...metadata
             });
             return response.data;
         },
-        update: async (conversationId: number, title?: string, messages?: unknown[]) => {
+        update: async (conversationId: number, title?: string, messages?: unknown[], metadata?: Record<string, unknown>) => {
             const response = await axios.put(`${API_BASE_URL}/conversations/${conversationId}`, {
                 title,
-                messages
+                messages,
+                ...metadata
             });
             return response.data;
         },

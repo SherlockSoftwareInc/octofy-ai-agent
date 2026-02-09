@@ -1,4 +1,4 @@
-"""
+﻿"""
 Data source management endpoints for multi-source schema tree.
 """
 from fastapi import APIRouter, HTTPException, Depends, BackgroundTasks
@@ -14,7 +14,8 @@ from app.models.schemas import (
 )
 from app.services.vector_store import get_vector_store
 from app.services.skills_service import SkillsService
-from app.core.auth import verify_api_key
+from app.core.auth import get_current_active_admin
+from app.models.user_models import User
 from app.core.database import test_connection
 import uuid
 
@@ -27,7 +28,7 @@ router = APIRouter()
 
 
 @router.get("/data-sources", response_model=DataSourceListResponse)
-def list_data_sources(api_key: str = Depends(verify_api_key)):
+def list_data_sources(current_user: User = Depends(get_current_active_admin)):
     """
     List all configured data sources.
     
@@ -92,7 +93,7 @@ def list_data_sources(api_key: str = Depends(verify_api_key)):
 def add_data_source(
     request: AddDataSourceRequest,
     background_tasks: BackgroundTasks,
-    api_key: str = Depends(verify_api_key),
+    current_user: User = Depends(get_current_active_admin),
 ):
     """
     Add a new data source via the skills library.
@@ -163,7 +164,7 @@ def scan_data_source(
     source_id: str,
     background_tasks: BackgroundTasks,
     body: ScanDataSourceRequest = None,
-    api_key: str = Depends(verify_api_key),
+    current_user: User = Depends(get_current_active_admin),
 ):
     """
     Trigger a schema scan for an existing data source.
@@ -250,7 +251,7 @@ def scan_data_source(
 
 
 @router.get("/data-sources/{source_id}/scan-status")
-def get_scan_status(source_id: str, api_key: str = Depends(verify_api_key)):
+def get_scan_status(source_id: str, current_user: User = Depends(get_current_active_admin)):
     """Get the current scan status for a data source."""
     if source_id in _scan_status:
         return _scan_status[source_id]
@@ -343,7 +344,7 @@ def _load_data_source_md(name: str):
 
 
 @router.get("/data-sources/{source_id}", response_model=DataSourceResponse)
-def get_data_source(source_id: str, api_key: str = Depends(verify_api_key)):
+def get_data_source(source_id: str, current_user: User = Depends(get_current_active_admin)):
     """Get details of a specific data source."""
     try:
         skills_service = SkillsService()
@@ -374,7 +375,7 @@ def get_data_source(source_id: str, api_key: str = Depends(verify_api_key)):
 
 
 @router.put("/data-sources/{source_id}", response_model=DataSourceResponse)
-def update_data_source(source_id: str, request: AddDataSourceRequest, api_key: str = Depends(verify_api_key)):
+def update_data_source(source_id: str, request: AddDataSourceRequest, current_user: User = Depends(get_current_active_admin)):
     """Update an existing data source via the skills library."""
     import logging
     logger = logging.getLogger(__name__)
@@ -430,7 +431,7 @@ def update_data_source(source_id: str, request: AddDataSourceRequest, api_key: s
 
 
 @router.delete("/data-sources/{source_id}")
-def delete_data_source(source_id: str, api_key: str = Depends(verify_api_key)):
+def delete_data_source(source_id: str, current_user: User = Depends(get_current_active_admin)):
     """
     Delete a data source and all its contents from the skills library.
     """
@@ -463,7 +464,7 @@ def delete_data_source(source_id: str, api_key: str = Depends(verify_api_key)):
 
 
 @router.post("/data-sources/{source_id}/test", response_model=ConnectionTestResponse)
-def test_data_source_connection(source_id: str, api_key: str = Depends(verify_api_key)):
+def test_data_source_connection(source_id: str, current_user: User = Depends(get_current_active_admin)):
     """Test connection to a data source."""
     return ConnectionTestResponse(
         success=True,
@@ -472,13 +473,13 @@ def test_data_source_connection(source_id: str, api_key: str = Depends(verify_ap
 
 
 @router.post("/data-sources/{source_id}/enable")
-def toggle_data_source(source_id: str, enabled: bool = True, api_key: str = Depends(verify_api_key)):
+def toggle_data_source(source_id: str, enabled: bool = True, current_user: User = Depends(get_current_active_admin)):
     """Enable or disable a data source."""
     return {"status": "success", "message": f"Data source status updated", "enabled": enabled}
 
 
 @router.post("/data-sources/{source_id}/set-primary")
-def set_primary_data_source(source_id: str, api_key: str = Depends(verify_api_key)):
+def set_primary_data_source(source_id: str, current_user: User = Depends(get_current_active_admin)):
     """Set a data source as the primary (default) source for queries."""
     return {"status": "success", "message": f"Primary data source updated to {source_id}"}
 

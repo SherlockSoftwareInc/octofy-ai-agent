@@ -1,4 +1,4 @@
-"""
+﻿"""
 Schema tree navigation endpoints for hierarchical data source browsing.
 """
 from fastapi import APIRouter, HTTPException, Depends
@@ -9,7 +9,8 @@ from app.models.schemas import (
 )
 from app.services.settings_service import load_settings
 from app.services.vector_store import get_vector_store
-from app.core.auth import verify_api_key
+from app.core.auth import get_current_active_admin
+from app.models.user_models import User
 from app.core.database import get_database_engine
 from sqlalchemy import inspect
 
@@ -17,7 +18,7 @@ router = APIRouter()
 
 
 @router.get("/schema-tree", response_model=SchemaTreeResponse)
-def get_full_tree(api_key: str = Depends(verify_api_key)):
+def get_full_tree(current_user: User = Depends(get_current_active_admin)):
     """
     Get complete schema tree for all data sources.
     
@@ -42,7 +43,7 @@ def get_full_tree(api_key: str = Depends(verify_api_key)):
 
 
 @router.get("/schema-tree/{source_id}", response_model=SchemaTreeResponse)
-def get_source_tree(source_id: str, include_db_inspection: bool = False, api_key: str = Depends(verify_api_key)):
+def get_source_tree(source_id: str, include_db_inspection: bool = False, current_user: User = Depends(get_current_active_admin)):
     """
     Get schema tree for a specific data source.
     
@@ -76,7 +77,7 @@ def get_source_tree(source_id: str, include_db_inspection: bool = False, api_key
 
 
 @router.get("/schema-tree/{source_id}/schemas")
-def get_schemas_in_source(source_id: str, api_key: str = Depends(verify_api_key)) -> List[str]:
+def get_schemas_in_source(source_id: str, current_user: User = Depends(get_current_active_admin)) -> List[str]:
     """Get list of schema names in a data source."""
     try:
         settings = load_settings()
@@ -108,7 +109,7 @@ def get_objects_in_source(
     source_id: str,
     schema_name: Optional[str] = None,
     object_type: Optional[str] = None,
-    api_key: str = Depends(verify_api_key)
+    current_user: User = Depends(get_current_active_admin)
 ) -> List[Dict[str, Any]]:
     """
     Get objects in a data source, optionally filtered by schema and object type.
@@ -139,7 +140,7 @@ def get_objects_in_source(
 def discover_database_objects(
     source_id: str,
     schema_name: Optional[str] = None,
-    api_key: str = Depends(verify_api_key)
+    current_user: User = Depends(get_current_active_admin)
 ) -> Dict[str, Any]:
     """
     Discover objects from database using database introspection.

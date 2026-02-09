@@ -94,10 +94,22 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setApiKey(null);
     localStorage.removeItem('api_key');
     localStorage.removeItem('api_key_timestamp');
-    // Also clear any localStorage conversations
+    // Clear user-scoped conversation cache keys
+    // Remove all conversation-related localStorage entries for any user
+    const keysToRemove: string[] = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if (key && (key.startsWith('sql_agent_conversations_') || key.startsWith('sql_agent_active_conversation_'))) {
+        keysToRemove.push(key);
+      }
+    }
+    keysToRemove.forEach(key => localStorage.removeItem(key));
+    // Also clear legacy non-scoped keys
+    localStorage.removeItem('sql_agent_conversations');
+    localStorage.removeItem('sql_agent_active_conversation');
     localStorage.removeItem('conversations');
     localStorage.removeItem('activeConversationId');
-    console.log('Logout complete, all tokens cleared');
+    console.log('Logout complete, all tokens and conversation cache cleared');
   };
 
   const refreshUser = async () => {

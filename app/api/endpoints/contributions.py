@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException, Depends
+﻿from fastapi import APIRouter, HTTPException, Depends
 from typing import List
 import logging
 from app.models.schemas import (
@@ -6,7 +6,8 @@ from app.models.schemas import (
     ApproveContributionRequest, ApproveContributionResponse
 )
 from app.services.vector_store import get_vector_store
-from app.core.auth import verify_api_key
+from app.core.auth import verify_api_key, get_current_active_admin
+from app.models.user_models import User
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -72,7 +73,7 @@ def submit_contribution(request: ContributionRequest, api_key: str = Depends(ver
 # --- Admin Contribution Management Endpoints ---
 
 @router.get("/admin/contributions", response_model=List[ContributionItem])
-def get_contributions(api_key: str = Depends(verify_api_key)):
+def get_contributions(current_user: User = Depends(get_current_active_admin)):
     """
     Get all pending contributions for admin review.
     """
@@ -106,7 +107,7 @@ def get_contributions(api_key: str = Depends(verify_api_key)):
 
 
 @router.post("/admin/contributions/approve")
-def approve_contribution(request: ApproveContributionRequest, api_key: str = Depends(verify_api_key)):
+def approve_contribution(request: ApproveContributionRequest, current_user: User = Depends(get_current_active_admin)):
     """
     Approve a contribution and move it to the Knowledge Base.
     Optionally allows editing the question during approval.
@@ -136,7 +137,7 @@ def approve_contribution(request: ApproveContributionRequest, api_key: str = Dep
 
 
 @router.delete("/admin/contributions/{contribution_id}")
-def reject_contribution(contribution_id: str, api_key: str = Depends(verify_api_key)):
+def reject_contribution(contribution_id: str, current_user: User = Depends(get_current_active_admin)):
     """
     Reject/delete a contribution from the staging area.
     """

@@ -1,4 +1,4 @@
-"""
+﻿"""
 Settings API Endpoints - Manage agent configuration
 """
 from fastapi import APIRouter, HTTPException, Depends
@@ -14,7 +14,8 @@ from app.services.settings_service import (
 )
 from app.services.vector_store import refresh_vector_store
 from app.services.llm_service import fetch_available_models
-from app.core.auth import verify_api_key
+from app.core.auth import get_current_active_admin
+from app.models.user_models import User
 import urllib.parse
 import os
 from dotenv import dotenv_values
@@ -57,7 +58,7 @@ def _write_env_api_key(api_key: str) -> None:
         handle.writelines(lines)
 
 @router.get("/settings", response_model=AgentSettings)
-def get_settings(api_key: str = Depends(verify_api_key)):
+def get_settings(current_user: User = Depends(get_current_active_admin)):
     """Get current agent settings with masked sensitive data"""
     try:
         return get_settings_for_display()
@@ -66,12 +67,12 @@ def get_settings(api_key: str = Depends(verify_api_key)):
         raise HTTPException(status_code=500, detail=f"Failed to load settings: {str(e)}")
 
 @router.get("/api-key", response_model=EnvApiKeyResponse)
-def get_env_api_key():
+def get_env_api_key(current_user: User = Depends(get_current_active_admin)):
     api_key = _read_env_api_key()
     return EnvApiKeyResponse(api_key=api_key, exists=bool(api_key))
 
 @router.post("/api-key", response_model=EnvApiKeyResponse)
-def set_env_api_key(request: EnvApiKeyUpdateRequest):
+def set_env_api_key(request: EnvApiKeyUpdateRequest, current_user: User = Depends(get_current_active_admin)):
     api_key = request.api_key.strip()
     if not api_key:
         raise HTTPException(status_code=400, detail="API key cannot be empty.")
@@ -84,7 +85,7 @@ def set_env_api_key(request: EnvApiKeyUpdateRequest):
     return EnvApiKeyResponse(api_key=api_key, exists=True)
 
 @router.put("/settings", response_model=AgentSettings)
-def update_settings(settings: AgentSettings, api_key: str = Depends(verify_api_key)):
+def update_settings(settings: AgentSettings, current_user: User = Depends(get_current_active_admin)):
     """Update agent settings"""
     try:
         current_settings = load_settings()
@@ -112,7 +113,7 @@ def update_settings(settings: AgentSettings, api_key: str = Depends(verify_api_k
         raise HTTPException(status_code=500, detail=f"Failed to update settings: {str(e)}")
 
 @router.post("/test-connection", response_model=ConnectionTestResponse)
-def test_connection(request: ConnectionTestRequest, api_key: str = Depends(verify_api_key)):
+def test_connection(request: ConnectionTestRequest, current_user: User = Depends(get_current_active_admin)):
     """Test database connection with provided credentials"""
     try:
         # Build connection string
@@ -153,7 +154,7 @@ def test_connection(request: ConnectionTestRequest, api_key: str = Depends(verif
         )
 
 @router.get("/models")
-def get_available_models(api_key: str = Depends(verify_api_key)):
+def get_available_models(current_user: User = Depends(get_current_active_admin)):
     """Get list of available LLM models"""
     # Try to fetch from configured endpoint first
     try:
@@ -177,7 +178,7 @@ def get_available_models(api_key: str = Depends(verify_api_key)):
     return {"models": models}
 
 @router.post("/fetch-models", response_model=FetchModelsResponse)
-def fetch_models(request: FetchModelsRequest, api_key: str = Depends(verify_api_key)):
+def fetch_models(request: FetchModelsRequest, current_user: User = Depends(get_current_active_admin)):
     """Fetch available models from the specified endpoint"""
     try:
         models = fetch_available_models(request.llm_endpoint, request.llm_api_key)
@@ -186,7 +187,7 @@ def fetch_models(request: FetchModelsRequest, api_key: str = Depends(verify_api_
         raise HTTPException(status_code=500, detail=f"Failed to fetch models: {str(e)}")
 
 @router.post("/build-connection-string")
-def build_connection_string_endpoint(request: ConnectionTestRequest, api_key: str = Depends(verify_api_key)):
+def build_connection_string_endpoint(request: ConnectionTestRequest, current_user: User = Depends(get_current_active_admin)):
     """Build and return a connection string from components"""
     try:
         conn_str = build_connection_string(
@@ -242,7 +243,7 @@ def build_connection_string_endpoint(request: ConnectionTestRequest, api_key: st
         raise HTTPException(status_code=400, detail=f"Failed to build connection string: {str(e)}")
 
 @router.post("/verify-settings")
-def verify_settings(api_key: str = Depends(verify_api_key)):
+def verify_settings(current_user: User = Depends(get_current_active_admin)):
     """
     Verify the basic connectivity of the current settings (Database, LLM, and Vector Store).
     """

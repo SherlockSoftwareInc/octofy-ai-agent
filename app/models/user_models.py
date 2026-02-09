@@ -75,8 +75,11 @@ class Conversation(Base):
     title = Column(String(255), nullable=True)  # Auto-generated or user-provided title
     
     # Full conversation stored as JSON array of messages
-    # Format: [{"role": "user", "content": "...", "timestamp": "..."}, ...]
+    # Format: [{"role": "user", "content": "...", "timestamp": "...", ...extra_fields}, ...]
     messages = Column(JSON, nullable=False, default=list)
+    
+    # Extra conversation data (selectedObjects, planningContext, etc.)
+    extra_data = Column(JSON, nullable=True, default=dict)
     
     # Timestamps
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)

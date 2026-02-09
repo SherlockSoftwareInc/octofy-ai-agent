@@ -1,42 +1,49 @@
 import React, { useState } from 'react';
 import { useAuth } from '../contexts/AuthContext';
-import { User, Mail, Key, Shield, LogOut, Copy, Check, RefreshCw } from 'lucide-react';
+import { User, Mail, LogOut, Lock, Eye, EyeOff, Check } from 'lucide-react';
 import { api } from '../api/client';
 
 export const UserProfile: React.FC<{ onClose: () => void }> = ({ onClose }) => {
-  const { user, logout, refreshUser } = useAuth();
-  const [copiedApiKey, setCopiedApiKey] = useState(false);
-  const [isRegenerating, setIsRegenerating] = useState(false);
+  const { user, logout } = useAuth();
+  const [showChangePassword, setShowChangePassword] = useState(false);
+  const [newPassword, setNewPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [showNewPassword, setShowNewPassword] = useState(false);
+  const [showConfirmPassword, setShowConfirmPassword] = useState(false);
+  const [isChangingPassword, setIsChangingPassword] = useState(false);
+  const [passwordError, setPasswordError] = useState('');
+  const [passwordSuccess, setPasswordSuccess] = useState(false);
 
   if (!user) return null;
 
-  const handleCopyApiKey = () => {
-    navigator.clipboard.writeText(user.api_key);
-    setCopiedApiKey(true);
-    setTimeout(() => setCopiedApiKey(false), 2000);
-  };
+  const handleChangePassword = async () => {
+    setPasswordError('');
+    setPasswordSuccess(false);
 
-  const handleRegenerateApiKey = async () => {
-    if (!confirm('Are you sure you want to regenerate your API key? The old key will stop working.')) {
+    if (newPassword.length < 6) {
+      setPasswordError('Password must be at least 6 characters');
+      return;
+    }
+    if (newPassword !== confirmPassword) {
+      setPasswordError('Passwords do not match');
       return;
     }
 
-    setIsRegenerating(true);
+    setIsChangingPassword(true);
     try {
-      const response = await api.client.post('/api/v1/users/me/regenerate-api-key');
-      const newApiKey = response.data.api_key;
-      
-      // Update localStorage with new API key and reset timestamp
-      localStorage.setItem('api_key', newApiKey);
-      localStorage.setItem('api_key_timestamp', Date.now().toString());
-      
-      // Refresh user data
-      await refreshUser();
+      await api.client.put('/api/v1/users/me', { password: newPassword });
+      setPasswordSuccess(true);
+      setNewPassword('');
+      setConfirmPassword('');
+      setTimeout(() => {
+        setShowChangePassword(false);
+        setPasswordSuccess(false);
+      }, 2000);
     } catch (error) {
-      console.error('Failed to regenerate API key:', error);
-      alert('Failed to regenerate API key');
+      console.error('Failed to change password:', error);
+      setPasswordError('Failed to change password');
     } finally {
-      setIsRegenerating(false);
+      setIsChangingPassword(false);
     }
   };
 
@@ -67,56 +74,92 @@ export const UserProfile: React.FC<{ onClose: () => void }> = ({ onClose }) => {
             </div>
           </div>
 
-          {/* Role */}
-          <div className="flex items-center space-x-3 p-3 bg-gray-50 rounded-lg">
-            <Shield className="w-5 h-5 text-gray-400" />
-            <div className="flex-1">
-              <p className="text-xs text-gray-500 uppercase font-medium">Role</p>
-              <span className={`inline-flex items-center px-2 py-1 text-xs font-medium rounded ${
-                user.role === 'admin' 
-                  ? 'bg-purple-100 text-purple-800' 
-                  : 'bg-blue-100 text-blue-800'
-              }`}>
-                {user.role}
-              </span>
-            </div>
-          </div>
-
-          {/* API Key */}
+          {/* Change Password */}
           <div className="border-t pt-4">
-            <div className="flex items-center justify-between mb-2">
-              <div className="flex items-center space-x-2">
-                <Key className="w-4 h-4 text-gray-400" />
-                <p className="text-xs text-gray-500 uppercase font-medium">API Key</p>
-              </div>
+            {!showChangePassword ? (
               <button
-                onClick={handleRegenerateApiKey}
-                disabled={isRegenerating}
-                className="text-xs text-purple-600 hover:text-purple-700 font-medium flex items-center space-x-1 disabled:opacity-50"
+                onClick={() => setShowChangePassword(true)}
+                className="w-full flex items-center space-x-3 p-3 bg-gray-50 hover:bg-gray-100 rounded-lg transition-colors"
               >
-                <RefreshCw className={`w-3 h-3 ${isRegenerating ? 'animate-spin' : ''}`} />
-                <span>Regenerate</span>
+                <Lock className="w-5 h-5 text-gray-400" />
+                <span className="text-sm font-medium text-gray-900">Change Password</span>
               </button>
-            </div>
-            <div className="flex items-center space-x-2">
-              <code className="flex-1 px-3 py-2 bg-gray-900 text-gray-100 text-xs rounded font-mono truncate">
-                {user.api_key}
-              </code>
-              <button
-                onClick={handleCopyApiKey}
-                className="p-2 hover:bg-gray-100 rounded transition-colors"
-                title="Copy API Key"
-              >
-                {copiedApiKey ? (
-                  <Check className="w-4 h-4 text-green-600" />
-                ) : (
-                  <Copy className="w-4 h-4 text-gray-600" />
+            ) : (
+              <div className="space-y-3">
+                <div className="flex items-center space-x-2 mb-2">
+                  <Lock className="w-4 h-4 text-gray-400" />
+                  <p className="text-xs text-gray-500 uppercase font-medium">Change Password</p>
+                </div>
+
+                {/* New Password */}
+                <div className="relative">
+                  <input
+                    type={showNewPassword ? 'text' : 'password'}
+                    value={newPassword}
+                    onChange={(e) => setNewPassword(e.target.value)}
+                    placeholder="New password (min 6 characters)"
+                    className="w-full px-3 py-2 pr-10 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowNewPassword(!showNewPassword)}
+                    className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-gray-400 hover:text-gray-600"
+                  >
+                    {showNewPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                  </button>
+                </div>
+
+                {/* Confirm Password */}
+                <div className="relative">
+                  <input
+                    type={showConfirmPassword ? 'text' : 'password'}
+                    value={confirmPassword}
+                    onChange={(e) => setConfirmPassword(e.target.value)}
+                    placeholder="Confirm new password"
+                    className="w-full px-3 py-2 pr-10 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowConfirmPassword(!showConfirmPassword)}
+                    className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-gray-400 hover:text-gray-600"
+                  >
+                    {showConfirmPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                  </button>
+                </div>
+
+                {passwordError && (
+                  <p className="text-xs text-red-600">{passwordError}</p>
                 )}
-              </button>
-            </div>
-            <p className="text-xs text-gray-500 mt-2">
-              Use this key to authenticate API requests
-            </p>
+                {passwordSuccess && (
+                  <p className="text-xs text-green-600 flex items-center space-x-1">
+                    <Check className="w-3 h-3" />
+                    <span>Password changed successfully</span>
+                  </p>
+                )}
+
+                <div className="flex space-x-2">
+                  <button
+                    onClick={handleChangePassword}
+                    disabled={isChangingPassword || !newPassword || !confirmPassword}
+                    className="flex-1 py-2 px-3 bg-purple-600 hover:bg-purple-700 text-white text-sm font-medium rounded-lg transition-colors disabled:opacity-50"
+                  >
+                    {isChangingPassword ? 'Saving...' : 'Save Password'}
+                  </button>
+                  <button
+                    onClick={() => {
+                      setShowChangePassword(false);
+                      setNewPassword('');
+                      setConfirmPassword('');
+                      setPasswordError('');
+                      setPasswordSuccess(false);
+                    }}
+                    className="py-2 px-3 bg-gray-200 hover:bg-gray-300 text-gray-700 text-sm font-medium rounded-lg transition-colors"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
         </div>
 

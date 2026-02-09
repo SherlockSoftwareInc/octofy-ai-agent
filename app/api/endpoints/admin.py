@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException, UploadFile, File, Depends
+﻿from fastapi import APIRouter, HTTPException, UploadFile, File, Depends
 from fastapi.responses import StreamingResponse, FileResponse
 from typing import List, Dict, Optional
 from app.models.schemas import (
@@ -13,12 +13,16 @@ from app.services.admin_service import (
 )
 from app.services.skills_service import get_skills_service
 from app.services.vector_store import get_vector_store
-from app.core.auth import verify_api_key
+from app.core.auth import get_current_active_admin
+from app.models.user_models import User
 import json
 import asyncio
 import os
 import tempfile
 from datetime import datetime
+import logging
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -28,7 +32,7 @@ _upload_progress = {"current": 0, "total": 0, "status": "idle"}
 # --- Schema Management ---
 
 @router.get("/schema/status", response_model=List[AdminSchemaStatus])
-def get_schemas_status(include_db_inspection: bool = False, api_key: str = Depends(verify_api_key)):
+def get_schemas_status(include_db_inspection: bool = False, current_user: User = Depends(get_current_active_admin)):
     """Get status of all schemas in database vs vector store
     
     Args:
@@ -41,7 +45,7 @@ def get_schemas_status(include_db_inspection: bool = False, api_key: str = Depen
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.post("/schema/sync")
-def sync_table(schema: str, table: str, api_key: str = Depends(verify_api_key)):
+def sync_table(schema: str, table: str, current_user: User = Depends(get_current_active_admin)):
     try:
         success = sync_specific_table(schema, table)
         return {"status": "success", "message": f"Synced {schema}.{table}"}
@@ -51,7 +55,7 @@ def sync_table(schema: str, table: str, api_key: str = Depends(verify_api_key)):
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.post("/schema/sync-full")
-def sync_all(api_key: str = Depends(verify_api_key)):
+def sync_all(current_user: User = Depends(get_current_active_admin)):
     try:
         sync_all_schemas()
         return {"status": "success", "message": "Successfully synced all schemas and rebuilt vector index"}
@@ -61,7 +65,7 @@ def sync_all(api_key: str = Depends(verify_api_key)):
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.post("/schema/batch-sync", response_model=BatchSyncResponse)
-def batch_sync(request: BatchSyncRequest, api_key: str = Depends(verify_api_key)):
+def batch_sync(request: BatchSyncRequest, current_user: User = Depends(get_current_active_admin)):
     """
     Batch sync multiple tables from database to vector store.
     
@@ -82,7 +86,7 @@ def batch_sync(request: BatchSyncRequest, api_key: str = Depends(verify_api_key)
 
 
 @router.put("/schema/description")
-def update_schema_description(schema: str, table: str, description: str, api_key: str = Depends(verify_api_key)):
+def update_schema_description(schema: str, table: str, description: str, current_user: User = Depends(get_current_active_admin)):
     try:
         vector_store = get_vector_store()
         vector_store.update_schema_description(schema, table, description)
@@ -91,7 +95,7 @@ def update_schema_description(schema: str, table: str, description: str, api_key
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.delete("/schema")
-def delete_schema(schema: str, table: str, api_key: str = Depends(verify_api_key)):
+def delete_schema(schema: str, table: str, current_user: User = Depends(get_current_active_admin)):
     try:
         vector_store = get_vector_store()
         vector_store.delete_schema(schema, table)
@@ -100,7 +104,7 @@ def delete_schema(schema: str, table: str, api_key: str = Depends(verify_api_key
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/schema/export")
-def export_schemas(api_key: str = Depends(verify_api_key)):
+def export_schemas(current_user: User = Depends(get_current_active_admin)):
     """
     Export all schemas from the vector store to an Excel file.
     """
@@ -139,7 +143,7 @@ def export_schemas(api_key: str = Depends(verify_api_key)):
         raise HTTPException(status_code=500, detail=f"Error exporting schemas: {str(e)}")
 
 @router.post("/ingest-schemas")
-async def ingest_schemas(file: UploadFile = File(...), mode: str = "append", api_key: str = Depends(verify_api_key)):
+async def ingest_schemas(file: UploadFile = File(...), mode: str = "append", current_user: User = Depends(get_current_active_admin)):
     """
     Upload an Excel file to ingest schema/table metadata.
     
@@ -180,7 +184,7 @@ async def ingest_schemas(file: UploadFile = File(...), mode: str = "append", api
         raise HTTPException(status_code=500, detail=f"Error processing file: {str(e)}")
 
 @router.get("/schema/template")
-def get_schema_template(api_key: str = Depends(verify_api_key)):
+def get_schema_template(current_user: User = Depends(get_current_active_admin)):
     """
     Download a template Excel file for schema ingestion.
     """
@@ -206,7 +210,7 @@ def get_schema_template(api_key: str = Depends(verify_api_key)):
     )
 
 @router.post("/schema/clear")
-def clear_all_schemas_endpoint(api_key: str = Depends(verify_api_key)):
+def clear_all_schemas_endpoint(current_user: User = Depends(get_current_active_admin)):
     """
     Clear all schemas from the vector store.
     """
@@ -223,7 +227,7 @@ def clear_all_schemas_endpoint(api_key: str = Depends(verify_api_key)):
 # --- Multi-Source Object Management (V2) ---
 
 @router.post("/object")
-def add_data_object(request: AddObjectRequest, api_key: str = Depends(verify_api_key)):
+def add_data_object(request: AddObjectRequest, current_user: User = Depends(get_current_active_admin)):
     """
     Add a data object (table, view, SP, function) to vector store.
     
@@ -255,7 +259,7 @@ def add_data_object(request: AddObjectRequest, api_key: str = Depends(verify_api
 
 
 @router.post("/object/sync")
-def sync_data_object(request: SyncObjectRequest, api_key: str = Depends(verify_api_key)):
+def sync_data_object(request: SyncObjectRequest, current_user: User = Depends(get_current_active_admin)):
     """
     Sync a specific object from database to vector store.
     
@@ -375,7 +379,7 @@ def sync_data_object(request: SyncObjectRequest, api_key: str = Depends(verify_a
 
 
 @router.delete("/object")
-def delete_data_object(source_id: str, schema: str, object_name: str, api_key: str = Depends(verify_api_key)):
+def delete_data_object(source_id: str, schema: str, object_name: str, current_user: User = Depends(get_current_active_admin)):
     """Delete a data object from vector store."""
     try:
         vector_store = get_vector_store()
@@ -386,7 +390,7 @@ def delete_data_object(source_id: str, schema: str, object_name: str, api_key: s
 
 
 @router.post("/object/discover")
-def discover_objects(request: DiscoverObjectsRequest, api_key: str = Depends(verify_api_key)):
+def discover_objects(request: DiscoverObjectsRequest, current_user: User = Depends(get_current_active_admin)):
     """
     Discover objects from database without adding to vector store.
     
@@ -460,7 +464,7 @@ def discover_objects(request: DiscoverObjectsRequest, api_key: str = Depends(ver
         raise HTTPException(status_code=500, detail=f"Failed to discover objects: {str(e)}")
 
 @router.post("/ingest-fewshots")
-async def ingest_fewshots(file: UploadFile = File(...), mode: str = "append", api_key: str = Depends(verify_api_key)):
+async def ingest_fewshots(file: UploadFile = File(...), mode: str = "append", current_user: User = Depends(get_current_active_admin)):
     """
     Upload an Excel file to ingest few-shot examples.
     
@@ -502,7 +506,7 @@ async def ingest_fewshots(file: UploadFile = File(...), mode: str = "append", ap
 # --- Few-Shot Management ---
 
 @router.get("/fewshots", response_model=List[FewShotItem])
-def get_fewshots(api_key: str = Depends(verify_api_key)):
+def get_fewshots(current_user: User = Depends(get_current_active_admin)):
     try:
         vector_store = get_vector_store()
         raw_items = vector_store.get_all_fewshots()
@@ -521,7 +525,7 @@ def get_fewshots(api_key: str = Depends(verify_api_key)):
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.post("/fewshots")
-def add_fewshot(item: FewShotItem, api_key: str = Depends(verify_api_key)):
+def add_fewshot(item: FewShotItem, current_user: User = Depends(get_current_active_admin)):
     try:
         vector_store = get_vector_store()
         vector_store.insert_fewshot_item(
@@ -534,7 +538,7 @@ def add_fewshot(item: FewShotItem, api_key: str = Depends(verify_api_key)):
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.delete("/fewshots/{item_id}")
-def delete_fewshot(item_id: str, api_key: str = Depends(verify_api_key)):
+def delete_fewshot(item_id: str, current_user: User = Depends(get_current_active_admin)):
     try:
         vector_store = get_vector_store()
         vector_store.delete_fewshot_item(int(item_id))
@@ -543,7 +547,7 @@ def delete_fewshot(item_id: str, api_key: str = Depends(verify_api_key)):
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/fewshots/export")
-def export_fewshots(api_key: str = Depends(verify_api_key)):
+def export_fewshots(current_user: User = Depends(get_current_active_admin)):
     """
     Export all knowledge base examples from the vector store to an Excel file.
     """
@@ -580,7 +584,7 @@ def export_fewshots(api_key: str = Depends(verify_api_key)):
 # --- Value Index Management ---
 
 @router.post("/ingest-values")
-async def ingest_values(file: UploadFile = File(...), mode: str = "append", api_key: str = Depends(verify_api_key)):
+async def ingest_values(file: UploadFile = File(...), mode: str = "append", current_user: User = Depends(get_current_active_admin)):
     """
     Upload an Excel or CSV file to ingest values into the value index.
     
@@ -672,7 +676,7 @@ async def get_upload_progress():
     )
 
 @router.get("/values/search", response_model=List[Dict])
-def search_values(query: str, top_k: int = 50, api_key: str = Depends(verify_api_key)):
+def search_values(query: str, top_k: int = 50, current_user: User = Depends(get_current_active_admin)):
     """
     Search for values in the value index using plain text matching.
     
@@ -691,7 +695,7 @@ def search_values(query: str, top_k: int = 50, api_key: str = Depends(verify_api
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/values", response_model=List[Dict])
-def get_values(api_key: str = Depends(verify_api_key)):
+def get_values(current_user: User = Depends(get_current_active_admin)):
     """
     Get all values currently in the value index.
     """
@@ -702,7 +706,7 @@ def get_values(api_key: str = Depends(verify_api_key)):
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.delete("/values/{item_id}")
-def delete_value(item_id: int, api_key: str = Depends(verify_api_key)):
+def delete_value(item_id: int, current_user: User = Depends(get_current_active_admin)):
     """
     Delete a specific value item from the index.
     """
@@ -716,7 +720,7 @@ def delete_value(item_id: int, api_key: str = Depends(verify_api_key)):
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.post("/values/clear")
-def clear_values(api_key: str = Depends(verify_api_key)):
+def clear_values(current_user: User = Depends(get_current_active_admin)):
     """
     Clear all values from the value index.
     """
@@ -730,7 +734,7 @@ def clear_values(api_key: str = Depends(verify_api_key)):
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/values/template")
-def get_excel_template(api_key: str = Depends(verify_api_key)):
+def get_excel_template(current_user: User = Depends(get_current_active_admin)):
     """
     Download a template Excel file for value ingestion.
     """
@@ -758,7 +762,7 @@ def get_excel_template(api_key: str = Depends(verify_api_key)):
     )
 
 @router.get("/values/export")
-def export_values(api_key: str = Depends(verify_api_key)):
+def export_values(current_user: User = Depends(get_current_active_admin)):
     """
     Export all values from the value index to an Excel file.
     """
@@ -794,7 +798,7 @@ def export_values(api_key: str = Depends(verify_api_key)):
         raise HTTPException(status_code=500, detail=f"Error exporting values: {str(e)}")
 
 @router.get("/vector-store/backup")
-def backup_vector_store(api_key: str = Depends(verify_api_key)):
+def backup_vector_store(current_user: User = Depends(get_current_active_admin)):
     """
     Backup all vector store data (Schemas, FewShots, Values) to a JSON file.
     """
@@ -822,7 +826,7 @@ def backup_vector_store(api_key: str = Depends(verify_api_key)):
 # --- Skills Management ---
 
 @router.get("/skills/data-sources")
-def get_data_sources(api_key: str = Depends(verify_api_key)):
+def get_data_sources(current_user: User = Depends(get_current_active_admin)):
     """Get all data sources from skills index"""
     try:
         skills_service = get_skills_service()
@@ -835,7 +839,7 @@ def get_data_sources(api_key: str = Depends(verify_api_key)):
 
 
 @router.post("/skills/data-sources")
-def create_data_source(data: Dict, api_key: str = Depends(verify_api_key)):
+def create_data_source(data: Dict, current_user: User = Depends(get_current_active_admin)):
     """Create a new data source"""
     try:
         from app.services.skills_admin_service import create_data_source as create_ds
@@ -846,7 +850,7 @@ def create_data_source(data: Dict, api_key: str = Depends(verify_api_key)):
 
 
 @router.put("/skills/data-sources/{data_source_name}")
-def update_data_source(data_source_name: str, data: Dict, api_key: str = Depends(verify_api_key)):
+def update_data_source(data_source_name: str, data: Dict, current_user: User = Depends(get_current_active_admin)):
     """Update an existing data source"""
     try:
         from app.services.skills_admin_service import update_data_source as update_ds
@@ -857,7 +861,7 @@ def update_data_source(data_source_name: str, data: Dict, api_key: str = Depends
 
 
 @router.delete("/skills/data-sources/{data_source_name}")
-def delete_data_source(data_source_name: str, api_key: str = Depends(verify_api_key)):
+def delete_data_source(data_source_name: str, current_user: User = Depends(get_current_active_admin)):
     """Delete a data source and all its contents"""
     try:
         from app.services.skills_admin_service import delete_data_source as delete_ds
@@ -868,7 +872,7 @@ def delete_data_source(data_source_name: str, api_key: str = Depends(verify_api_
 
 
 @router.get("/skills/data-groups")
-def get_data_groups(data_source: Optional[str] = None, api_key: str = Depends(verify_api_key)):
+def get_data_groups(data_source: Optional[str] = None, current_user: User = Depends(get_current_active_admin)):
     """Get all data groups, optionally filtered by data source"""
     try:
         skills_service = get_skills_service()
@@ -886,7 +890,7 @@ def get_data_groups(data_source: Optional[str] = None, api_key: str = Depends(ve
 
 
 @router.post("/skills/data-groups")
-def create_data_group(data: Dict, api_key: str = Depends(verify_api_key)):
+def create_data_group(data: Dict, current_user: User = Depends(get_current_active_admin)):
     """Create a new data group"""
     try:
         from app.services.skills_admin_service import create_data_group as create_dg
@@ -897,7 +901,7 @@ def create_data_group(data: Dict, api_key: str = Depends(verify_api_key)):
 
 
 @router.put("/skills/data-groups")
-def update_data_group(data: Dict, api_key: str = Depends(verify_api_key)):
+def update_data_group(data: Dict, current_user: User = Depends(get_current_active_admin)):
     """Update an existing data group (requires file_path in data)"""
     try:
         from app.services.skills_admin_service import update_data_group as update_dg
@@ -908,7 +912,7 @@ def update_data_group(data: Dict, api_key: str = Depends(verify_api_key)):
 
 
 @router.delete("/skills/data-groups")
-def delete_data_group(file_path: str, api_key: str = Depends(verify_api_key)):
+def delete_data_group(file_path: str, current_user: User = Depends(get_current_active_admin)):
     """Delete a data group file"""
     try:
         from app.services.skills_admin_service import delete_data_group as delete_dg
@@ -919,7 +923,7 @@ def delete_data_group(file_path: str, api_key: str = Depends(verify_api_key)):
 
 
 @router.get("/skills/tables")
-def get_tables(data_source: Optional[str] = None, data_group: Optional[str] = None, api_key: str = Depends(verify_api_key)):
+def get_tables(data_source: Optional[str] = None, data_group: Optional[str] = None, current_user: User = Depends(get_current_active_admin)):
     """Get table schemas, optionally filtered by data source or data group"""
     try:
         skills_service = get_skills_service()
@@ -945,7 +949,7 @@ def get_tables(data_source: Optional[str] = None, data_group: Optional[str] = No
 
 
 @router.get("/skills/tables/by-path")
-def get_table_by_path(file_path: str, api_key: str = Depends(verify_api_key)):
+def get_table_by_path(file_path: str, current_user: User = Depends(get_current_active_admin)):
     """Get a specific table schema by file path"""
     try:
         skills_service = get_skills_service()
@@ -960,7 +964,7 @@ def get_table_by_path(file_path: str, api_key: str = Depends(verify_api_key)):
 
 
 @router.post("/skills/tables")
-def create_table(data: Dict, api_key: str = Depends(verify_api_key)):
+def create_table(data: Dict, current_user: User = Depends(get_current_active_admin)):
     """Create a new table schema (data object)"""
     try:
         from app.services.skills_admin_service import create_table_schema as create_ts
@@ -971,7 +975,7 @@ def create_table(data: Dict, api_key: str = Depends(verify_api_key)):
 
 
 @router.put("/skills/tables")
-def update_table(data: Dict, api_key: str = Depends(verify_api_key)):
+def update_table(data: Dict, current_user: User = Depends(get_current_active_admin)):
     """Update an existing table schema (requires file_path in data)"""
     try:
         from app.services.skills_admin_service import update_table_schema as update_ts
@@ -982,7 +986,7 @@ def update_table(data: Dict, api_key: str = Depends(verify_api_key)):
 
 
 @router.delete("/skills/tables")
-def delete_table(file_path: str, api_key: str = Depends(verify_api_key)):
+def delete_table(file_path: str, current_user: User = Depends(get_current_active_admin)):
     """Delete a table schema file"""
     try:
         from app.services.skills_admin_service import delete_table_schema as delete_ts
@@ -993,7 +997,7 @@ def delete_table(file_path: str, api_key: str = Depends(verify_api_key)):
 
 
 @router.get("/skills/raw-markdown")
-def get_raw_markdown(file_path: str, api_key: str = Depends(verify_api_key)):
+def get_raw_markdown(file_path: str, current_user: User = Depends(get_current_active_admin)):
     """Get raw markdown content of a skill file"""
     try:
         from pathlib import Path
@@ -1009,7 +1013,7 @@ def get_raw_markdown(file_path: str, api_key: str = Depends(verify_api_key)):
 
 
 @router.put("/skills/raw-markdown")
-def save_raw_markdown(data: Dict, api_key: str = Depends(verify_api_key)):
+def save_raw_markdown(data: Dict, current_user: User = Depends(get_current_active_admin)):
     """Save raw markdown content to a skill file"""
     try:
         from pathlib import Path
@@ -1038,7 +1042,7 @@ def save_raw_markdown(data: Dict, api_key: str = Depends(verify_api_key)):
 
 
 @router.get("/skills/folder-tree")
-def get_folder_tree(api_key: str = Depends(verify_api_key)):
+def get_folder_tree(current_user: User = Depends(get_current_active_admin)):
     """Get the actual folder hierarchy from skills/data-sources directory"""
     try:
         from pathlib import Path
@@ -1085,7 +1089,7 @@ def get_folder_tree(api_key: str = Depends(verify_api_key)):
 @router.post("/enhance-schema", response_model=EnhanceSchemaResponse)
 def enhance_schema_with_ai(
     request: EnhanceSchemaRequest,
-    api_key: str = Depends(verify_api_key)
+    current_user: User = Depends(get_current_active_admin)
 ):
     """
     Enhance table and column descriptions using AI.
@@ -1120,7 +1124,7 @@ def search_schemas(
     data_source: Optional[str] = None,
     object_type: Optional[str] = None,
     top_k: int = 10,
-    api_key: str = Depends(verify_api_key)
+    current_user: User = Depends(get_current_active_admin)
 ):
     """
     Search for data objects using keyword-based index search
@@ -1152,7 +1156,7 @@ def search_schemas(
 def list_objects(
     data_source: Optional[str] = None,
     schema_name: Optional[str] = None,
-    api_key: str = Depends(verify_api_key)
+    current_user: User = Depends(get_current_active_admin)
 ):
     """
     List all available data objects from index files
@@ -1180,7 +1184,7 @@ def get_object_by_name(
     object_name: str,
     schema_name: str = "dbo",
     data_source: Optional[str] = None,
-    api_key: str = Depends(verify_api_key)
+    current_user: User = Depends(get_current_active_admin)
 ):
     """
     Get a specific data object by name using index files
@@ -1209,7 +1213,7 @@ def get_object_by_name(
 @router.get("/skills/statistics")
 def get_schema_statistics(
     data_source: Optional[str] = None,
-    api_key: str = Depends(verify_api_key)
+    current_user: User = Depends(get_current_active_admin)
 ):
     """
     Get statistics about available schemas using index files
@@ -1226,7 +1230,7 @@ def get_schema_statistics(
 
 
 @router.post("/skills/regenerate-indices")
-def regenerate_schema_indices(api_key: str = Depends(verify_api_key)):
+def regenerate_schema_indices(current_user: User = Depends(get_current_active_admin)):
     """
     Regenerate all schema index files (.schema-index.json and .object-index.json)
     """
