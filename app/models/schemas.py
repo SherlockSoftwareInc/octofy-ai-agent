@@ -597,13 +597,15 @@ class EnhanceSchemaResponse(BaseModel):
 class AddDataSourceRequest(BaseModel):
     """Request to add a new data source"""
     friendly_name: str
-    description: str
+    description: str = ""
     keywords: List[str] = []
-    server: str
-    database_name: str
+    server: str = ""
+    database_name: str = ""
+    db_type: str = "mssql"
     auth_type: AuthType = "windows"
     username: Optional[str] = None
     password: Optional[str] = None
+    connection_string_encrypted: Optional[str] = None
     driver: str = "ODBC Driver 17 for SQL Server"
     trust_server_certificate: bool = False
 
