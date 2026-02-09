@@ -8,6 +8,7 @@ export const DataSourcesManager: React.FC = () => {
     const [loading, setLoading] = useState(false);
     const [showAddModal, setShowAddModal] = useState(false);
     const [editingSourceId, setEditingSourceId] = useState<string | null>(null);
+    const [activeSourceGuid, setActiveSourceGuid] = useState<string | null>(null);
     const [testingConnection, setTestingConnection] = useState<string | null>(null);
     const [connectionTestResult, setConnectionTestResult] = useState<{ sourceId: string; result: ConnectionTestResponse } | null>(null);
     const [scanningSourceId, setScanningSourceId] = useState<string | null>(null);
@@ -39,6 +40,7 @@ export const DataSourcesManager: React.FC = () => {
             const response = await api.dataSources.getAll();
             console.log('Data sources response:', response);
             setDataSources(response.data_sources || []);
+            setActiveSourceGuid(response.primary_source_id || null);
         } catch (error: unknown) {
             console.error('Failed to fetch data sources:', error);
             console.error('Error details:', (error as { response?: unknown })?.response || (error as Error)?.message);
@@ -197,6 +199,7 @@ export const DataSourcesManager: React.FC = () => {
     const handleSetPrimary = async (sourceId: string) => {
         try {
             await api.dataSources.setPrimary(sourceId);
+            setActiveSourceGuid(sourceId);
             await fetchDataSources();
         } catch (error) {
             console.error('Failed to set primary source:', error);
@@ -308,7 +311,10 @@ export const DataSourcesManager: React.FC = () => {
 
             {/* Data Sources List */}
             <div className="grid gap-4">
-                {dataSources.map((source) => (
+                {dataSources.map((source) => {
+                    const isSkillsSource = source.server === '(Defined in schema library)' || source.database_name === '(Defined in schema library)';
+                    const isPrimary = source.is_primary || (!!activeSourceGuid && source.source_id === activeSourceGuid);
+                    return (
                     <div key={source.source_id} className="bg-slate-900 border border-slate-800 rounded-xl p-5 relative group">
                         <div className="flex justify-between items-start mb-3">
                             <div className="flex items-center gap-3">
@@ -316,12 +322,12 @@ export const DataSourcesManager: React.FC = () => {
                                 <div>
                                     <div className="flex items-center gap-2">
                                         <h3 className="text-lg font-semibold text-white">{source.friendly_name}</h3>
-                                        {source.source_id.startsWith('skill_') && (
+                                        {isSkillsSource && (
                                             <span className="px-2 py-1 bg-blue-500/20 border border-blue-500/30 text-blue-300 text-xs rounded-full">
                                                 SCHEMA LIBRARY
                                             </span>
                                         )}
-                                        {source.is_primary && (
+                                        {isPrimary && (
                                             <span className="px-2 py-1 bg-emerald-500/20 border border-emerald-500/30 text-emerald-300 text-xs rounded-full">
                                                 PRIMARY
                                             </span>
@@ -336,7 +342,7 @@ export const DataSourcesManager: React.FC = () => {
                                 </div>
                             </div>
                             <div className="flex items-center gap-2">
-                                {!source.source_id.startsWith('skill_') && (
+                                {!isSkillsSource && (
                                     <>
                                         <button
                                             onClick={() => handleTestConnection(source.source_id)}
@@ -357,7 +363,7 @@ export const DataSourcesManager: React.FC = () => {
                                         >
                                             <Edit size={16} />
                                         </button>
-                                        {!source.is_primary && (
+                                        {!isPrimary && (
                                             <button
                                                 onClick={() => handleDelete(source.source_id, source.friendly_name)}
                                                 className="p-2 bg-red-500/10 text-red-400 rounded hover:bg-red-500/20"
@@ -380,7 +386,7 @@ export const DataSourcesManager: React.FC = () => {
                                         <Search size={16} />
                                     )}
                                 </button>
-                                {source.source_id.startsWith('skill_') && (
+                                {isSkillsSource && (
                                     <button
                                         onClick={() => handleDelete(source.source_id, source.friendly_name)}
                                         className="p-2 bg-red-500/10 text-red-400 rounded hover:bg-red-500/20"
@@ -496,9 +502,9 @@ export const DataSourcesManager: React.FC = () => {
                             </div>
                         )}
 
-                        {!source.source_id.startsWith('skill_') && (
+                        {!isSkillsSource && (
                             <div className="flex gap-2 mt-3 pt-3 border-t border-slate-800">
-                                {!source.is_primary && (
+                                {!isPrimary && (
                                     <button
                                         onClick={() => handleSetPrimary(source.source_id)}
                                         className="px-3 py-1 bg-emerald-500/10 text-emerald-400 rounded hover:bg-emerald-500/20 text-sm"
@@ -519,7 +525,7 @@ export const DataSourcesManager: React.FC = () => {
                             </div>
                         )}
 
-                        {source.source_id.startsWith('skill_') && (
+                        {isSkillsSource && (
                             <div className="flex gap-2 mt-3 pt-3 border-t border-slate-800">
                                 <button
                                     onClick={() => handleScanDatabase(source.source_id)}
@@ -535,7 +541,8 @@ export const DataSourcesManager: React.FC = () => {
                             </div>
                         )}
                     </div>
-                ))}
+                );
+                })}
 
                 {dataSources.length === 0 && !loading && (
                     <div className="text-center p-8 text-slate-500">

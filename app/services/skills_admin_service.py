@@ -4,6 +4,7 @@ Skills Admin Service - Handles CRUD operations for skills files
 
 import os
 import re
+import uuid
 from pathlib import Path
 from typing import Dict, Optional, List, Tuple
 from app.models.schemas import DataSource, DataGroup, TableSchema
@@ -150,6 +151,7 @@ def create_data_source(data: Dict) -> Dict:
     # Create _data-source.md
     ds_file = ds_dir / "_data-source.md"
     keywords_str = ', '.join(keywords) if isinstance(keywords, list) else keywords
+    source_id = str(uuid.uuid4())
     
     # Build connection fields if provided
     connection_lines = ""
@@ -160,7 +162,11 @@ def create_data_source(data: Dict) -> Dict:
     
     description_text = description if description else f"Data source for {name}."
     
-    content = f"""# {name}
+    content = f"""---
+source_id: {source_id}
+---
+
+# {name}
 
 **Type:** {ds_type}  
 {connection_lines}
@@ -202,10 +208,11 @@ All table schemas are stored in the `schemas/` directory, organized by database 
     data_groups_file.write_text('', encoding='utf-8')
     
     # Update _index.md
-    _update_index_with_data_source(name, ds_type, status, description, keywords_str, f"{slug}/_data-source.md")
+    _update_index_with_data_source(name, ds_type, status, description, keywords_str, f"{slug}/_data-source.md", source_id)
     
     return {
         "name": name,
+        "source_id": source_id,
         "type": ds_type,
         "status": status,
         "description": description,
@@ -609,7 +616,7 @@ def delete_table_schema(file_path: str):
     table_file.unlink()
 
 
-def _update_index_with_data_source(name: str, ds_type: str, status: str, description: str, keywords_str: str, skill_file: str):
+def _update_index_with_data_source(name: str, ds_type: str, status: str, description: str, keywords_str: str, skill_file: str, source_id: str):
     """Add a new data source to _index.md"""
     index_file = SKILLS_BASE_PATH / "_index.md"
     
@@ -621,6 +628,7 @@ This file catalogs all available data sources for the skills-based discovery sys
 
 ### {name}
 **Type:** {ds_type}
+**Source ID:** {source_id}
 **Status:** {status}
 **Description:** {description}
 **Keywords:** {keywords_str}
@@ -634,6 +642,7 @@ This file catalogs all available data sources for the skills-based discovery sys
         new_section = f"""
 ### {name}
 **Type:** {ds_type}
+**Source ID:** {source_id}
 **Status:** {status}
 **Description:** {description}
 **Keywords:** {keywords_str}

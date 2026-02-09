@@ -234,8 +234,9 @@ class MilvusVectorStore(VectorStoreBase):
                         utility.drop_collection(settings.MILVUS_COLLECTION_SCHEMA)
                     else:
                         # Check fields
-                        if "table_type" in fields:
-                           return
+                        required_fields = ["table_type", "source_guid"]
+                        if all(field in fields for field in required_fields):
+                            return
                         utility.drop_collection(settings.MILVUS_COLLECTION_SCHEMA)
                 else:
                     utility.drop_collection(settings.MILVUS_COLLECTION_SCHEMA)
@@ -243,6 +244,7 @@ class MilvusVectorStore(VectorStoreBase):
             schema_fields = [
                 FieldSchema(name="id", dtype=DataType.INT64, is_primary=True, auto_id=True),
                 FieldSchema(name="embedding", dtype=DataType.FLOAT_VECTOR, dim=self._embedding_dim),
+                FieldSchema(name="source_guid", dtype=DataType.VARCHAR, max_length=128, is_partition_key=True),
                 FieldSchema(name="schema_name", dtype=DataType.VARCHAR, max_length=128),
                 FieldSchema(name="table_name", dtype=DataType.VARCHAR, max_length=128),
                 FieldSchema(name="table_type", dtype=DataType.VARCHAR, max_length=32),  # 'table' or 'view'
@@ -279,7 +281,7 @@ class MilvusVectorStore(VectorStoreBase):
                         utility.drop_collection(settings.MILVUS_COLLECTION_SCHEMA_V2)
                     else:
                         # Check required fields for v2 schema
-                        required_fields = ["source_id", "object_name", "object_type", "definition"]
+                        required_fields = ["source_guid", "object_name", "object_type", "definition"]
                         if all(field in fields for field in required_fields):
                             return
                         print(f"Schema v2 collection missing required fields. Recreating.")
@@ -290,7 +292,7 @@ class MilvusVectorStore(VectorStoreBase):
             schema_v2_fields = [
                 FieldSchema(name="id", dtype=DataType.INT64, is_primary=True, auto_id=True),
                 FieldSchema(name="embedding", dtype=DataType.FLOAT_VECTOR, dim=self._embedding_dim),
-                FieldSchema(name="source_id", dtype=DataType.VARCHAR, max_length=128),  # Links to data source
+                FieldSchema(name="source_guid", dtype=DataType.VARCHAR, max_length=128, is_partition_key=True),  # Links to data source GUID
                 FieldSchema(name="schema_name", dtype=DataType.VARCHAR, max_length=128),
                 FieldSchema(name="object_name", dtype=DataType.VARCHAR, max_length=128),  # Renamed from table_name
                 FieldSchema(name="object_type", dtype=DataType.VARCHAR, max_length=32),  # 'table', 'view', 'stored_procedure', 'function'
@@ -355,6 +357,32 @@ class MilvusVectorStore(VectorStoreBase):
             print(f"Created/updated few-shot collection: {settings.MILVUS_COLLECTION_FEWSHOT}")
         except Exception as e:
             print(f"Failed to ensure few-shot collection: {e}")
+
+    def _resolve_default_source_guid(self) -> str:
+        """
+        Resolve a default source GUID for partitioning when not explicitly provided.
+        """
+        try:
+            settings_obj = load_settings()
+            if hasattr(settings_obj, "data_sources") and settings_obj.data_sources:
+                if settings_obj.primary_source_id:
+                    return settings_obj.primary_source_id
+                return settings_obj.data_sources[0].source_id
+        except Exception:
+            pass
+        try:
+            from app.services.skills_service import SkillsService
+            skills_service = SkillsService()
+            primary = skills_service.load_primary_data_source()
+            if primary and getattr(primary, "source_id", None):
+                return primary.source_id
+            sources = skills_service.load_data_sources_index()
+            for source in sources:
+                if getattr(source, "source_id", None):
+                    return source.source_id
+        except Exception:
+            pass
+        return "legacy"
 
     def _get_embedding(self, text: str) -> List[float]:
         # Validate input before processing
@@ -739,11 +767,13 @@ class MilvusVectorStore(VectorStoreBase):
         
         # 3. Insert
         # Milvus Collection structure:
-        # [embedding], [schema_name], [table_name], [table_type], [description]
+        # [embedding], [source_guid], [schema_name], [table_name], [table_type], [description]
         # Use schema.table_type if available, otherwise use the parameter
         actual_table_type = schema.table_type or table_type
+        source_guid = getattr(schema, "source_guid", None) or self._resolve_default_source_guid()
         data = [
             [embedding],
+            [source_guid],
             [schema.schema_name],
             [schema.table_name],
             [actual_table_type],
@@ -766,7 +796,7 @@ class MilvusVectorStore(VectorStoreBase):
         # Find the existing record
         res = collection.query(
             expr=f'schema_name == "{schema_name}" && table_name == "{table_name}"',
-            output_fields=["id", "schema_name", "table_name", "table_type", "description"],
+            output_fields=["id", "schema_name", "table_name", "table_type", "description", "source_guid"],
             limit=1
         )
 
@@ -786,9 +816,10 @@ class MilvusVectorStore(VectorStoreBase):
 
         # Re-insert with updated description
         # Milvus Collection structure:
-        # [embedding], [schema_name], [table_name], [table_type], [description]
+        # [embedding], [source_guid], [schema_name], [table_name], [table_type], [description]
         data = [
             [embedding],
+            [existing.get('source_guid', '')],
             [schema_name],
             [table_name],
             [existing.get('table_type', 'table')],  # Keep existing table_type
@@ -826,6 +857,20 @@ class MilvusVectorStore(VectorStoreBase):
         collection.delete("id >= 0")
         collection.flush()
 
+    def clear_schemas_v2_collection(self):
+        if not self._connected:
+            return
+        self._ensure_schema_v2_collection()
+        if not utility.has_collection(settings.MILVUS_COLLECTION_SCHEMA_V2):
+            return
+        collection = Collection(settings.MILVUS_COLLECTION_SCHEMA_V2)
+        try:
+            collection.load()
+        except Exception:
+            pass
+        collection.delete("id >= 0")
+        collection.flush()
+
     # --- Schema V2 (Multi-Source) Methods ---
 
     def insert_data_object_v2(self, data_object: DataObject, text_for_embedding: str):
@@ -850,14 +895,14 @@ class MilvusVectorStore(VectorStoreBase):
             collection.delete(
                 f'object_name == "{data_object.object_name}" && '
                 f'schema_name == "{data_object.schema_name}" && '
-                f'source_id == "{data_object.source_id}"'
+                f'source_guid == "{data_object.source_id}"'
             )
         
         # Generate embedding
         embedding = self._get_embedding(text_for_embedding)
         
         # Prepare data for insertion
-        # Schema: [embedding], [source_id], [schema_name], [object_name], [object_type], [description], [definition], [return_type]
+        # Schema: [embedding], [source_guid], [schema_name], [object_name], [object_type], [description], [definition], [return_type]
         data = [
             [embedding],
             [data_object.source_id or ""],
@@ -893,11 +938,11 @@ class MilvusVectorStore(VectorStoreBase):
         # Build filter expression
         expr = "id >= 0"
         if source_id:
-            expr = f'source_id == "{source_id}"'
+            expr = f'source_guid == "{source_id}"'
         
         res = collection.query(
             expr=expr,
-            output_fields=["id", "source_id", "schema_name", "object_name", "object_type", "description", "definition", "return_type"],
+            output_fields=["id", "source_guid", "schema_name", "object_name", "object_type", "description", "definition", "return_type"],
             limit=10000,
             consistency_level="Strong"
         )
@@ -933,7 +978,7 @@ class MilvusVectorStore(VectorStoreBase):
         # Build filter expression
         filter_parts = []
         if source_id:
-            filter_parts.append(f'source_id == "{source_id}"')
+            filter_parts.append(f'source_guid == "{source_id}"')
         if object_types:
             types_str = ', '.join([f'"{t}"' for t in object_types])
             filter_parts.append(f'object_type in [{types_str}]')
@@ -946,7 +991,7 @@ class MilvusVectorStore(VectorStoreBase):
             param=search_params,
             limit=top_k,
             expr=filter_expr,
-            output_fields=["source_id", "schema_name", "object_name", "object_type", "description", "definition", "return_type"]
+            output_fields=["source_guid", "schema_name", "object_name", "object_type", "description", "definition", "return_type"]
         )
         
         retrieved_items = []
@@ -970,7 +1015,7 @@ class MilvusVectorStore(VectorStoreBase):
         collection.load()
         
         collection.delete(
-            f'source_id == "{source_id}" && '
+            f'source_guid == "{source_id}" && '
             f'schema_name == "{schema_name}" && '
             f'object_name == "{object_name}"'
         )
@@ -989,7 +1034,7 @@ class MilvusVectorStore(VectorStoreBase):
         except Exception:
             pass
         
-        collection.delete(f'source_id == "{source_id}"')
+        collection.delete(f'source_guid == "{source_id}"')
         collection.flush()
 
     def get_all_fewshots(self) -> List[Dict[str, Any]]:

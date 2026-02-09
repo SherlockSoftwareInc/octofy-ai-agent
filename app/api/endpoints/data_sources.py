@@ -49,8 +49,8 @@ def list_data_sources(api_key: str = Depends(verify_api_key)):
             logger.info(f"Loaded {len(skills_sources)} data sources from skills directory")
             
             for skill_source in skills_sources:
-                # Generate a deterministic source_id from the data source name
-                source_id = f"skill_{re.sub(r'[^a-zA-Z0-9]', '_', skill_source.name.lower())}"
+                # Prefer GUID from skills front matter; fallback to deterministic ID
+                source_id = skill_source.source_id or f"skill_{re.sub(r'[^a-zA-Z0-9]', '_', skill_source.name.lower())}"
                 
                 # Count objects for this source (if indexed in vector store)
                 obj_count = _get_object_count_by_name(skill_source.name)
@@ -118,7 +118,7 @@ def add_data_source(
         result = create_ds(data)
 
         # Build response
-        source_id = f"skill_{re.sub(r'[^a-zA-Z0-9]', '_', request.friendly_name.lower())}"
+        source_id = result.get("source_id") or f"skill_{re.sub(r'[^a-zA-Z0-9]', '_', request.friendly_name.lower())}"
 
         # If SQL Server connection info provided, auto-scan in background
         if request.server and request.database_name:
@@ -180,7 +180,7 @@ def scan_data_source(
     skills_sources = skills_service.load_data_sources_index()
     actual_name = None
     for s in skills_sources:
-        sid = f"skill_{re.sub(r'[^a-zA-Z0-9]', '_', s.name.lower())}"
+        sid = s.source_id or f"skill_{re.sub(r'[^a-zA-Z0-9]', '_', s.name.lower())}"
         if sid == source_id:
             actual_name = s.name
             break
@@ -336,7 +336,7 @@ def get_data_source(source_id: str, api_key: str = Depends(verify_api_key)):
         skills_service = SkillsService()
         skills_sources = skills_service.load_data_sources_index()
         for skill_source in skills_sources:
-            skill_source_id = f"skill_{re.sub(r'[^a-zA-Z0-9]', '_', skill_source.name.lower())}"
+            skill_source_id = skill_source.source_id or f"skill_{re.sub(r'[^a-zA-Z0-9]', '_', skill_source.name.lower())}"
             if skill_source_id == source_id:
                 obj_count = _get_object_count_by_name(skill_source.name)
                 return DataSourceResponse(
@@ -369,9 +369,6 @@ def update_data_source(source_id: str, request: AddDataSourceRequest, api_key: s
     try:
         from app.services.skills_admin_service import update_data_source as update_ds
         
-        # Extract original name from source_id (skill_northwind -> northwind)
-        original_name = source_id.replace('skill_', '').replace('_', ' ')
-        
         data = {
             "name": request.friendly_name,
             "description": request.description,
@@ -385,7 +382,7 @@ def update_data_source(source_id: str, request: AddDataSourceRequest, api_key: s
         skills_sources = skills_service.load_data_sources_index()
         actual_name = None
         for s in skills_sources:
-            sid = f"skill_{re.sub(r'[^a-zA-Z0-9]', '_', s.name.lower())}"
+            sid = s.source_id or f"skill_{re.sub(r'[^a-zA-Z0-9]', '_', s.name.lower())}"
             if sid == source_id:
                 actual_name = s.name
                 break
@@ -395,7 +392,7 @@ def update_data_source(source_id: str, request: AddDataSourceRequest, api_key: s
         
         update_ds(actual_name, data)
         
-        new_source_id = f"skill_{re.sub(r'[^a-zA-Z0-9]', '_', request.friendly_name.lower())}"
+        new_source_id = source_id
         obj_count = _get_object_count_by_name(request.friendly_name)
         return DataSourceResponse(
             source_id=new_source_id,
@@ -435,7 +432,7 @@ def delete_data_source(source_id: str, api_key: str = Depends(verify_api_key)):
         skills_sources = skills_service.load_data_sources_index()
         actual_name = None
         for s in skills_sources:
-            sid = f"skill_{re.sub(r'[^a-zA-Z0-9]', '_', s.name.lower())}"
+            sid = s.source_id or f"skill_{re.sub(r'[^a-zA-Z0-9]', '_', s.name.lower())}"
             if sid == source_id:
                 actual_name = s.name
                 break

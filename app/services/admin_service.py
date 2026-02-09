@@ -843,6 +843,7 @@ def clear_all_schemas_data() -> bool:
     try:
         vector_store = get_vector_store()
         vector_store.clear_schemas_collection()
+        vector_store.clear_schemas_v2_collection()
         return True
     except Exception as e:
         print(f"Error clearing schemas: {e}")

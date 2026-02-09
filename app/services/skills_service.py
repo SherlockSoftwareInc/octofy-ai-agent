@@ -61,6 +61,7 @@ class SkillsService:
             desc_match = re.search(r'\*\*Description:\*\*\s*(.+)', section)
             keywords_match = re.search(r'\*\*Keywords:\*\*\s*(.+)', section)
             skill_file_match = re.search(r'\*\*Skill File:\*\*\s*\[(.+?)\]\((.+?)\)', section)
+            source_id_match = re.search(r'\*\*Source ID:\*\*\s*(.+)', section)
             
             keywords = []
             if keywords_match:
@@ -71,7 +72,13 @@ class SkillsService:
             if skill_file_match:
                 skill_file_path = skill_file_match.group(2)
             
+            source_id = source_id_match.group(1).strip() if source_id_match else None
+            if not source_id and skill_file_path:
+                ds = self._parse_data_source_file(self.skills_path / skill_file_path)
+                source_id = ds.source_id if ds else None
+            
             data_source = DataSource(
+                source_id=source_id,
                 name=name,
                 type=type_match.group(1).strip() if type_match else "Unknown",
                 description=desc_match.group(1).strip() if desc_match else "",
@@ -179,6 +186,7 @@ class SkillsService:
             return None
         
         content = file_path.read_text(encoding='utf-8')
+        front_matter = self._parse_front_matter(content)
         
         # Extract metadata
         name_match = re.search(r'^#\s+(.+?)$', content, re.MULTILINE)
@@ -203,6 +211,7 @@ class SkillsService:
             connection_info['database'] = database_match.group(1).strip()
         
         return DataSource(
+            source_id=front_matter.get("source_id"),
             name=friendly_name_match.group(1).strip() if friendly_name_match else (name_match.group(1).strip() if name_match else "Unknown"),
             type=type_match.group(1).strip() if type_match else "Unknown",
             description=desc_section.group(1).strip() if desc_section else "",
@@ -211,6 +220,26 @@ class SkillsService:
             connection_info=connection_info if connection_info else None,
             file_path=str(file_path)
         )
+
+    def _parse_front_matter(self, content: str) -> Dict[str, str]:
+        """
+        Parse YAML-style front matter from markdown.
+        Only supports simple key: value lines.
+        """
+        if not content.startswith("---"):
+            return {}
+        lines = content.splitlines()
+        if not lines or lines[0].strip() != "---":
+            return {}
+        front_matter = {}
+        for line in lines[1:]:
+            if line.strip() == "---":
+                break
+            if ":" not in line:
+                continue
+            key, value = line.split(":", 1)
+            front_matter[key.strip()] = value.strip()
+        return front_matter
     
     def load_primary_data_source_by_name(self, name: str) -> Optional[DataSource]:
         """
@@ -746,14 +775,15 @@ class SkillsService:
         if self._object_indices_cache is None:
             self._object_indices_cache = {}
         
+        resolved_source = self._resolve_data_source_name(data_source)
         # Return from cache if this specific data source was already loaded
-        if data_source in self._object_indices_cache and not force_reload:
-            return self._object_indices_cache[data_source]
+        if resolved_source in self._object_indices_cache and not force_reload:
+            return self._object_indices_cache[resolved_source]
         
         indices = {}
         
         # Find data source directory
-        data_source_dirs = list(self.skills_path.glob(f"*{data_source}*"))
+        data_source_dirs = list(self.skills_path.glob(f"*{resolved_source}*"))
         if not data_source_dirs:
             data_source_dirs = list(self.skills_path.glob("*"))
             data_source_dirs = [d for d in data_source_dirs if d.is_dir() and not d.name.startswith('_')]
@@ -769,7 +799,7 @@ class SkillsService:
                 except Exception as e:
                     print(f"Error loading object index {index_file}: {e}")
         
-        self._object_indices_cache[data_source] = indices
+        self._object_indices_cache[resolved_source] = indices
         return indices
     
     def search_objects_by_keyword(self, query: str, data_source: Optional[str] = None, 
@@ -806,7 +836,8 @@ class SkillsService:
         schema_indices = self.load_schema_indices()
         
         # Filter by data source if specified
-        sources_to_search = [data_source] if data_source else schema_indices.keys()
+        resolved_source = self._resolve_data_source_name(data_source) if data_source else None
+        sources_to_search = [resolved_source] if resolved_source else schema_indices.keys()
         
         for ds_name in sources_to_search:
             if ds_name not in schema_indices:
@@ -894,7 +925,8 @@ class SkillsService:
         schema_indices = self.load_schema_indices()
         
         # Filter by data source if specified
-        sources_to_search = [data_source] if data_source else schema_indices.keys()
+        resolved_source = self._resolve_data_source_name(data_source) if data_source else None
+        sources_to_search = [resolved_source] if resolved_source else schema_indices.keys()
         
         for ds_name in sources_to_search:
             if ds_name not in schema_indices:
@@ -944,7 +976,8 @@ class SkillsService:
         schema_indices = self.load_schema_indices()
         
         # Search in all or specific data source
-        sources_to_search = [data_source] if data_source else schema_indices.keys()
+        resolved_source = self._resolve_data_source_name(data_source) if data_source else None
+        sources_to_search = [resolved_source] if resolved_source else schema_indices.keys()
         
         for ds_name in sources_to_search:
             # Load object indices for this data source
@@ -980,11 +1013,12 @@ class SkillsService:
         """
         schema_indices = self.load_schema_indices()
         
-        if data_source and data_source in schema_indices:
+        resolved_source = self._resolve_data_source_name(data_source) if data_source else None
+        if resolved_source and resolved_source in schema_indices:
             # Stats for specific data source
-            index_data = schema_indices[data_source]
+            index_data = schema_indices[resolved_source]
             return {
-                'data_source': data_source,
+                'data_source': resolved_source,
                 'total_schemas': index_data.get('total_schemas', 0),
                 'schemas': index_data.get('schemas', [])
             }
@@ -1018,6 +1052,20 @@ class SkillsService:
                 'total_views': total_views,
                 'data_sources': sources
             }
+
+    def _resolve_data_source_name(self, data_source: str) -> str:
+        """
+        Resolve a data source name from a GUID if needed.
+        """
+        if not data_source:
+            return data_source
+        try:
+            for ds in self.load_data_sources_index():
+                if ds.source_id == data_source:
+                    return ds.name
+        except Exception:
+            pass
+        return data_source
 
 
 # Singleton instance

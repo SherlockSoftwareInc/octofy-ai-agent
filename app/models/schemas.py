@@ -508,6 +508,7 @@ class ApproveContributionResponse(BaseModel):
 
 class DataSource(BaseModel):
     """Parsed from _data-source.md"""
+    source_id: Optional[str] = None
     name: str
     type: str  # "SQL Server", "Excel", "JSON API", etc.
     description: str

@@ -10,6 +10,26 @@ import urllib.parse
 
 from app.core.database import get_db_engine
 
+
+def _resolve_source_guid_from_skills() -> str:
+    """
+    Attempt to resolve a source GUID from skills data sources.
+    Falls back to "legacy" when no skills data is present.
+    """
+    try:
+        from app.services.skills_service import SkillsService
+        skills_service = SkillsService()
+        primary = skills_service.load_primary_data_source()
+        if primary and getattr(primary, "source_id", None):
+            return primary.source_id
+        sources = skills_service.load_data_sources_index()
+        for source in sources:
+            if getattr(source, "source_id", None):
+                return source.source_id
+    except Exception:
+        pass
+    return "legacy"
+
 # --- Configuration ---
 EMBEDDING_DIM = 1536 # text-embedding-3-small
 
@@ -227,6 +247,7 @@ def create_milvus_collections():
     schema_fields = [
         FieldSchema(name="id", dtype=DataType.INT64, is_primary=True, auto_id=True),
         FieldSchema(name="embedding", dtype=DataType.FLOAT_VECTOR, dim=EMBEDDING_DIM),
+        FieldSchema(name="source_guid", dtype=DataType.VARCHAR, max_length=128, is_partition_key=True),
         FieldSchema(name="schema_name", dtype=DataType.VARCHAR, max_length=128),
         FieldSchema(name="table_name", dtype=DataType.VARCHAR, max_length=128),
         FieldSchema(name="table_type", dtype=DataType.VARCHAR, max_length=32),  # 'table' or 'view'
@@ -243,6 +264,26 @@ def create_milvus_collections():
     }
     schema_coll.create_index(field_name="embedding", index_params=index_params)
     print(f"Created collection: {settings.MILVUS_COLLECTION_SCHEMA}")
+
+    # 1b. Schema Index V2 (Multi-Source)
+    if utility.has_collection(settings.MILVUS_COLLECTION_SCHEMA_V2):
+        utility.drop_collection(settings.MILVUS_COLLECTION_SCHEMA_V2)
+    
+    schema_v2_fields = [
+        FieldSchema(name="id", dtype=DataType.INT64, is_primary=True, auto_id=True),
+        FieldSchema(name="embedding", dtype=DataType.FLOAT_VECTOR, dim=EMBEDDING_DIM),
+        FieldSchema(name="source_guid", dtype=DataType.VARCHAR, max_length=128, is_partition_key=True),
+        FieldSchema(name="schema_name", dtype=DataType.VARCHAR, max_length=128),
+        FieldSchema(name="object_name", dtype=DataType.VARCHAR, max_length=128),
+        FieldSchema(name="object_type", dtype=DataType.VARCHAR, max_length=32),
+        FieldSchema(name="description", dtype=DataType.VARCHAR, max_length=65535),
+        FieldSchema(name="definition", dtype=DataType.VARCHAR, max_length=65535),
+        FieldSchema(name="return_type", dtype=DataType.VARCHAR, max_length=256),
+    ]
+    schema_v2_schema = CollectionSchema(fields=schema_v2_fields, description="Multi-Source Database Schema Index (v2)")
+    schema_v2_coll = Collection(name=settings.MILVUS_COLLECTION_SCHEMA_V2, schema=schema_v2_schema)
+    schema_v2_coll.create_index(field_name="embedding", index_params=index_params)
+    print(f"Created collection: {settings.MILVUS_COLLECTION_SCHEMA_V2}")
 
     # 2. Few-shot Index / Knowledge Base
     if utility.has_collection(settings.MILVUS_COLLECTION_FEWSHOT):
@@ -303,6 +344,7 @@ def ingest_metadata():
     client, embedding_model = _resolve_embedding_config()
     
     schemas = inspector.get_schema_names()
+    source_guid = _resolve_source_guid_from_skills()
     
     data_rows = []
     
@@ -402,6 +444,7 @@ def ingest_metadata():
                 embedding = client.embeddings.create(input=[markdown_description], model=embedding_model).data[0].embedding
 
                 data_rows.append({
+                    "source_guid": source_guid,
                     "schema_name": schema,
                     "table_name": obj_name,
                     "table_type": obj_type,  # 'table' or 'view'
@@ -420,12 +463,13 @@ def ingest_metadata():
         
         # Column-based organization
         c_embeddings = [r['embedding'] for r in data_rows]
+        c_source_guids = [r['source_guid'] for r in data_rows]
         c_schemas = [r['schema_name'] for r in data_rows]
         c_tables = [r['table_name'] for r in data_rows]
         c_table_types = [r['table_type'] for r in data_rows]
         c_descs = [r['description'] for r in data_rows]
         
-        collection.insert([c_embeddings, c_schemas, c_tables, c_table_types, c_descs])
+        collection.insert([c_embeddings, c_source_guids, c_schemas, c_tables, c_table_types, c_descs])
         collection.flush()
         print("Ingestion complete.")
     else:

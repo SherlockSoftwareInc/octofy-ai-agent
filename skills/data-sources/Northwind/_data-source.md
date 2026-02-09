@@ -1,3 +1,7 @@
+---
+source_id: 3a1a5f1b-6d7f-4b0b-9c8d-4c6c2f18a7e2
+---
+
 # Northwind Database
 
 **Type:** SQL Server  
