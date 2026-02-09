@@ -1,8 +1,8 @@
 # Table: [dbo].[EmployeeSplit]
 
-**Data Source:** Auto-generated  
-**Schema:** dbo  
-**Type:** Table  
+**Data Source:** Northwind
+**Schema:** dbo
+**Type:** Table
 
 ## Description
 
@@ -16,3 +16,4 @@
 | 2 | `Extension` | NVARCHAR(4) | Employee's internal phone extension number. |
 | 3 | `PhotoPath` | NVARCHAR(255) | File path or URL to the employee's photo. |
 ---
+

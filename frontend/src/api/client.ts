@@ -100,6 +100,8 @@ export interface GenerateSQLResponse {
     context_text?: string;
     context_history?: string[];
     objects?: SearchObject[];
+    /** Data source ID to use when executing this SQL */
+    source_id?: string;
 }
 
 export interface SearchObject {
@@ -588,7 +590,7 @@ export const api = {
         return response.data;
     },
 
-    executeSQL: async (sql: string, context?: unknown, chartTypeOverride?: ChartTypeOption, timeoutSeconds?: number, maxRows?: number, enableProfiling: boolean = false, preservedXAxis?: string, preservedYAxis?: string[]): Promise<ExecuteSQLResponse> => {
+    executeSQL: async (sql: string, context?: unknown, chartTypeOverride?: ChartTypeOption, timeoutSeconds?: number, maxRows?: number, enableProfiling: boolean = false, preservedXAxis?: string, preservedYAxis?: string[], sourceId?: string): Promise<ExecuteSQLResponse> => {
         const response = await axios.post(`${API_BASE_URL}/execute-sql`, { 
             sql, 
             context,
@@ -597,7 +599,8 @@ export const api = {
             max_rows: maxRows,
             enable_profiling: enableProfiling,
             preserved_x_axis: preservedXAxis,
-            preserved_y_axis: preservedYAxis
+            preserved_y_axis: preservedYAxis,
+            source_id: sourceId
         });
         return response.data;
     },

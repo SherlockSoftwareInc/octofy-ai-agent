@@ -20,81 +20,81 @@ class TestClassifyQueryIntent:
     # --- system_metadata cases ---
 
     def test_list_tables(self):
-        llm = self._make_llm("system_metadata")
-        assert classify_query_intent("list all tables in the database", llm) == "system_metadata"
+        llm = self._make_llm('{"intent":"system_metadata","related_sources":[]}')
+        assert classify_query_intent("list all tables in the database", llm)["intent"] == "system_metadata"
 
     def test_show_columns(self):
-        llm = self._make_llm("system_metadata")
-        assert classify_query_intent("show columns for the Orders table", llm) == "system_metadata"
+        llm = self._make_llm('{"intent":"system_metadata","related_sources":[]}')
+        assert classify_query_intent("show columns for the Orders table", llm)["intent"] == "system_metadata"
 
     def test_sql_version(self):
-        llm = self._make_llm("system_metadata")
-        assert classify_query_intent("what SQL Server version are we running?", llm) == "system_metadata"
+        llm = self._make_llm('{"intent":"system_metadata","related_sources":[]}')
+        assert classify_query_intent("what SQL Server version are we running?", llm)["intent"] == "system_metadata"
 
     def test_how_many_tables_have_column(self):
         """The query that originally broke the regex approach"""
-        llm = self._make_llm("system_metadata")
-        assert classify_query_intent("How many tables have EmployeeID column", llm) == "system_metadata"
+        llm = self._make_llm('{"intent":"system_metadata","related_sources":[]}')
+        assert classify_query_intent("How many tables have EmployeeID column", llm)["intent"] == "system_metadata"
 
     # --- data_query cases ---
 
     def test_business_sales(self):
-        llm = self._make_llm("data_query")
-        assert classify_query_intent("show me total sales by region", llm) == "data_query"
+        llm = self._make_llm('{"intent":"data_query","related_sources":["SalesDB"]}')
+        assert classify_query_intent("show me total sales by region", llm)["intent"] == "data_query"
 
     def test_business_customers(self):
-        llm = self._make_llm("data_query")
-        assert classify_query_intent("how many customers ordered last month?", llm) == "data_query"
+        llm = self._make_llm('{"intent":"data_query","related_sources":["SalesDB"]}')
+        assert classify_query_intent("how many customers ordered last month?", llm)["intent"] == "data_query"
 
     # --- off_topic cases ---
 
     def test_off_topic_greeting(self):
-        llm = self._make_llm("off_topic")
-        assert classify_query_intent("What a nice day!", llm) == "off_topic"
+        llm = self._make_llm('{"intent":"off_topic","related_sources":[]}')
+        assert classify_query_intent("What a nice day!", llm)["intent"] == "off_topic"
 
     def test_off_topic_general_knowledge(self):
-        llm = self._make_llm("off_topic")
-        assert classify_query_intent("What is the capital of France?", llm) == "off_topic"
+        llm = self._make_llm('{"intent":"off_topic","related_sources":[]}')
+        assert classify_query_intent("What is the capital of France?", llm)["intent"] == "off_topic"
 
     # --- Robustness: LLM returns unexpected text ---
 
     def test_strips_whitespace(self):
         llm = self._make_llm("  system_metadata  \n")
-        assert classify_query_intent("list tables", llm) == "system_metadata"
+        assert classify_query_intent("list tables", llm)["intent"] == "system_metadata"
 
     def test_defaults_to_data_query_on_garbage(self):
         """If LLM returns something unrecognized, default to data_query (safest)"""
         llm = self._make_llm("I think this is about tables")
-        assert classify_query_intent("list tables", llm) == "data_query"
+        assert classify_query_intent("list tables", llm)["intent"] == "data_query"
 
     def test_empty_query_returns_off_topic(self):
         """Empty or blank queries should be classified as off_topic without calling LLM"""
         llm = self._make_llm("data_query")
-        assert classify_query_intent("", llm) == "off_topic"
+        assert classify_query_intent("", llm)["intent"] == "off_topic"
         llm.chat_completion.assert_not_called()
 
     def test_none_query_returns_off_topic(self):
         llm = self._make_llm("data_query")
-        assert classify_query_intent(None, llm) == "off_topic"
+        assert classify_query_intent(None, llm)["intent"] == "off_topic"
         llm.chat_completion.assert_not_called()
 
     def test_whitespace_only_query_returns_off_topic(self):
         """Whitespace-only queries should be classified as off_topic without calling LLM"""
         llm = self._make_llm("data_query")
-        assert classify_query_intent("   ", llm) == "off_topic"
+        assert classify_query_intent("   ", llm)["intent"] == "off_topic"
         llm.chat_completion.assert_not_called()
 
     def test_llm_returns_none_defaults_to_data_query(self):
         """If LLM returns None instead of a string, default to data_query"""
         llm = MagicMock()
         llm.chat_completion.return_value = None
-        assert classify_query_intent("list all tables", llm) == "data_query"
+        assert classify_query_intent("list all tables", llm)["intent"] == "data_query"
 
     def test_llm_exception_defaults_to_data_query(self):
         """If LLM call fails, default to data_query to avoid blocking the user"""
         llm = MagicMock()
         llm.chat_completion.side_effect = Exception("API error")
-        assert classify_query_intent("list all tables", llm) == "data_query"
+        assert classify_query_intent("list all tables", llm)["intent"] == "data_query"
 
     # --- Verify prompt structure ---
 
@@ -186,6 +186,18 @@ class TestClassifyQueryIntent:
         system_content = messages[0]["content"]
         assert "This database is:" not in system_content
 
+    def test_related_sources_parsing(self):
+        llm = self._make_llm('{"intent":"data_query","related_sources":["SalesDB","Unknown"]}')
+        result = classify_query_intent(
+            "show me sales", llm,
+            data_sources=[
+                {"name": "SalesDB", "description": "Sales data", "keywords": ["sales"]},
+                {"name": "HRDB", "description": "HR data", "keywords": ["employees"]},
+            ],
+        )
+        assert result["intent"] == "data_query"
+        assert result["related_sources"] == ["SalesDB"]
+
 
 class TestBuildClassificationPrompt:
     """Test suite for _build_classification_prompt helper"""
@@ -196,7 +208,7 @@ class TestBuildClassificationPrompt:
         assert "data_query" in prompt
         assert "system_metadata" in prompt
         assert "off_topic" in prompt
-        assert "Reply with EXACTLY one word" in prompt
+        assert "Reply with a compact JSON object" in prompt
         assert "This database is:" not in prompt
 
     def test_with_full_context(self):
@@ -255,6 +267,17 @@ class TestBuildClassificationPrompt:
         )
         assert prompt_no_ctx.rstrip().endswith("Do NOT include any other text.")
         assert prompt_with_ctx.rstrip().endswith("Do NOT include any other text.")
+
+    def test_multi_source_context_in_prompt(self):
+        prompt = _build_classification_prompt(
+            data_sources=[
+                {"name": "SalesDB", "description": "Sales data", "keywords": ["sales", "orders"]},
+                {"name": "HRDB", "description": "HR data", "keywords": ["employees"]},
+            ]
+        )
+        assert "Available data sources" in prompt
+        assert "SalesDB" in prompt
+        assert "HRDB" in prompt
 
 
 class TestBuildSystemCatalogPrompt:

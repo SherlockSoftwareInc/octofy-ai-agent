@@ -1,8 +1,8 @@
 # Table: [dbo].[Contacts]
 
-**Data Source:** Auto-generated  
-**Schema:** dbo  
-**Type:** Table  
+**Data Source:** Northwind
+**Schema:** dbo
+**Type:** Table
 
 ## Description
 
@@ -29,3 +29,4 @@
 | 15 | `PhotoPath` | NVARCHAR(255) | File path to the contact's photo |
 | 16 | `Photo` | IMAGE | Binary data or image of the contact's photo |
 ---
+

@@ -1,8 +1,8 @@
 # Table: [dbo].[EmployeeTerritories]
 
-**Data Source:** Auto-generated  
-**Schema:** dbo  
-**Type:** Table  
+**Data Source:** Northwind
+**Schema:** dbo
+**Type:** Table
 
 ## Description
 
@@ -15,3 +15,4 @@
 | 1 | `EmployeeID` | INTEGER | Primary key, Unique identifier of the employee assigned to the territory. Reference: Employees.EmployeeID |
 | 2 | `TerritoryID` | NVARCHAR(20) | Primary key, Unique identifier of the territory assigned to the employee. Reference: Territories.TerritoryID |
 ---
+

@@ -1,8 +1,8 @@
-# Table: [dbo].[Customer and Suppliers by City]
+# View: [dbo].[Customer and Suppliers by City]
 
-**Data Source:** Auto-generated  
-**Schema:** dbo  
-**Type:** View  
+**Data Source:** Northwind
+**Schema:** dbo
+**Type:** View
 
 ## Description
 
@@ -17,3 +17,4 @@
 | 3 | `ContactName` | NVARCHAR(30) | The primary contact person at the customer or supplier company. |
 | 4 | `Relationship` | VARCHAR(9) | Indicates whether the entity is a 'Customer' or 'Supplier'. |
 ---
+

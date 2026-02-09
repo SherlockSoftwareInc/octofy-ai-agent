@@ -1,8 +1,8 @@
-# Table: [dbo].[Invoices]
+# View: [dbo].[Invoices]
 
-**Data Source:** Auto-generated  
-**Schema:** dbo  
-**Type:** View  
+**Data Source:** Northwind
+**Schema:** dbo
+**Type:** View
 
 ## Description
 
@@ -39,3 +39,4 @@
 | 25 | `ExtendedPrice` | MONEY | Calculated line item total: (UnitPrice * Quantity) * (1 - Discount). |
 | 26 | `Freight` | MONEY | Shipping cost charged for the entire order. |
 ---
+

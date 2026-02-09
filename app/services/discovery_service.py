@@ -31,6 +31,68 @@ MAX_RELATED_TABLES_PER_HIT = 3  # Cap related tables added per value index hit
 RELATIONSHIP_TRACE_HOPS = 2      # Max FK hops to traverse
 
 
+def _get_allowed_table_set(vector_store, source_id: Optional[str]) -> Optional[Set[str]]:
+    if not source_id:
+        return None
+    try:
+        objects = vector_store.get_all_objects_v2(source_id)
+    except Exception:
+        return None
+
+    if not objects:
+        return None
+
+    allowed_tables: Set[str] = set()
+    for obj in objects or []:
+        obj_type = (obj.get("object_type") or "").lower()
+        if obj_type not in {"table", "view"}:
+            continue
+        schema_name = obj.get("schema_name")
+        object_name = obj.get("object_name")
+        if schema_name and object_name:
+            allowed_tables.add(f"{schema_name}.{object_name}".lower())
+    return allowed_tables
+
+
+def _search_schemas_scoped(vector_store, query: str, top_k: int, source_id: Optional[str]) -> List[TableSchema]:
+    if not source_id:
+        return vector_store.search_schemas(query, top_k)
+
+    try:
+        objects = vector_store.search_objects_v2(
+            query=query,
+            top_k=top_k,
+            source_id=source_id,
+            object_types=["table", "view"]
+        )
+        schemas = []
+        for obj in objects or []:
+            schema_name = obj.get("schema_name") or "dbo"
+            table_name = obj.get("object_name") or "unknown"
+            schemas.append(TableSchema(
+                schema_name=schema_name,
+                table_name=table_name,
+                table_type=obj.get("object_type", "table"),
+                description=obj.get("description", ""),
+                columns=[]
+            ))
+        return schemas
+    except Exception:
+        return vector_store.search_schemas(query, top_k)
+
+
+def _filter_ranked_tables_by_source(
+    ranked_tables: List[RankedTable],
+    allowed_tables: Optional[Set[str]]
+) -> List[RankedTable]:
+    if allowed_tables is None:
+        return ranked_tables
+    return [
+        t for t in ranked_tables
+        if f"{t.schema_name}.{t.table_name}".lower() in allowed_tables
+    ]
+
+
 def perform_discovery(request: DiscoveryRequest) -> DiscoveryResponse:
     """
     Legacy discovery function - kept for backward compatibility
@@ -38,7 +100,12 @@ def perform_discovery(request: DiscoveryRequest) -> DiscoveryResponse:
     """
     vector_store = get_vector_store()
     # Search for relevant tables
-    schemas = vector_store.search_schemas(request.query, request.top_k)
+    schemas = _search_schemas_scoped(
+        vector_store,
+        request.query,
+        request.top_k,
+        request.source_id
+    )
 
     # Search for similar queries (specifically SQL examples)
     raw_few_shots = vector_store.search_fewshots(request.query, top_k=3, knowledge_type="sql_query")
@@ -66,7 +133,11 @@ def perform_discovery(request: DiscoveryRequest) -> DiscoveryResponse:
     )
 
 
-def perform_skills_based_discovery(query: str, llm_service: Optional[LLMServiceBase] = None) -> SkillsDiscoveryResult:
+def perform_skills_based_discovery(
+    query: str,
+    llm_service: Optional[LLMServiceBase] = None,
+    source_id: Optional[str] = None
+) -> SkillsDiscoveryResult:
     """
     Stage 2A: Skills Navigation (Primary Discovery)
     
@@ -80,7 +151,7 @@ def perform_skills_based_discovery(query: str, llm_service: Optional[LLMServiceB
     skills_service = get_skills_service()
     
     # Keyword-based search across all data groups
-    result = skills_service.search_data_groups_by_keywords(query)
+    result = skills_service.search_data_groups_by_keywords(query, data_source_id=source_id)
     
     # Optional: LLM validation of matched groups
     if llm_service and result.matched_groups:
@@ -94,7 +165,11 @@ def perform_skills_based_discovery(query: str, llm_service: Optional[LLMServiceB
     return result
 
 
-def perform_value_index_search(query: str, top_k: int = 5) -> List[RankedTable]:
+def perform_value_index_search(
+    query: str,
+    top_k: int = 5,
+    source_id: Optional[str] = None
+) -> List[RankedTable]:
     """
     Stage 2B: Value Index Search (Entity Mapping) with Relationship Tracing
     
@@ -113,6 +188,7 @@ def perform_value_index_search(query: str, top_k: int = 5) -> List[RankedTable]:
     
     # Phase 1: Direct value index search
     value_results = vector_store.search_values(query, top_k=top_k)
+    allowed_tables = _get_allowed_table_set(vector_store, source_id)
     
     ranked_tables = []
     seen_keys = set()  # (schema_lower, table_lower) for deduplication
@@ -140,6 +216,12 @@ def perform_value_index_search(query: str, top_k: int = 5) -> List[RankedTable]:
                 data_group=None
             ))
     
+    if allowed_tables is not None:
+        ranked_tables = [
+            t for t in ranked_tables
+            if f"{t.schema_name}.{t.table_name}".lower() in allowed_tables
+        ]
+
     if not ranked_tables:
         return ranked_tables
     
@@ -178,10 +260,18 @@ def perform_value_index_search(query: str, top_k: int = 5) -> List[RankedTable]:
     except Exception as e:
         logging.warning(f"[Value Index] Relationship tracing failed (non-fatal): {e}")
     
+    if allowed_tables is not None:
+        ranked_tables = _filter_ranked_tables_by_source(ranked_tables, allowed_tables)
+
     return ranked_tables
 
 
-def perform_knowledge_base_search(query: str, llm_service: Optional[LLMServiceBase] = None, top_k: int = 3) -> List[RankedTable]:
+def perform_knowledge_base_search(
+    query: str,
+    llm_service: Optional[LLMServiceBase] = None,
+    top_k: int = 3,
+    source_id: Optional[str] = None
+) -> List[RankedTable]:
     """
     Stage 2C: Knowledge Base Search (Query Pattern Matching)
     
@@ -199,6 +289,8 @@ def perform_knowledge_base_search(query: str, llm_service: Optional[LLMServiceBa
     raw_few_shots = vector_store.search_fewshots(query, top_k=top_k, knowledge_type="sql_query")
     
     ranked_tables = []
+    vector_store = get_vector_store()
+    allowed_tables = _get_allowed_table_set(vector_store, source_id)
     
     # Extract tables from SQL queries
     for fs in raw_few_shots:
@@ -229,10 +321,14 @@ def perform_knowledge_base_search(query: str, llm_service: Optional[LLMServiceBa
                         data_group=None
                     ))
     
-    return ranked_tables
+    return _filter_ranked_tables_by_source(ranked_tables, allowed_tables)
 
 
-def extract_tables_from_match(matched_query: Dict[str, Any], llm_service: Optional[LLMServiceBase] = None) -> List[RankedTable]:
+def extract_tables_from_match(
+    matched_query: Dict[str, Any],
+    llm_service: Optional[LLMServiceBase] = None,
+    source_id: Optional[str] = None
+) -> List[RankedTable]:
     """
     Extract table names from a matched SQL query and return as RankedTable objects
     
@@ -244,6 +340,7 @@ def extract_tables_from_match(matched_query: Dict[str, Any], llm_service: Option
         List of RankedTable objects extracted from the SQL
     """
     ranked_tables = []
+    allowed_tables = _get_allowed_table_set(vector_store, source_id)
     sql_query = matched_query.get('sql_query', '')
     
     if not sql_query or not llm_service:
@@ -271,13 +368,14 @@ def extract_tables_from_match(matched_query: Dict[str, Any], llm_service: Option
             data_group=None
         ))
     
-    return ranked_tables
+    return _filter_ranked_tables_by_source(ranked_tables, allowed_tables)
 
 
 def check_knowledge_base_exact_match(
-    query: str, 
+    query: str,
     llm_service: Optional[LLMServiceBase] = None,
-    top_k: int = 3
+    top_k: int = 3,
+    source_id: Optional[str] = None
 ) -> Optional[Dict[str, Any]]:
     """
     Stage 1: Check knowledge base for exact query match
@@ -371,7 +469,11 @@ Respond with only: YES or NO"""
     return None
 
 
-def perform_three_pronged_discovery(query: str, llm_service: Optional[LLMServiceBase] = None) -> ThreeProngedResult:
+def perform_three_pronged_discovery(
+    query: str,
+    llm_service: Optional[LLMServiceBase] = None,
+    source_id: Optional[str] = None
+) -> ThreeProngedResult:
     """
     NEW STRATEGY: Sequential discovery with early exit optimization
     
@@ -396,14 +498,14 @@ def perform_three_pronged_discovery(query: str, llm_service: Optional[LLMService
     # ========================================
     # STAGE 1: Knowledge Base Exact Match
     # ========================================
-    exact_match = check_knowledge_base_exact_match(query, llm_service)
+    exact_match = check_knowledge_base_exact_match(query, llm_service, source_id=source_id)
     
     if exact_match:
         logging.info(f"[Discovery] EXACT MATCH FOUND in knowledge base!")
         logging.info(f"[Discovery] Matched question: {exact_match['question']}")
         
         # Extract tables from the matched SQL
-        tables = extract_tables_from_match(exact_match, llm_service)
+        tables = extract_tables_from_match(exact_match, llm_service, source_id=source_id)
         
         return ThreeProngedResult(
             exact_match_found=True,
@@ -418,7 +520,7 @@ def perform_three_pronged_discovery(query: str, llm_service: Optional[LLMService
     # ========================================
     # STAGE 2: Skills-Based Discovery
     # ========================================
-    skills_result = perform_skills_based_discovery(query, llm_service)
+    skills_result = perform_skills_based_discovery(query, llm_service, source_id=source_id)
     skills_tables = skills_result.candidate_tables
     
     logging.info(f"[Discovery] Skills found {len(skills_tables)} candidate tables")
@@ -446,7 +548,7 @@ def perform_three_pronged_discovery(query: str, llm_service: Optional[LLMService
     # ========================================
     # STAGE 3: Value Index Fallback + Merge
     # ========================================
-    value_tables = perform_value_index_search(query)
+    value_tables = perform_value_index_search(query, source_id=source_id)
     
     logging.info(f"[Discovery] Value index found {len(value_tables)} candidate tables")
     
@@ -729,7 +831,8 @@ def validate_groups_with_llm(
 
 def hydrate_discovery_context_from_skills(
     table_names: List[str],
-    similar_queries: List[Dict]
+    similar_queries: List[Dict],
+    source_id: Optional[str] = None
 ) -> DiscoveryContext:
     """
     Build DiscoveryContext by loading table schemas from skills files
@@ -746,6 +849,7 @@ def hydrate_discovery_context_from_skills(
     # Load table schemas from skills
     # For each table name, find corresponding .md file
     table_schemas = []
+    resolved_source = skills_service._resolve_data_source_name(source_id) if source_id else None
     
     for table_name in table_names:
         # Parse schema.table format
@@ -759,12 +863,22 @@ def hydrate_discovery_context_from_skills(
         
         # Find the table schema file in skills directory
         # Pattern: skills/data-sources/{data-source}/schemas/{schema}/{schema}.{table}.md
-        # We need to search for it since we don't know the data source
         from pathlib import Path
         skills_path = Path("skills/data-sources")
         
-        # Search for the table file
-        matches = list(skills_path.rglob(f"schemas/{schema_name}/{schema_name}.{table}.md"))
+        # Restrict search to the selected data source when provided
+        search_paths = []
+        if resolved_source:
+            candidate_dirs = list(skills_path.glob(f"*{resolved_source}*"))
+            search_paths = [
+                d for d in candidate_dirs if d.is_dir() and not d.name.startswith('_')
+            ]
+        if not search_paths:
+            search_paths = [skills_path]
+        
+        matches = []
+        for base_path in search_paths:
+            matches.extend(list(base_path.rglob(f"schemas/{schema_name}/{schema_name}.{table}.md")))
         
         if matches:
             # Load the first match

@@ -1,8 +1,8 @@
-# Table: [dbo].[Product Sales for 1997]
+# View: [dbo].[Product Sales for 1997]
 
-**Data Source:** Auto-generated  
-**Schema:** dbo  
-**Type:** View  
+**Data Source:** Northwind
+**Schema:** dbo
+**Type:** View
 
 ## Description
 
@@ -16,3 +16,4 @@
 | 2 | `ProductName` | NVARCHAR(40) | Name of the product sold. Reference: Products.ProductName |
 | 3 | `ProductSales` | MONEY | Total monetary value of sales for the product during 1997, aggregated from order details. |
 ---
+

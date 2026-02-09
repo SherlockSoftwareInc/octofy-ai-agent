@@ -1,8 +1,8 @@
-# Table: [dbo].[Sales Totals by Amount]
+# View: [dbo].[Sales Totals by Amount]
 
-**Data Source:** Auto-generated  
-**Schema:** dbo  
-**Type:** View  
+**Data Source:** Northwind
+**Schema:** dbo
+**Type:** View
 
 ## Description
 
@@ -17,3 +17,4 @@
 | 3 | `CompanyName` | NVARCHAR(40) | Name of the customer company that placed the order. |
 | 4 | `ShippedDate` | DATETIME | Date and time when the order was shipped to the customer. |
 ---
+

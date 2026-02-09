@@ -12,6 +12,8 @@ interface ResultWithAnalysisProps {
   pythonCode?: string;
   /** Context to pass to execution (user_query, schema_context, etc.) */
   executionContext?: any;
+  /** Data source ID to use when executing SQL */
+  sourceId?: string;
   /** Result index (for SQL queries with multiple result sets) */
   resultIndex?: number;
   /** Cached analysis context if already fetched */
@@ -29,6 +31,7 @@ const ResultWithAnalysis: React.FC<ResultWithAnalysisProps> = ({
   sql,
   pythonCode,
   executionContext,
+  sourceId,
   resultIndex = 0,
   cachedAnalysis,
   onAnalysisFetched,
@@ -59,7 +62,10 @@ const ResultWithAnalysis: React.FC<ResultWithAnalysisProps> = ({
           undefined,
           undefined,
           undefined,
-          true // enable_profiling
+          true, // enable_profiling
+          undefined,
+          undefined,
+          sourceId
         );
       } else if (isPythonExecution && pythonCode) {
         result = await api.executePython(

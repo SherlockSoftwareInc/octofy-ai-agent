@@ -319,6 +319,8 @@ const ExecutionResultViewer: React.FC<ExecutionResultViewerProps> = ({
 interface SQLResultDisplayProps {
     sql: string;
     sourceQuestion?: string;
+    /** Data source ID to use when executing this SQL */
+    sourceId?: string;
     allUserMessages?: string[];
     queryType?: 'database' | 'r_code' | 'sas_code' | 'python_code' | 'general' | 'uncertain' | 'search';
     executionResult?: ExecutePythonResponse;
@@ -338,6 +340,7 @@ interface SQLResultDisplayProps {
 export const SQLResultDisplay: React.FC<SQLResultDisplayProps> = ({
     sql,
     sourceQuestion,
+    sourceId,
     allUserMessages = [],
     queryType,
     executionResult,
@@ -573,7 +576,10 @@ export const SQLResultDisplay: React.FC<SQLResultDisplayProps> = ({
                 undefined,
                 undefined, // timeout
                 undefined, // max rows
-                false // explicitly disable automatic profiling
+                false, // explicitly disable automatic profiling
+                undefined,
+                undefined,
+                sourceId
             );
 
             // Call parent callback to persist the result
@@ -649,7 +655,8 @@ export const SQLResultDisplay: React.FC<SQLResultDisplayProps> = ({
                     undefined,
                     false,
                     preservedXAxis,
-                    preservedYAxis
+                    preservedYAxis,
+                    sourceId
                 );
                 
                 if (onSQLExecutionComplete) {
@@ -1165,7 +1172,10 @@ export const SQLResultDisplay: React.FC<SQLResultDisplayProps> = ({
                                                         undefined,
                                                         undefined,
                                                         undefined,
-                                                        true // enable profiling for on-demand
+                                                        true, // enable profiling for on-demand
+                                                        undefined,
+                                                        undefined,
+                                                        sourceId
                                                     );
                                                     if (result.success && (result.data_profile || result.insights)) {
                                                         setAnalysisData({
@@ -1212,7 +1222,10 @@ export const SQLResultDisplay: React.FC<SQLResultDisplayProps> = ({
                                                         undefined,
                                                         undefined,
                                                         undefined,
-                                                        true // enable profiling for on-demand
+                                                        true, // enable profiling for on-demand
+                                                        undefined,
+                                                        undefined,
+                                                        sourceId
                                                     );
                                                     if (result.success && (result.data_profile || result.insights)) {
                                                         setAnalysisData({

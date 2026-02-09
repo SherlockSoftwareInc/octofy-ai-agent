@@ -1,8 +1,8 @@
-# Table: [dbo].[Summary of Sales by Year]
+# View: [dbo].[Summary of Sales by Year]
 
-**Data Source:** Auto-generated  
-**Schema:** dbo  
-**Type:** View  
+**Data Source:** Northwind
+**Schema:** dbo
+**Type:** View
 
 ## Description
 
@@ -16,3 +16,4 @@
 | 2 | `OrderID` | INTEGER | Unique identifier for the order. Reference:Orders.OrderID |
 | 3 | `Subtotal` | MONEY | Total monetary value of the order before taxes and shipping, aggregated for reporting. |
 ---
+

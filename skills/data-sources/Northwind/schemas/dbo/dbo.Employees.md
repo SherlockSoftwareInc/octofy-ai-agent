@@ -1,8 +1,8 @@
 # Table: [dbo].[Employees]
 
-**Data Source:** Auto-generated  
-**Schema:** dbo  
-**Type:** Table  
+**Data Source:** Northwind
+**Schema:** dbo
+**Type:** Table
 
 ## Description
 
@@ -31,3 +31,4 @@
 | 17 | `ReportsTo` | INTEGER | ID of the employee who reports to this employee (e.g., manager), Reference: [dbo].[Employees].[EmployeeID] |
 | 18 | `PhotoPath` | NVARCHAR(255) | File path to the employee's photo |
 ---
+

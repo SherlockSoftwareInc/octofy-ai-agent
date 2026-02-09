@@ -1,7 +1,7 @@
-from app.models.schemas import GenerateSQLRequest, GenerateSQLResponse, DiscoveryContext, AgentStatus
+from app.models.schemas import GenerateSQLRequest, GenerateSQLResponse, DiscoveryContext, AgentStatus, TableSchema
 import re
 import logging
-from typing import Optional, Tuple, List, Dict, Any, Generator, Union
+from typing import Optional, Tuple, List, Dict, Any, Generator, Union, Set
 from datetime import datetime
 from app.services.llm_service import get_llm_service
 from app.services.discovery_service import (
@@ -23,7 +23,17 @@ def parse_table_override_name(raw_name: str) -> Tuple[str, str]:
         return schema.strip() or "dbo", table.strip()
     return "dbo", cleaned.strip()
 
-def hydrate_override_context(table_names: List[str]) -> DiscoveryContext:
+def hydrate_override_context(
+    table_names: List[str],
+    source_id: Optional[str] = None
+) -> DiscoveryContext:
+    if source_id:
+        return hydrate_discovery_context_from_skills(
+            table_names,
+            similar_queries=[],
+            source_id=source_id
+        )
+
     vector_store = get_vector_store()
     selected_schemas = []
     for raw_name in table_names:
@@ -65,6 +75,121 @@ def rerank_and_select_tables(few_shot_tables: List[str], value_tables: List[str]
     # Return top 8 display names
     return [display_names[item[0]] for item in sorted_items[:8]]
 
+
+def _get_allowed_table_set(vector_store, source_id: Optional[str]) -> Optional[Set[str]]:
+    if not source_id:
+        return None
+    try:
+        objects = vector_store.get_all_objects_v2(source_id)
+    except Exception:
+        return None
+
+    if not objects:
+        return None
+
+    allowed_tables: Set[str] = set()
+    for obj in objects or []:
+        obj_type = (obj.get("object_type") or "").lower()
+        if obj_type not in {"table", "view"}:
+            continue
+        schema_name = obj.get("schema_name")
+        object_name = obj.get("object_name")
+        if schema_name and object_name:
+            allowed_tables.add(f"{schema_name}.{object_name}".lower())
+    return allowed_tables
+
+
+def _filter_table_names_by_source(
+    table_names: List[str],
+    allowed_tables: Optional[Set[str]]
+) -> List[str]:
+    if allowed_tables is None:
+        return table_names
+
+    filtered = []
+    for table_name in table_names:
+        norm = table_name.lower().replace('[', '').replace(']', '').strip()
+        if not norm:
+            continue
+        if '.' in norm and norm in allowed_tables:
+            filtered.append(table_name)
+        elif '.' not in norm and f"dbo.{norm}" in allowed_tables:
+            filtered.append(table_name)
+    return filtered
+
+
+def _filter_ranked_tables_by_source(
+    ranked_tables: List[Any],
+    allowed_tables: Optional[Set[str]]
+) -> List[Any]:
+    if allowed_tables is None:
+        return ranked_tables
+    return [
+        t for t in ranked_tables
+        if f"{t.schema_name}.{t.table_name}".lower() in allowed_tables
+    ]
+
+
+def _search_schemas_scoped(
+    vector_store,
+    query: str,
+    top_k: int,
+    source_id: Optional[str]
+) -> List[TableSchema]:
+    if not source_id:
+        return vector_store.search_schemas(query, top_k)
+
+    try:
+        objects = vector_store.search_objects_v2(
+            query=query,
+            top_k=top_k,
+            source_id=source_id,
+            object_types=["table", "view"]
+        )
+        schemas = []
+        for obj in objects or []:
+            schema_name = obj.get("schema_name") or "dbo"
+            table_name = obj.get("object_name") or "unknown"
+            schemas.append(TableSchema(
+                schema_name=schema_name,
+                table_name=table_name,
+                table_type=obj.get("object_type", "table"),
+                description=obj.get("description", ""),
+                columns=[]
+            ))
+        return schemas
+    except Exception:
+        return vector_store.search_schemas(query, top_k)
+
+
+def _search_values_scoped(
+    vector_store,
+    query: str,
+    top_k: int,
+    allowed_tables: Optional[Set[str]]
+) -> List[Dict[str, Any]]:
+    results = vector_store.search_values(query, top_k=top_k)
+    if allowed_tables is None:
+        return results
+    return [
+        r for r in results
+        if f"{r.get('schema_name', 'dbo')}.{r.get('table_name', '')}".lower() in allowed_tables
+    ]
+
+
+def _hydrate_discovery_context_scoped(
+    table_names: List[str],
+    similar_queries: List[Dict],
+    source_id: Optional[str]
+) -> DiscoveryContext:
+    if source_id:
+        return hydrate_discovery_context_from_skills(
+            table_names,
+            similar_queries=similar_queries,
+            source_id=source_id
+        )
+    return hydrate_discovery_context(table_names, similar_queries)
+
 def hydrate_discovery_context(table_names: List[str], similar_queries: List[Dict]) -> DiscoveryContext:
     vector_store = get_vector_store()
     # 1. Fetch all schemas (efficient enough for <1000 tables)
@@ -98,7 +223,11 @@ def hydrate_discovery_context(table_names: List[str], similar_queries: List[Dict
         similar_queries=formatted_queries
     )
 
-def expand_context_with_neighbors(selected_tables: List[str], user_query: str) -> List[str]:
+def expand_context_with_neighbors(
+    selected_tables: List[str],
+    user_query: str,
+    source_id: Optional[str] = None
+) -> List[str]:
     """
     Use LLM to identify disjoint tables and suggest intermediate glue tables.
     """
@@ -117,7 +246,7 @@ def expand_context_with_neighbors(selected_tables: List[str], user_query: str) -
         verified_additions = []
         for table_suggestion in suggestions:
             # Semantic search for the specific table name
-            results = vector_store.search_schemas(table_suggestion, top_k=1)
+            results = _search_schemas_scoped(vector_store, table_suggestion, top_k=1, source_id=source_id)
             for res in results:
                 # Basic fuzzy match check
                 found_name = f"{res.schema_name}.{res.table_name}"
@@ -256,7 +385,11 @@ def parse_validation_error(text: str) -> tuple[bool, str, list[str]]:
     
     return False, "", []
 
-def lookup_values_for_query(query: str, threshold: float = 0.7) -> Dict[str, List[str]]:
+def lookup_values_for_query(
+    query: str,
+    threshold: float = 0.7,
+    allowed_tables: Optional[Set[str]] = None
+) -> Dict[str, List[str]]:
     """
     Look up relevant values in the value index based on the user query.
     
@@ -270,7 +403,7 @@ def lookup_values_for_query(query: str, threshold: float = 0.7) -> Dict[str, Lis
     try:
         vector_store = get_vector_store()
         # Search for values relevant to the query
-        results = vector_store.search_values(query, top_k=10)
+        results = _search_values_scoped(vector_store, query, top_k=10, allowed_tables=allowed_tables)
         
         # Filter by similarity score if available
         filtered_results = []
@@ -362,7 +495,8 @@ def validate_schema_completeness(context: DiscoveryContext, user_query: str, llm
 def expand_context_for_missing_data(
     context: DiscoveryContext,
     search_suggestions: List[str],
-    max_suggestions: int = 5
+    max_suggestions: int = 5,
+    source_id: Optional[str] = None
 ) -> Tuple[List[str], DiscoveryContext]:
     """
     Expand the discovery context by searching for tables that might contain missing data.
@@ -385,7 +519,11 @@ def expand_context_for_missing_data(
     
     for suggestion in search_suggestions[:max_suggestions]:
         try:
-            disc_res = perform_discovery(DiscoveryRequest(query=suggestion, top_k=3))
+            disc_res = perform_discovery(DiscoveryRequest(
+                query=suggestion,
+                top_k=3,
+                source_id=source_id
+            ))
             for table in disc_res.context.relevant_tables:
                 # Check if table already exists in context
                 already_exists = any(
@@ -1558,25 +1696,35 @@ def generate_sql_for_request(request: GenerateSQLRequest, previous_sql: Optional
         # Get fresh LLM service instance to ensure latest settings
         llm_service = get_llm_service()
         
-        # Load database metadata from skills data source instead of settings
+        # Load database metadata from skills data sources instead of settings
         from app.services.skills_service import get_skills_service
         skills_service = get_skills_service()
-        data_source = skills_service.load_primary_data_source()
-        
-        if data_source:
-            friendly_name = data_source.name
-            db_description = data_source.description
-            db_keywords = data_source.keywords
+        data_sources = skills_service.load_data_sources_index() or []
+        primary_source = skills_service.load_primary_data_source()
+
+        if primary_source:
+            friendly_name = primary_source.name
+            db_description = primary_source.description
+            db_keywords = primary_source.keywords
+        elif data_sources:
+            friendly_name = data_sources[0].name
+            db_description = data_sources[0].description
+            db_keywords = data_sources[0].keywords
         else:
             # Fallback to defaults if skills not available
             friendly_name = "Database"
             db_description = "Primary database"
             db_keywords = []
+
+        if primary_source and not any(ds.name == primary_source.name for ds in data_sources):
+            data_sources = [primary_source] + data_sources
     except Exception as e:
         print(f"Failed to load database metadata, using defaults: {e}")
         friendly_name = "Database"
         db_description = "Primary database"
         db_keywords = []
+        data_sources = []
+        primary_source = None
     
     # combined_query was already built at the start of the function with conversation history
     
@@ -1593,14 +1741,63 @@ def generate_sql_for_request(request: GenerateSQLRequest, previous_sql: Optional
 
     # 3-way LLM intent classification: data_query / system_metadata / off_topic
     # Use combined query so classifier has full conversation context
-    query_intent = classify_query_intent(
+    classification = classify_query_intent(
         combined_query, llm_service,
         db_name=friendly_name,
         db_description=db_description,
         db_keywords=db_keywords,
+        data_sources=data_sources,
     )
+    if isinstance(classification, dict):
+        query_intent = classification.get("intent", "data_query")
+        related_sources = classification.get("related_sources", [])
+        related_source_guids = classification.get("related_source_guids", [])
+    else:
+        query_intent = (classification or "").strip().lower()
+        related_sources = []
+        related_source_guids = []
+
+    source_by_guid = {
+        getattr(ds, "source_id", None): ds
+        for ds in (data_sources or [])
+        if getattr(ds, "source_id", None)
+    }
+
+    if len(related_source_guids) > 1:
+        options = []
+        for guid in related_source_guids:
+            source = source_by_guid.get(guid)
+            name = source.name if source else "Unknown"
+            options.append(f"- {name} (guid: {guid})")
+
+        explanation = (
+            "Multiple data sources match your request. Please choose one source ID to proceed:\n"
+            + "\n".join(options)
+            + "\n\nReply with the GUID of the data source you want to use."
+        )
+        result = GenerateSQLResponse(
+            sql="",
+            explanation=explanation,
+            query_type="general"
+        )
+        yield {"type": "result", "payload": result}
+        yield {"type": "done"}
+        return
+
+    selected_source_id = None
+    if related_source_guids:
+        selected_source_id = related_source_guids[0]
+    else:
+        selected_source_id = getattr(primary_source, "source_id", None) if primary_source else None
+        if not selected_source_id and data_sources:
+            selected_source_id = getattr(data_sources[0], "source_id", None)
     
-    yield AgentStatus(step_id=3, message=f"Intent classified as: {query_intent}")
+    status_message = f"Intent classified as: {query_intent}"
+    if related_sources:
+        status_message += f" (sources: {', '.join(related_sources)})"
+    if selected_source_id:
+        status_message += f" (source_id: {selected_source_id})"
+    yield AgentStatus(step_id=3, message=status_message)
 
     # --- Off-Topic Branch ---
     if query_intent == "off_topic":
@@ -1613,8 +1810,12 @@ def generate_sql_for_request(request: GenerateSQLRequest, previous_sql: Optional
     # --- System Metadata Branch ---
     if query_intent == "system_metadata":
         yield AgentStatus(step_id=4, message="System metadata query detected. Accessing SQL Server catalogs...")
+        selected_source = source_by_guid.get(selected_source_id) if selected_source_id else None
 
-        database_info = f"Database: {friendly_name}\nDescription: {db_description}"
+        if selected_source:
+            database_info = f"Database: {selected_source.name}\nDescription: {selected_source.description}"
+        else:
+            database_info = f"Database: {friendly_name}\nDescription: {db_description}"
         system_prompt = build_system_catalog_prompt(combined_query, database_info=database_info)
 
         max_system_attempts = 2
@@ -1627,7 +1828,7 @@ def generate_sql_for_request(request: GenerateSQLRequest, previous_sql: Optional
                 retry_prompt += f"\n\n### PREVIOUS ATTEMPT FAILED\nError: {last_error}\nPlease fix the query and try again."
 
             sql = llm_service.generate_sql_with_context(combined_query, retry_prompt)
-            is_valid, error_msg, _ = validate_sql_with_db(sql)
+            is_valid, error_msg, _ = validate_sql_with_db(sql, source_id=selected_source_id)
 
             if is_valid:
                 result = GenerateSQLResponse(
@@ -1635,7 +1836,8 @@ def generate_sql_for_request(request: GenerateSQLRequest, previous_sql: Optional
                     explanation="System metadata query generated from SQL Server catalog views.",
                     query_type="database",
                     context_text=retry_prompt,
-                    discovery_branch="system_catalog"
+                    discovery_branch="system_catalog",
+                    source_id=selected_source_id
                 )
                 yield {"type": "result", "payload": result}
                 yield {"type": "done"}
@@ -1649,7 +1851,8 @@ def generate_sql_for_request(request: GenerateSQLRequest, previous_sql: Optional
             explanation=f"Failed to generate a valid system metadata query after {max_system_attempts} attempts. Last error: {last_error}",
             query_type="database",
             context_text=system_prompt,
-            discovery_branch="system_catalog"
+            discovery_branch="system_catalog",
+            source_id=selected_source_id
         )
         yield {"type": "result", "payload": result}
         yield {"type": "done"}
@@ -1658,6 +1861,8 @@ def generate_sql_for_request(request: GenerateSQLRequest, previous_sql: Optional
     # --- Data Query Branch (continues to Stage 2: Discovery) ---
     # Use the combined query (with conversation history) for discovery
     discovery_query = combined_query
+
+    allowed_tables = _get_allowed_table_set(vector_store, selected_source_id)
     
     # Extract entities and score complexity for database queries (using context-aware query)
     entities, date_ranges = extract_entities(discovery_query)
@@ -1677,13 +1882,15 @@ def generate_sql_for_request(request: GenerateSQLRequest, previous_sql: Optional
 
     if use_table_override:
         yield AgentStatus(step_id=4, message="Locking context to user-selected tables...")
-        context = hydrate_override_context(table_override)
+        table_override = _filter_table_names_by_source(table_override, allowed_tables)
+        context = hydrate_override_context(table_override, source_id=selected_source_id)
         if not context.relevant_tables:
             result = GenerateSQLResponse(
                 sql="",
                 explanation="No matching schemas were found for the selected objects. Please verify the table names and try again.",
                 query_type="database",
-                context_text="Selected tables not found"
+                context_text="Selected tables not found",
+                source_id=selected_source_id
             )
             yield {"type": "result", "payload": result}
             yield {"type": "done"}
@@ -1744,7 +1951,12 @@ def generate_sql_for_request(request: GenerateSQLRequest, previous_sql: Optional
                 
                 # Hydrate context using only the KB-referenced tables
                 if kb_sql_tables:
-                    context = hydrate_discovery_context(kb_sql_tables, similar_queries)
+                    kb_sql_tables = _filter_table_names_by_source(kb_sql_tables, allowed_tables)
+                    context = _hydrate_discovery_context_scoped(
+                        kb_sql_tables,
+                        similar_queries,
+                        selected_source_id
+                    )
                 else:
                     # Fallback: use similar queries without specific table hydration
                     context = DiscoveryContext(
@@ -1789,14 +2001,14 @@ def generate_sql_for_request(request: GenerateSQLRequest, previous_sql: Optional
                 
                 for keyword in gap_keywords[:5]:  # Limit to 5 gap searches
                     # Schema index search
-                    schema_hits = vector_store.search_schemas(keyword, top_k=3)
+                    schema_hits = _search_schemas_scoped(vector_store, keyword, top_k=3, source_id=selected_source_id)
                     for s in schema_hits:
                         full_name = f"{s.schema_name}.{s.table_name}"
                         if full_name not in supplementary_tables:
                             supplementary_tables.append(full_name)
                     
                     # Value index search
-                    value_hits = vector_store.search_values(keyword, top_k=3)
+                    value_hits = _search_values_scoped(vector_store, keyword, top_k=3, allowed_tables=allowed_tables)
                     for v in value_hits:
                         entity = v.get('entity', v)
                         table_name = entity.get('table_name', '')
@@ -1809,9 +2021,11 @@ def generate_sql_for_request(request: GenerateSQLRequest, previous_sql: Optional
                 # Expand supplementary value tables with FK relationships
                 if supplementary_value_tables:
                     supplementary_value_tables = expand_value_tables_with_relationships(supplementary_value_tables)
+                    supplementary_value_tables = _filter_table_names_by_source(supplementary_value_tables, allowed_tables)
 
                 # Combine KB tables with supplementary discoveries
                 all_tables = list(set(kb_tables + supplementary_tables + supplementary_value_tables))
+                all_tables = _filter_table_names_by_source(all_tables, allowed_tables)
                 
                 logging.info(
                     f"[KB-First] Gap fill found {len(supplementary_tables)} schema + "
@@ -1829,7 +2043,11 @@ def generate_sql_for_request(request: GenerateSQLRequest, previous_sql: Optional
                     })
                 
                 # Hydrate context
-                context = hydrate_discovery_context(all_tables, similar_queries)
+                context = _hydrate_discovery_context_scoped(
+                    all_tables,
+                    similar_queries,
+                    selected_source_id
+                )
                 
                 yield AgentStatus(step_id=7, message=f"Supplementary discovery complete. Found {len(context.relevant_tables)} tables.")
         
@@ -1847,16 +2065,17 @@ def generate_sql_for_request(request: GenerateSQLRequest, previous_sql: Optional
             if filter_values:
                 logging.info(f"Discovery: Extracted filter values: {filter_values}")
                 for val in filter_values:
-                    v_res = vector_store.search_values(val, top_k=3)
+                    v_res = _search_values_scoped(vector_store, val, top_k=3, allowed_tables=allowed_tables)
                     value_tables.extend([f"{r.get('schema_name', 'dbo')}.{r.get('table_name')}" for r in v_res if r.get('table_name')])
             else:
-                value_results = vector_store.search_values(discovery_query, top_k=5)
+                value_results = _search_values_scoped(vector_store, discovery_query, top_k=5, allowed_tables=allowed_tables)
                 value_tables = [f"{r.get('schema_name', 'dbo')}.{r.get('table_name')}" for r in value_results if r.get('table_name')]
                 
             # 1b. Expand value tables with FK relationship tracing
             if value_tables:
                 original_count = len(value_tables)
                 value_tables = expand_value_tables_with_relationships(value_tables)
+                value_tables = _filter_table_names_by_source(value_tables, allowed_tables)
                 if len(value_tables) > original_count:
                     logging.info(
                         f"Discovery: Relationship tracing expanded value tables "
@@ -1868,24 +2087,36 @@ def generate_sql_for_request(request: GenerateSQLRequest, previous_sql: Optional
             similar_queries = vector_store.search_fewshots(discovery_query, top_k=3, knowledge_type="sql_query")
             few_shot_sqls = [q.get('sql_query', '') or q.get('sql', '') for q in similar_queries]
             few_shot_tables = llm_service.extract_tables_from_sql(few_shot_sqls)
+            few_shot_tables = _filter_table_names_by_source(few_shot_tables, allowed_tables)
             
             # 3. Schema Index Discovery
-            schema_results = vector_store.search_schemas(discovery_query, top_k=5)
+            schema_results = _search_schemas_scoped(vector_store, discovery_query, top_k=5, source_id=selected_source_id)
             schema_tables = [f"{s.schema_name}.{s.table_name}" for s in schema_results]
+            schema_tables = _filter_table_names_by_source(schema_tables, allowed_tables)
             
             # 4. Re-rank and Filter
             final_table_list = rerank_and_select_tables(few_shot_tables, value_tables, schema_tables)
+            final_table_list = _filter_table_names_by_source(final_table_list, allowed_tables)
             logging.info(f"Discovery: Selected tables after reranking: {final_table_list}")
             
             # 5. Hydrate Context (Initial)
-            context = hydrate_discovery_context(final_table_list, similar_queries)
+            context = _hydrate_discovery_context_scoped(
+                final_table_list,
+                similar_queries,
+                selected_source_id
+            )
             
             # 6. Path Finding (Context Expansion)
             yield AgentStatus(step_id=7, message="Analyzing schema relationships and path finding...")
-            expanded_list = expand_context_with_neighbors(final_table_list, discovery_query)
+            expanded_list = expand_context_with_neighbors(final_table_list, discovery_query, selected_source_id)
             if len(expanded_list) > len(final_table_list):
                 logging.info(f"Discovery: Expanded context from {len(final_table_list)} to {len(expanded_list)} tables.")
-                context = hydrate_discovery_context(expanded_list, similar_queries)
+                expanded_list = _filter_table_names_by_source(expanded_list, allowed_tables)
+                context = _hydrate_discovery_context_scoped(
+                    expanded_list,
+                    similar_queries,
+                    selected_source_id
+                )
     
     if not use_table_override:
         # Branch-aware validation routing
@@ -1937,9 +2168,10 @@ def generate_sql_for_request(request: GenerateSQLRequest, previous_sql: Optional
                     yield AgentStatus(step_id=10, message=f"Missing data detected. Expanding search...")
                     
                     tables_added, context = expand_context_for_missing_data(
-                        context, 
+                        context,
                         search_suggestions,
-                        max_suggestions=5
+                        max_suggestions=5,
+                        source_id=selected_source_id
                     )
                     
                     if tables_added:
@@ -1979,7 +2211,8 @@ def generate_sql_for_request(request: GenerateSQLRequest, previous_sql: Optional
                         sql="",
                         explanation=explanation,
                         query_type="database",
-                        context_text=f"Sufficiency check failed. Missing: {', '.join(missing_names)}"
+                        context_text=f"Sufficiency check failed. Missing: {', '.join(missing_names)}",
+                        source_id=selected_source_id
                     )
                     yield {"type": "result", "payload": result}
                     yield {"type": "done"}
@@ -2008,7 +2241,11 @@ def generate_sql_for_request(request: GenerateSQLRequest, previous_sql: Optional
                 
                 for missing_table in missing_tables[:5]:
                     try:
-                        disc_res = perform_discovery(DiscoveryRequest(query=missing_table, top_k=3))
+                        disc_res = perform_discovery(DiscoveryRequest(
+                            query=missing_table,
+                            top_k=3,
+                            source_id=selected_source_id
+                        ))
                         
                         newly_added = False
                         for table in disc_res.context.relevant_tables:
@@ -2051,7 +2288,8 @@ def generate_sql_for_request(request: GenerateSQLRequest, previous_sql: Optional
 
 Alternatively, if these table references are incorrect, please rephrase your query.""",
                         query_type="database",
-                        context_text=f"Missing schemas: {', '.join(tables_not_found)}"
+                        context_text=f"Missing schemas: {', '.join(tables_not_found)}",
+                        source_id=selected_source_id
                     )
                     yield {"type": "result", "payload": result}
                     yield {"type": "done"}
@@ -2062,7 +2300,7 @@ Alternatively, if these table references are incorrect, please rephrase your que
             
             # Stage 2.5: Value Index Lookup
             yield AgentStatus(step_id=9, message="Checking value index for specific data mappings...")
-            value_mappings = lookup_values_for_query(combined_query)
+            value_mappings = lookup_values_for_query(combined_query, allowed_tables=allowed_tables)
             
             # Stage 2.6: Schema Sufficiency Pre-Flight Check
             from app.core.config import settings as app_settings
@@ -2101,9 +2339,10 @@ Alternatively, if these table references are incorrect, please rephrase your que
                     yield AgentStatus(step_id=10, message=f"Missing data detected. Expanding search...")
                     
                     tables_added, context = expand_context_for_missing_data(
-                        context, 
+                        context,
                         search_suggestions,
-                        max_suggestions=5
+                        max_suggestions=5,
+                        source_id=selected_source_id
                     )
                     
                     if tables_added:
@@ -2142,7 +2381,8 @@ Alternatively, if these table references are incorrect, please rephrase your que
                         sql="",
                         explanation=explanation,
                         query_type="database",
-                        context_text=f"Sufficiency check failed. Missing: {', '.join(missing_names)}"
+                        context_text=f"Sufficiency check failed. Missing: {', '.join(missing_names)}",
+                        source_id=selected_source_id
                     )
                     yield {"type": "result", "payload": result}
                     yield {"type": "done"}
@@ -2412,7 +2652,7 @@ Extracted Entities: {', '.join(entities) if entities else 'None'}
         if is_special_error:
             is_valid, error_msg, missing_cols = False, error_text, special_missing
         else:
-            is_valid, error_msg, missing_cols = validate_sql_with_db(sql)
+            is_valid, error_msg, missing_cols = validate_sql_with_db(sql, source_id=selected_source_id)
 
         if is_valid:
             result = GenerateSQLResponse(
@@ -2421,7 +2661,8 @@ Extracted Entities: {', '.join(entities) if entities else 'None'}
                 query_type="database",
                 context_text=current_prompt,
                 context_history=current_context_history,
-                discovery_branch=discovery_branch if not use_table_override else "table_override"
+                discovery_branch=discovery_branch if not use_table_override else "table_override",
+                source_id=selected_source_id
             )
             yield {"type": "result", "payload": result}
             yield {"type": "done"}
@@ -2435,7 +2676,11 @@ Extracted Entities: {', '.join(entities) if entities else 'None'}
         if not use_table_override and is_special_error and missing_cols:
             # Missing Object recovery - search for the missing objects in vector database
             for missing_obj in missing_cols:
-                disc_res = perform_discovery(DiscoveryRequest(query=missing_obj, top_k=5))
+                disc_res = perform_discovery(DiscoveryRequest(
+                    query=missing_obj,
+                    top_k=5,
+                    source_id=selected_source_id
+                ))
                 newly_added = False
                 for table in disc_res.context.relevant_tables:
                     # Only add if not already in context
@@ -2448,7 +2693,11 @@ Extracted Entities: {', '.join(entities) if entities else 'None'}
                 if newly_added:
                     # Perform additional discovery with broader context to find more related tables
                     broader_query = f"{request.query} {missing_obj}"
-                    broader_disc = perform_discovery(DiscoveryRequest(query=broader_query, top_k=5))
+                    broader_disc = perform_discovery(DiscoveryRequest(
+                        query=broader_query,
+                        top_k=5,
+                        source_id=selected_source_id
+                    ))
                     for table in broader_disc.context.relevant_tables:
                         # Exclude tables already in context
                         if not any(t.table_name == table.table_name for t in context.relevant_tables):
@@ -2464,7 +2713,8 @@ Extracted Entities: {', '.join(entities) if entities else 'None'}
                     explanation=f"I could not find the required objects ({', '.join(missing_cols)}) in the database schema. Please provide more information about:\n1. The correct table or column names\n2. The database schema you're referring to\n3. More context about the data you're trying to query",
                     query_type="database",
                     context_text=current_prompt,
-                    context_history=current_context_history
+                    context_history=current_context_history,
+                    source_id=selected_source_id
                 )
                 yield {"type": "result", "payload": result}
                 yield {"type": "done"}
@@ -2472,7 +2722,11 @@ Extracted Entities: {', '.join(entities) if entities else 'None'}
         elif not use_table_override and missing_cols:
             # Database validation error with missing objects
             for col in missing_cols:
-                disc_res = perform_discovery(DiscoveryRequest(query=col, top_k=3))
+                disc_res = perform_discovery(DiscoveryRequest(
+                    query=col,
+                    top_k=3,
+                    source_id=selected_source_id
+                ))
                 newly_added = False
                 for table in disc_res.context.relevant_tables:
                     if not any(t.table_name == table.table_name for t in context.relevant_tables):
@@ -2483,7 +2737,11 @@ Extracted Entities: {', '.join(entities) if entities else 'None'}
                 # If found, do a broader search for related tables
                 if newly_added:
                     broader_query = f"{request.query} {col}"
-                    broader_disc = perform_discovery(DiscoveryRequest(query=broader_query, top_k=5))
+                    broader_disc = perform_discovery(DiscoveryRequest(
+                        query=broader_query,
+                        top_k=5,
+                        source_id=selected_source_id
+                    ))
                     for table in broader_disc.context.relevant_tables:
                         if not any(t.table_name == table.table_name for t in context.relevant_tables):
                             context.relevant_tables.append(table)
@@ -2514,7 +2772,8 @@ Extracted Entities: {', '.join(entities) if entities else 'None'}
         explanation=f"Failed after 5 attempts. Final error: {error_msg}. Please try rephrasing your query or providing more context.",
         query_type="database",
         context_text=current_prompt,
-        context_history=current_context_history
+        context_history=current_context_history,
+        source_id=selected_source_id
     )
     yield {"type": "result", "payload": result}
     yield {"type": "done"}

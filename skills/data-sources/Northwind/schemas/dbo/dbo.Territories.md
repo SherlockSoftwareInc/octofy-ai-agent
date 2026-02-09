@@ -1,8 +1,8 @@
 # Table: [dbo].[Territories]
 
-**Data Source:** Auto-generated  
-**Schema:** dbo  
-**Type:** Table  
+**Data Source:** Northwind
+**Schema:** dbo
+**Type:** Table
 
 ## Description
 
@@ -16,3 +16,4 @@
 | 2 | `TerritoryDescription` | NCHAR(50) | Descriptive name or details of the territory. |
 | 3 | `RegionID` | INTEGER | Identifier of the region to which the territory belongs. Reference: Regions.RegionID |
 ---
+

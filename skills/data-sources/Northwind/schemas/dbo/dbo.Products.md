@@ -1,8 +1,8 @@
 # Table: [dbo].[Products]
 
-**Data Source:** Auto-generated  
-**Schema:** dbo  
-**Type:** Table  
+**Data Source:** Northwind
+**Schema:** dbo
+**Type:** Table
 
 ## Description
 
@@ -23,3 +23,4 @@
 | 9 | `ReorderLevel` | SMALLINT | Inventory level at which new stock should be ordered. |
 | 10 | `Discontinued` | BIT | Indicates whether the product is discontinued (1 = discontinued, 0 = active). |
 ---
+

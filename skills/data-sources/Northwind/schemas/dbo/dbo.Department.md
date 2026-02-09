@@ -1,8 +1,8 @@
 # Table: [dbo].[Department]
 
-**Data Source:** Auto-generated  
-**Schema:** dbo  
-**Type:** Table  
+**Data Source:** Northwind
+**Schema:** dbo
+**Type:** Table
 
 ## Description
 
@@ -19,3 +19,4 @@
 | 5 | `SysStartTime` | DATETIME2 | Timestamp when the department was created or last updated in the system |
 | 6 | `SysEndTime` | DATETIME2 | Timestamp when the department was last updated or ended in the system |
 ---
+

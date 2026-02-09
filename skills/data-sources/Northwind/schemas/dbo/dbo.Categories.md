@@ -1,8 +1,8 @@
 # Table: [dbo].[Categories]
 
-**Data Source:** Auto-generated  
-**Schema:** dbo  
-**Type:** Table  
+**Data Source:** Northwind
+**Schema:** dbo
+**Type:** Table
 
 ## Description
 
@@ -17,3 +17,4 @@
 | 3 | `Description` | NTEXT | Detailed description or notes about the category. |
 | 4 | `Picture` | IMAGE | Optional image representing the category. |
 ---
+

@@ -1,8 +1,8 @@
 # Table: [dbo].[AddressSplit]
 
-**Data Source:** Auto-generated  
-**Schema:** dbo  
-**Type:** Table  
+**Data Source:** Northwind
+**Schema:** dbo
+**Type:** Table
 
 ## Description
 
@@ -20,3 +20,4 @@
 | 6 | `Country` | NVARCHAR(15) | Country where the address is located. |
 | 7 | `ContactType` | NVARCHAR(50) | Type of contact associated with the address, such as billing, shipping, or home. |
 ---
+

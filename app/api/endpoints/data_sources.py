@@ -287,9 +287,22 @@ def _run_schema_scan(
             description=description,
             keywords=keywords or [],
         )
+        # Update Milvus schema index collection so vector search uses the new schema library
+        msg = f"Scan complete: {result['total_objects']} objects discovered ({result['tables_created']} tables, {result['views_created']} views) across {result['schemas_scanned']} schemas."
+        try:
+            SkillsService().clear_cache()
+            from app.core.database import clear_engine_cache
+            clear_engine_cache(source_id)
+            from app.services.ingest_service import ingest_metadata
+            _scan_status[source_id] = {"status": "running", "message": "Updating Milvus schema index..."}
+            ingest_metadata(source_id=source_id)
+            msg += " Schema library and Milvus index updated."
+        except Exception as ingest_e:
+            logger.warning(f"Schema scan succeeded but Milvus ingest failed for {data_source_name}: {ingest_e}", exc_info=True)
+            msg += f" Schema library updated; Milvus index update failed: {ingest_e}"
         _scan_status[source_id] = {
             "status": "completed",
-            "message": f"Scan complete: {result['total_objects']} objects discovered ({result['tables_created']} tables, {result['views_created']} views) across {result['schemas_scanned']} schemas.",
+            "message": msg,
             "result": result,
         }
     except Exception as e:

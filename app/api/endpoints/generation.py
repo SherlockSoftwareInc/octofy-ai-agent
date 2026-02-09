@@ -430,7 +430,8 @@ async def execute_sql_endpoint(
                 timeout_seconds=request.timeout_seconds or 60,
                 max_rows=request.max_rows or 10000,
                 enable_profiling=request.enable_profiling or False,
-                user_query=user_query
+                user_query=user_query,
+                source_id=request.source_id
             )
             
             if result["success"]:

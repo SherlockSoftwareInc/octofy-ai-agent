@@ -314,7 +314,12 @@ class SkillsService:
             file_path=str(file_path)
         )
     
-    def search_data_groups_by_keywords(self, query: str, extract_keywords: bool = True) -> SkillsDiscoveryResult:
+    def search_data_groups_by_keywords(
+        self,
+        query: str,
+        extract_keywords: bool = True,
+        data_source_id: Optional[str] = None
+    ) -> SkillsDiscoveryResult:
         """
         Keyword match against all _data-group.md files
         
@@ -327,6 +332,16 @@ class SkillsService:
         """
         # Load all data groups
         all_groups = self.load_all_data_groups()
+
+        # Optional filter by data source ID/name
+        if data_source_id:
+            resolved_source = self._resolve_data_source_name(data_source_id)
+            if resolved_source:
+                all_groups = {
+                    file_path: group
+                    for file_path, group in all_groups.items()
+                    if group.data_source and group.data_source.lower() == resolved_source.lower()
+                }
         
         # Extract keywords from query
         if extract_keywords:

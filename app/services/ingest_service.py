@@ -1,14 +1,13 @@
 
 import json
-from typing import List, Dict, Any
-from sqlalchemy import create_engine, text, inspect
+from typing import List, Dict, Any, Optional
+from sqlalchemy import text, inspect
 from pymilvus import connections, FieldSchema, CollectionSchema, DataType, Collection, utility
 from openai import OpenAI
 from app.core.config import settings
 from app.services.settings_service import load_settings
-import urllib.parse
-
-from app.core.database import get_db_engine
+from app.core.database import get_database_engine
+from app.models.schemas import DataObject, ObjectType
 
 
 def _resolve_source_guid_from_skills() -> str:
@@ -338,13 +337,13 @@ def create_milvus_collections():
     contrib_coll.create_index(field_name="embedding", index_params=index_params)
     print(f"Created collection: {settings.MILVUS_COLLECTION_CONTRIBUTIONS}")
 
-def ingest_metadata():
-    engine = get_db_engine()
+def ingest_metadata(source_id: Optional[str] = None):
+    engine = get_database_engine(source_id)
     inspector = inspect(engine)
     client, embedding_model = _resolve_embedding_config()
     
     schemas = inspector.get_schema_names()
-    source_guid = _resolve_source_guid_from_skills()
+    source_guid = source_id or _resolve_source_guid_from_skills()
     
     data_rows = []
     
@@ -360,18 +359,19 @@ def ingest_metadata():
             search_collection = Collection(settings.MILVUS_COLLECTION_SCHEMA)
             search_collection.load()
             
-            # Query all existing schema_name and table_name
+            # Query existing schema_name and table_name for this source
             # Limit to 10000 for now, assuming we don't have massive schema counts yet
             results = search_collection.query(
-                expr="", 
-                output_fields=["schema_name", "table_name"],
+                expr=f'source_guid == "{source_guid}"',
+                output_fields=["source_guid", "schema_name", "table_name"],
                 limit=10000
             )
             
             for res in results:
-                existing_items.add((res['schema_name'], res['table_name']))
+                if res.get("source_guid") == source_guid:
+                    existing_items.add((res['schema_name'], res['table_name']))
             
-            print(f"Found {len(existing_items)} existing tables in vector store.")
+            print(f"Found {len(existing_items)} existing tables in vector store for source {source_guid}.")
     except Exception as e:
         print(f"Warning: Could not check existing items: {e}")
         
@@ -391,7 +391,7 @@ def ingest_metadata():
                 print(f"Item {schema}.{obj_name} exists. Deleting to replace...")
                 try:
                     if search_collection:
-                        expr = f'schema_name == "{schema}" and table_name == "{obj_name}"'
+                        expr = f'source_guid == "{source_guid}" and schema_name == "{schema}" and table_name == "{obj_name}"'
                         search_collection.delete(expr)
                 except Exception as del_e:
                     print(f"Error deleting {schema}.{obj_name}: {del_e}")
@@ -471,6 +471,27 @@ def ingest_metadata():
         
         collection.insert([c_embeddings, c_source_guids, c_schemas, c_tables, c_table_types, c_descs])
         collection.flush()
-        print("Ingestion complete.")
+        print("Ingestion complete (schema_index).")
+
+        # Also populate schema_index_v2 so schema tree and object lists show all objects
+        try:
+            from app.services.vector_store import get_vector_store
+            vs = get_vector_store()
+            vs.clear_source_objects_v2(source_guid)
+            for r in data_rows:
+                obj_type = ObjectType.VIEW if r["table_type"] == "view" else ObjectType.TABLE
+                obj = DataObject(
+                    source_id=source_guid,
+                    schema_name=r["schema_name"],
+                    object_name=r["table_name"],
+                    object_type=obj_type,
+                    description=r["description"],
+                    definition="",
+                    return_type=None,
+                )
+                vs.insert_data_object_v2(obj, r["description"])
+            print("Schema index v2 updated.")
+        except Exception as v2_err:
+            print(f"Warning: Could not update schema_index_v2: {v2_err}")
     else:
         print("No data found to ingest.")

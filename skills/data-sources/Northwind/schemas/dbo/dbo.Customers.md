@@ -1,8 +1,8 @@
 # Table: [dbo].[Customers]
 
-**Data Source:** Auto-generated  
-**Schema:** dbo  
-**Type:** Table  
+**Data Source:** Northwind
+**Schema:** dbo
+**Type:** Table
 
 ## Description
 
@@ -24,3 +24,4 @@
 | 10 | `Phone` | NVARCHAR(24) | Primary phone number for the customer. |
 | 11 | `Fax` | NVARCHAR(24) | Fax number for the customer. |
 ---
+

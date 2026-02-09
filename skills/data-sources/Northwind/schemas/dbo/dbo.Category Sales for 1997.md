@@ -1,8 +1,8 @@
-# Table: [dbo].[Category Sales for 1997]
+# View: [dbo].[Category Sales for 1997]
 
-**Data Source:** Auto-generated  
-**Schema:** dbo  
-**Type:** View  
+**Data Source:** Northwind
+**Schema:** dbo
+**Type:** View
 
 ## Description
 
@@ -15,3 +15,4 @@
 | 1 | `CategoryName` | NVARCHAR(15) | Name of the product category. Reference: Categories.CategoryName |
 | 2 | `CategorySales` | MONEY | Total sales amount for the category during 1997, calculated from order details and product pricing. |
 ---
+

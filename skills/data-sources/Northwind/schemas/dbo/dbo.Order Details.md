@@ -1,8 +1,8 @@
 # Table: [dbo].[Order Details]
 
-**Data Source:** Auto-generated  
-**Schema:** dbo  
-**Type:** Table  
+**Data Source:** Northwind
+**Schema:** dbo
+**Type:** Table
 
 ## Description
 
@@ -18,3 +18,4 @@
 | 4 | `Quantity` | SMALLINT | The total number of units of the product associated with this order line item. |
 | 5 | `Discount` | REAL | The percentage or fixed reduction applied to the unit price (usually expressed as a decimal, e.g., 0.15 for 15%). |
 ---
+

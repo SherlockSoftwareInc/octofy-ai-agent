@@ -1,8 +1,8 @@
 # Table: [dbo].[BaseContactSplit]
 
-**Data Source:** Auto-generated  
-**Schema:** dbo  
-**Type:** Table  
+**Data Source:** Northwind
+**Schema:** dbo
+**Type:** Table
 
 ## Description
 
@@ -18,3 +18,4 @@
 | 4 | `Phone` | NVARCHAR(24) | Phone number for the contact. |
 | 5 | `ContactType` | NVARCHAR(50) | Type or role of the contact (e.g., primary, billing, shipping). |
 ---
+

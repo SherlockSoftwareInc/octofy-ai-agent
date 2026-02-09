@@ -1,8 +1,8 @@
-# Table: [dbo].[Quarterly Orders]
+# View: [dbo].[Quarterly Orders]
 
-**Data Source:** Auto-generated  
-**Schema:** dbo  
-**Type:** View  
+**Data Source:** Northwind
+**Schema:** dbo
+**Type:** View
 
 ## Description
 
@@ -17,3 +17,4 @@
 | 3 | `City` | NVARCHAR(15) | City where the customer is located. |
 | 4 | `Country` | NVARCHAR(15) | Country where the customer is located. |
 ---
+

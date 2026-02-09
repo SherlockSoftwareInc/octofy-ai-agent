@@ -1449,6 +1449,7 @@ function AuthenticatedApp({
                                     <SQLResultDisplay
                                       sql={message.sqlResult.sql}
                                       sourceQuestion={message.sourceQuery}
+                                      sourceId={message.sqlResult.source_id}
                                       allUserMessages={chatHistory
                                         .filter(msg => msg.type === 'user')
                                         .map(msg => msg.content)

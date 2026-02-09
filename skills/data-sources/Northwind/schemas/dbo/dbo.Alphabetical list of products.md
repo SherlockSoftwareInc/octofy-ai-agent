@@ -1,8 +1,8 @@
-# Table: [dbo].[Alphabetical list of products]
+# View: [dbo].[Alphabetical list of products]
 
-**Data Source:** Auto-generated  
-**Schema:** dbo  
-**Type:** View  
+**Data Source:** Northwind
+**Schema:** dbo
+**Type:** View
 
 ## Description
 
@@ -24,3 +24,4 @@
 | 10 | `Discontinued` | BIT | Indicates whether the product is discontinued (1 = discontinued, 0 = active). |
 | 11 | `CategoryName` | NVARCHAR(15) | Name of the category to which the product belongs. |
 ---
+

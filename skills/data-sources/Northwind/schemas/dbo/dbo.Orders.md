@@ -1,8 +1,8 @@
 # Table: [dbo].[Orders]
 
-**Data Source:** Auto-generated  
-**Schema:** dbo  
-**Type:** Table  
+**Data Source:** Northwind
+**Schema:** dbo
+**Type:** Table
 
 ## Description
 
@@ -27,3 +27,4 @@
 | 13 | `ShipPostalCode` | NVARCHAR(10) | Postal code of the shipping address. |
 | 14 | `ShipCountry` | NVARCHAR(15) | Country of the shipping address. |
 ---
+

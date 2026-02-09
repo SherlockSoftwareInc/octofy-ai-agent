@@ -1,8 +1,8 @@
-# Table: [dbo].[Order Details Extended]
+# View: [dbo].[Order Details Extended]
 
-**Data Source:** Auto-generated  
-**Schema:** dbo  
-**Type:** View  
+**Data Source:** Northwind
+**Schema:** dbo
+**Type:** View
 
 ## Description
 
@@ -20,3 +20,4 @@
 | 6 | `Discount` | REAL | Discount rate applied to this order line item. |
 | 7 | `ExtendedPrice` | MONEY | Total price for the line item after applying the discount to the ordered quantity. |
 ---
+

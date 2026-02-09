@@ -1,8 +1,8 @@
 # Table: [dbo].[Region]
 
-**Data Source:** Auto-generated  
-**Schema:** dbo  
-**Type:** Table  
+**Data Source:** Northwind
+**Schema:** dbo
+**Type:** Table
 
 ## Description
 
@@ -15,3 +15,4 @@
 | 1 | `RegionID` | INTEGER | Primary key, Unique identifier for the region. |
 | 2 | `RegionDescription` | NCHAR(50) | Descriptive name or label for the region. |
 ---
+

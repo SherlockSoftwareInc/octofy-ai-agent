@@ -1,8 +1,8 @@
 # Table: [dbo].[CustomerCustomerDemo]
 
-**Data Source:** Auto-generated  
-**Schema:** dbo  
-**Type:** Table  
+**Data Source:** Northwind
+**Schema:** dbo
+**Type:** Table
 
 ## Description
 
@@ -15,3 +15,4 @@
 | 1 | `CustomerID` | NCHAR(5) | Primary key, Unique identifier of the customer. Reference: Customers.CustomerID |
 | 2 | `CustomerTypeID` | NCHAR(10) | Primary key, Identifier for the customer demographic type. Reference: CustomerDemographics.CustomerTypeID |
 ---
+

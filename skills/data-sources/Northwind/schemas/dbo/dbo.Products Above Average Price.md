@@ -1,8 +1,8 @@
-# Table: [dbo].[Products Above Average Price]
+# View: [dbo].[Products Above Average Price]
 
-**Data Source:** Auto-generated  
-**Schema:** dbo  
-**Type:** View  
+**Data Source:** Northwind
+**Schema:** dbo
+**Type:** View
 
 ## Description
 
@@ -15,3 +15,4 @@
 | 1 | `ProductName` | NVARCHAR(40) | The name of the product that exceeds the average unit price. Reference: Products.ProductName |
 | 2 | `UnitPrice` | MONEY | The current selling price per unit for the product, expressed in monetary value. Reference: Products.UnitPrice |
 ---
+

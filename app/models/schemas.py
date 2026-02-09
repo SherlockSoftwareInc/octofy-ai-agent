@@ -48,6 +48,7 @@ class DiscoveryContext(BaseModel):
 class DiscoveryRequest(BaseModel):
     query: str = Field(..., description="User's natural language question")
     top_k: int = 5
+    source_id: Optional[str] = None
 
 class DiscoveryResponse(BaseModel):
     query: str
@@ -158,6 +159,7 @@ class GenerateSQLResponse(BaseModel):
     context_history: Optional[List[str]] = None # History of contexts for each attempt
     objects: Optional[List[SearchObject]] = None
     discovery_branch: Optional[str] = None  # "kb_direct", "kb_gap_fill", or "dual_prong"
+    source_id: Optional[str] = None  # Data source ID to use when executing this SQL
 
 class AgentStatus(BaseModel):
     step_id: int
@@ -178,6 +180,7 @@ class ExecutePythonRequest(BaseModel):
 class ExecuteSQLRequest(BaseModel):
     sql: str  # SQL query to execute
     context: Optional[Dict[str, Any]] = None  # Optional execution context (user_query, schema_context, etc.)
+    source_id: Optional[str] = None  # Optional data source GUID for execution
     chart_type_override: Optional[ChartTypeLiteral] = None  # User-specified chart type preference
     preserved_x_axis: Optional[str] = None  # Preserve original x_axis column when changing chart type
     preserved_y_axis: Optional[List[str]] = None  # Preserve original y_axis columns when changing chart type

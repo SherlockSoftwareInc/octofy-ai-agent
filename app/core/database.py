@@ -42,37 +42,60 @@ def get_database_engine(source_id: Optional[str] = None) -> Engine:
     # Build connection string from _data-source.md
     from app.services.skills_service import get_skills_service
     skills_service = get_skills_service()
-    data_source = skills_service.load_primary_data_source()
-    
-    if not data_source:
-        raise ValueError("No data source configuration found in skills directory")
+    data_source = None
+    if source_id:
+        sources = skills_service.load_data_sources_index()
+        for source in sources:
+            if source.source_id == source_id:
+                data_source = source
+                break
+        if not data_source:
+            for source in sources:
+                if source.name.lower() == source_id.lower():
+                    data_source = source
+                    break
+        if not data_source:
+            raise ValueError(f"Data source '{source_id}' not found in skills directory")
+    else:
+        data_source = skills_service.load_primary_data_source()
+        if not data_source:
+            raise ValueError("No data source configuration found in skills directory")
     
     # Extract server and database from data source metadata
     # These are stored as markdown fields: **Server:** localhost, **Database:** northwind
     import re
-    server_match = re.search(r'\*\*Server:\*\*\s*([^\n]+)', data_source.description or '')
-    database_match = re.search(r'\*\*Database:\*\*\s*([^\n]+)', data_source.description or '')
-    
-    # Also check in the raw file content for metadata at the top
-    if not server_match or not database_match:
-        # Try to load from file path directly
-        if hasattr(data_source, 'file_path') and data_source.file_path:
-            from pathlib import Path
-            file_content = Path(data_source.file_path).read_text(encoding='utf-8')
-            if not server_match:
-                server_match = re.search(r'\*\*Server:\*\*\s*([^\n]+)', file_content)
-            if not database_match:
-                database_match = re.search(r'\*\*Database:\*\*\s*([^\n]+)', file_content)
-    
-    if not server_match or not database_match:
+    server = None
+    database = None
+    if data_source.connection_info:
+        server = data_source.connection_info.get("server") or server
+        database = data_source.connection_info.get("database") or database
+
+    # Also check in the raw file content for metadata
+    if (not server or not database) and getattr(data_source, "file_path", None):
+        from pathlib import Path
+        file_content = Path(data_source.file_path).read_text(encoding='utf-8')
+        if not server:
+            server_match = re.search(r'\*\*Server:\*\*\s*([^\n]+)', file_content)
+            server = server_match.group(1).strip() if server_match else server
+        if not database:
+            database_match = re.search(r'\*\*Database:\*\*\s*([^\n]+)', file_content)
+            database = database_match.group(1).strip() if database_match else database
+
+    # Last resort: try parsing description text (older formats)
+    if not server or not database:
+        server_match = re.search(r'\*\*Server:\*\*\s*([^\n]+)', data_source.description or '')
+        database_match = re.search(r'\*\*Database:\*\*\s*([^\n]+)', data_source.description or '')
+        if not server and server_match:
+            server = server_match.group(1).strip()
+        if not database and database_match:
+            database = database_match.group(1).strip()
+
+    if not server or not database:
         # Fallback to environment variable
         conn_str = settings.SQL_SERVER_CONNECTION_STRING
         if not conn_str:
             raise ValueError("Could not extract Server/Database from _data-source.md and no fallback connection string available")
     else:
-        server = server_match.group(1).strip()
-        database = database_match.group(1).strip()
-        
         # Build connection string using Windows Authentication
         driver = "ODBC Driver 17 for SQL Server"
         conn_str = f"Driver={{{driver}}};Server={server};Database={database};Trusted_Connection=yes;Encrypt=yes;TrustServerCertificate=yes"

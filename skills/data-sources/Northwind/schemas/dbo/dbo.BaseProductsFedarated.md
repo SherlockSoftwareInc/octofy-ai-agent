@@ -1,8 +1,8 @@
 # Table: [dbo].[BaseProductsFedarated]
 
-**Data Source:** Auto-generated  
-**Schema:** dbo  
-**Type:** Table  
+**Data Source:** Northwind
+**Schema:** dbo
+**Type:** Table
 
 ## Description
 
@@ -15,3 +15,4 @@
 | 1 | `ProductID` | INTEGER | Primary key, Unique identifier for each product. |
 | 2 | `ProductName` | NVARCHAR(40) | Name of the product. |
 ---
+

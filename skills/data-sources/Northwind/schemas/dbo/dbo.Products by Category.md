@@ -1,8 +1,8 @@
-# Table: [dbo].[Products by Category]
+# View: [dbo].[Products by Category]
 
-**Data Source:** Auto-generated  
-**Schema:** dbo  
-**Type:** View  
+**Data Source:** Northwind
+**Schema:** dbo
+**Type:** View
 
 ## Description
 
@@ -18,3 +18,4 @@
 | 4 | `UnitsInStock` | SMALLINT | Current number of units available in inventory. |
 | 5 | `Discontinued` | BIT | Flag indicating whether the product has been discontinued (1 = discontinued, 0 = active). |
 ---
+

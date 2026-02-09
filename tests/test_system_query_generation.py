@@ -16,14 +16,19 @@ def _make_skills_mock():
     mock_data_source.name = "TestDB"
     mock_data_source.description = "Test database for unit testing"
     mock_data_source.keywords = ["testing", "units"]
+    mock_data_source2 = MagicMock()
+    mock_data_source2.name = "HRDB"
+    mock_data_source2.description = "HR data for employees"
+    mock_data_source2.keywords = ["employees", "payroll"]
     mock_skills_instance.load_primary_data_source.return_value = mock_data_source
+    mock_skills_instance.load_data_sources_index.return_value = [mock_data_source, mock_data_source2]
     return mock_skills_instance
 
 
 class TestIntentClassificationRouting:
     """Test that 3-way classification routes queries correctly"""
 
-    @patch("app.services.generation_service.classify_query_intent", return_value="system_metadata")
+    @patch("app.services.generation_service.classify_query_intent", return_value={"intent": "system_metadata", "related_sources": []})
     @patch("app.services.generation_service.validate_sql_with_db")
     @patch("app.services.generation_service.get_llm_service")
     @patch("app.services.generation_service.get_vector_store")
@@ -50,7 +55,7 @@ class TestIntentClassificationRouting:
         assert payload.discovery_branch == "system_catalog"
         assert payload.sql == "SELECT name FROM sys.tables"
 
-    @patch("app.services.generation_service.classify_query_intent", return_value="system_metadata")
+    @patch("app.services.generation_service.classify_query_intent", return_value={"intent": "system_metadata", "related_sources": []})
     @patch("app.services.generation_service.validate_sql_with_db")
     @patch("app.services.generation_service.get_llm_service")
     @patch("app.services.generation_service.get_vector_store")
@@ -82,7 +87,7 @@ class TestIntentClassificationRouting:
         assert payload.sql == "SELECT name FROM sys.tables"
         assert mock_llm.generate_sql_with_context.call_count == 2
 
-    @patch("app.services.generation_service.classify_query_intent", return_value="system_metadata")
+    @patch("app.services.generation_service.classify_query_intent", return_value={"intent": "system_metadata", "related_sources": []})
     @patch("app.services.generation_service.validate_sql_with_db")
     @patch("app.services.generation_service.get_llm_service")
     @patch("app.services.generation_service.get_vector_store")
@@ -108,7 +113,7 @@ class TestIntentClassificationRouting:
         assert payload.sql == ""
         assert "failed" in payload.explanation.lower() or "error" in payload.explanation.lower()
 
-    @patch("app.services.generation_service.classify_query_intent", return_value="off_topic")
+    @patch("app.services.generation_service.classify_query_intent", return_value={"intent": "off_topic", "related_sources": []})
     @patch("app.services.generation_service.get_llm_service")
     @patch("app.services.generation_service.get_vector_store")
     @patch("app.services.skills_service.get_skills_service")
@@ -132,7 +137,7 @@ class TestIntentClassificationRouting:
         assert payload.query_type == "general"
         assert payload.sql == ""
 
-    @patch("app.services.generation_service.classify_query_intent", return_value="data_query")
+    @patch("app.services.generation_service.classify_query_intent", return_value={"intent": "data_query", "related_sources": []})
     @patch("app.services.generation_service.validate_sql_with_db")
     @patch("app.services.generation_service.get_llm_service")
     @patch("app.services.generation_service.get_vector_store")
@@ -194,12 +199,12 @@ class TestIntentClassificationRouting:
             payload = result_items[0]["payload"]
             assert payload.query_type == "general"
 
-    @patch("app.services.generation_service.classify_query_intent", return_value="data_query")
+    @patch("app.services.generation_service.classify_query_intent", return_value={"intent": "data_query", "related_sources": []})
     @patch("app.services.generation_service.get_llm_service")
     @patch("app.services.generation_service.get_vector_store")
     @patch("app.services.skills_service.get_skills_service")
     def test_classifier_receives_database_context(self, mock_skills, mock_vs, mock_llm_factory, mock_classify):
-        """classify_query_intent should be called with db_name, db_description, db_keywords from data source"""
+        """classify_query_intent should be called with data source context"""
         from app.services.generation_service import generate_sql_for_request
 
         mock_skills.return_value = _make_skills_mock()
@@ -221,7 +226,8 @@ class TestIntentClassificationRouting:
         call_kwargs = mock_classify.call_args
         # Positional args: query, llm_service
         assert call_kwargs[0][0] == "show me total sales by region"
-        # Keyword args: db context
+        # Keyword args: db context + data sources
         assert call_kwargs[1]["db_name"] == "TestDB"
         assert call_kwargs[1]["db_description"] == "Test database for unit testing"
         assert call_kwargs[1]["db_keywords"] == ["testing", "units"]
+        assert len(call_kwargs[1]["data_sources"]) == 2

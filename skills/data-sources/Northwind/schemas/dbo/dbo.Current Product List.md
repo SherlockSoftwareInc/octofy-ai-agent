@@ -1,8 +1,8 @@
-# Table: [dbo].[Current Product List]
+# View: [dbo].[Current Product List]
 
-**Data Source:** Auto-generated  
-**Schema:** dbo  
-**Type:** View  
+**Data Source:** Northwind
+**Schema:** dbo
+**Type:** View
 
 ## Description
 
@@ -15,3 +15,4 @@
 | 1 | `ProductID` | INTEGER | Unique identifier for each product in the current product list. Reference: Products.ProductID |
 | 2 | `ProductName` | NVARCHAR(40) | Name of the product as it appears in the current catalog. This is the display name used for ordering and sales purposes. |
 ---
+

@@ -1,8 +1,8 @@
-# Table: [dbo].[Order Subtotals]
+# View: [dbo].[Order Subtotals]
 
-**Data Source:** Auto-generated  
-**Schema:** dbo  
-**Type:** View  
+**Data Source:** Northwind
+**Schema:** dbo
+**Type:** View
 
 ## Description
 
@@ -15,3 +15,4 @@
 | 1 | `OrderID` | INTEGER | Unique identifier for the order. Reference: Orders.OrderID |
 | 2 | `Subtotal` | MONEY | Calculated total amount for the order before taxes, discounts, or shipping charges, derived from the sum of order details. |
 ---
+

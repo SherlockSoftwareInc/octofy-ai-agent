@@ -1,8 +1,8 @@
 # Table: [dbo].[Suppliers]
 
-**Data Source:** Auto-generated  
-**Schema:** dbo  
-**Type:** Table  
+**Data Source:** Northwind
+**Schema:** dbo
+**Type:** Table
 
 ## Description
 
@@ -25,3 +25,4 @@
 | 11 | `Fax` | NVARCHAR(24) | Fax number for the supplier. |
 | 12 | `HomePage` | NTEXT | Web page URL or additional descriptive information about the supplier. |
 ---
+

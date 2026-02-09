@@ -1,4 +1,4 @@
-from app.core.database import get_db_engine
+from app.core.database import get_database_engine
 from sqlalchemy import text
 import re
 import time
@@ -21,7 +21,7 @@ except ImportError as e:
     logger.warning(f"Workflow services not available: {e}")
     WORKFLOW_SERVICES_AVAILABLE = False
 
-def validate_sql_with_db(sql: str) -> tuple[bool, str, list[str]]:
+def validate_sql_with_db(sql: str, source_id: Optional[str] = None) -> tuple[bool, str, list[str]]:
     """
     Validate SQL using the database parser (SET NOEXEC ON).
     Returns (is_valid, error_message, missing_objects)
@@ -29,7 +29,7 @@ def validate_sql_with_db(sql: str) -> tuple[bool, str, list[str]]:
     if not sql or sql.strip() == "":
         return False, "Empty SQL query generated", []
         
-    engine = get_db_engine()
+    engine = get_database_engine(source_id)
     error_msg = ""
     missing_objects = []
     is_valid = False
@@ -163,7 +163,8 @@ def execute_sql_query(
     timeout_seconds: int = 60,
     max_rows: int = 10000,
     enable_profiling: bool = True,
-    user_query: str = ""
+    user_query: str = "",
+    source_id: Optional[str] = None
 ) -> Dict[str, Any]:
     """
     Executes SQL query and returns structured results with profiling and insights.
@@ -200,7 +201,7 @@ def execute_sql_query(
             "insights": []
         }
     
-    engine = get_db_engine()
+    engine = get_database_engine(source_id)
     execution_success = False
     error_message = None
     results = []

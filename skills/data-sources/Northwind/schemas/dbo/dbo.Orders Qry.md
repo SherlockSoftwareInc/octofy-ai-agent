@@ -1,8 +1,8 @@
-# Table: [dbo].[Orders Qry]
+# View: [dbo].[Orders Qry]
 
-**Data Source:** Auto-generated  
-**Schema:** dbo  
-**Type:** View  
+**Data Source:** Northwind
+**Schema:** dbo
+**Type:** View
 
 ## Description
 
@@ -33,3 +33,4 @@
 | 19 | `PostalCode` | NVARCHAR(10) | Postal or ZIP code of the customer's primary business location. |
 | 20 | `Country` | NVARCHAR(15) | Country of the customer's primary business location. |
 ---
+

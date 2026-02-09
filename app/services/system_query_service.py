@@ -5,8 +5,9 @@ Provides LLM-based intent classification (data_query / system_metadata / off_top
 and a specialized prompt builder for system catalog queries.
 """
 
+import json
 import logging
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -29,15 +30,114 @@ This database is: {db_name} — {db_description}
 It contains data about: {db_keywords}.
 If the user asks about data that clearly does NOT relate to these topics, classify it as off_topic."""
 
+CLASSIFICATION_MULTI_SOURCE_CONTEXT_TEMPLATE = """
+Available data sources:
+{data_sources}
+If the user's request is about business data, identify which data source(s) match the topic."""
+
 CLASSIFICATION_REPLY_INSTRUCTION = """
-Reply with EXACTLY one word: data_query, system_metadata, or off_topic
+Reply with a compact JSON object using this exact shape:
+{"intent":"data_query|system_metadata|off_topic","related_sources":["Data Source Name"]}
+Use ONLY data source names from the list above. If none apply, use an empty list.
 Do NOT include any other text."""
+
+
+def _get_source_field(source: Any, field: str) -> Optional[Any]:
+    if source is None:
+        return None
+    if isinstance(source, dict):
+        return source.get(field)
+    return getattr(source, field, None)
+
+
+def _build_source_name_map(data_sources: Optional[List[Any]]) -> Dict[str, str]:
+    name_map: Dict[str, str] = {}
+    for source in data_sources or []:
+        name = _get_source_field(source, "name")
+        if not name:
+            continue
+        name_map[str(name).strip().lower()] = str(name).strip()
+    return name_map
+
+
+def _format_data_sources_context(data_sources: Optional[List[Any]]) -> str:
+    lines: List[str] = []
+    for source in data_sources or []:
+        name = _get_source_field(source, "name")
+        if not name:
+            continue
+        description = _get_source_field(source, "description") or "No description provided"
+        keywords = _get_source_field(source, "keywords") or []
+        keywords_str = ", ".join(keywords) if keywords else "various topics"
+        lines.append(f"- {name}: {description} Keywords: {keywords_str}.")
+
+    if not lines:
+        return ""
+
+    return CLASSIFICATION_MULTI_SOURCE_CONTEXT_TEMPLATE.format(
+        data_sources="\n".join(lines)
+    )
+
+
+def _normalize_related_sources(
+    related_sources: Any,
+    source_name_map: Dict[str, str],
+) -> List[str]:
+    if not related_sources:
+        return []
+    if isinstance(related_sources, str):
+        related_sources = [related_sources]
+    if not isinstance(related_sources, list):
+        return []
+
+    normalized: List[str] = []
+    seen = set()
+    for source in related_sources:
+        if source is None:
+            continue
+        source_name = str(source).strip()
+        if not source_name:
+            continue
+        canonical = source_name_map.get(source_name.lower())
+        if not canonical or canonical in seen:
+            continue
+        normalized.append(canonical)
+        seen.add(canonical)
+    return normalized
+
+
+def _parse_classification_response(
+    response: Optional[str],
+    source_name_map: Dict[str, str],
+) -> Dict[str, Any]:
+    raw = (response or "").strip()
+    if not raw:
+        return {"intent": "", "related_sources": []}
+
+    try:
+        parsed = json.loads(raw)
+    except Exception:
+        return {"intent": raw.lower(), "related_sources": []}
+
+    if isinstance(parsed, dict):
+        intent = str(parsed.get("intent", "")).strip().lower()
+        related_sources = _normalize_related_sources(
+            parsed.get("related_sources", []),
+            source_name_map,
+        )
+        return {"intent": intent, "related_sources": related_sources}
+
+    if isinstance(parsed, str):
+        return {"intent": parsed.strip().lower(), "related_sources": []}
+
+    return {"intent": "", "related_sources": []}
 
 
 def _build_classification_prompt(
     db_name: Optional[str] = None,
     db_description: Optional[str] = None,
     db_keywords: Optional[List[str]] = None,
+    data_sources: Optional[List[Any]] = None,
 ) -> str:
     """
     Build the classification system prompt, optionally including database context.
@@ -56,7 +156,10 @@ def _build_classification_prompt(
     """
     prompt = CLASSIFICATION_SYSTEM_PROMPT_BASE
 
-    if db_name and db_description:
+    data_sources_context = _format_data_sources_context(data_sources)
+    if data_sources_context:
+        prompt += data_sources_context
+    elif db_name and db_description:
         keywords_str = ", ".join(db_keywords) if db_keywords else "various topics"
         prompt += CLASSIFICATION_DB_CONTEXT_TEMPLATE.format(
             db_name=db_name,
@@ -74,7 +177,8 @@ def classify_query_intent(
     db_name: Optional[str] = None,
     db_description: Optional[str] = None,
     db_keywords: Optional[List[str]] = None,
-) -> str:
+    data_sources: Optional[List[Any]] = None,
+) -> Dict[str, Any]:
     """
     Classify user query intent using the LLM.
 
@@ -86,34 +190,88 @@ def classify_query_intent(
         db_keywords: Optional list of topic keywords for the database.
 
     Returns:
-        One of: "data_query", "system_metadata", "off_topic".
-        Defaults to "data_query" on any error (safest fallback — lets the
-        existing pipeline handle it).
+        Dict with keys: "intent" and "related_sources".
+        Defaults to intent "data_query" on any error (safest fallback — lets the
+        existing pipeline handle it), and an empty related_sources list.
     """
     if not query or not query.strip():
-        return "off_topic"
+        return {"intent": "off_topic", "related_sources": []}
 
     try:
-        system_prompt = _build_classification_prompt(db_name, db_description, db_keywords)
+        system_prompt = _build_classification_prompt(
+            db_name,
+            db_description,
+            db_keywords,
+            data_sources,
+        )
+
+        source_guid_map = {}
+        name_to_guid_map = {}
+        for source in data_sources or []:
+            name = _get_source_field(source, "name")
+            guid = _get_source_field(source, "source_id")
+            if name and guid:
+                source_guid_map[str(guid).strip()] = str(name).strip()
+                name_to_guid_map[str(name).strip().lower()] = str(guid).strip()
+
+        if source_guid_map:
+            source_lines = "\n".join(
+                [f"- {name} (guid: {guid})" for guid, name in source_guid_map.items()]
+            )
+            system_prompt += f"""
+
+Available data sources (use guid values only):
+{source_lines}
+
+IGNORE any earlier reply format. Reply with a compact JSON object using this exact shape:
+{{"intent":"data_query|system_metadata|off_topic","related_source_guids":["source_guid"]}}
+Use ONLY source_guid values from the list above. If none apply, use an empty list.
+Do NOT include any other text."""
         messages = [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": query},
         ]
 
         response = llm_service.chat_completion(messages, temperature=0)
-        intent = (response or "").strip().lower()
+        source_name_map = _build_source_name_map(data_sources)
+        raw = (response or "").strip()
+        intent = ""
+        related_sources = []
+        related_source_guids: List[str] = []
+        if raw:
+            try:
+                parsed = json.loads(raw)
+            except Exception:
+                parsed = None
+            if isinstance(parsed, dict):
+                intent = str(parsed.get("intent", "")).strip().lower()
+                related_source_guids = [
+                    g for g in (parsed.get("related_source_guids") or []) if g in source_guid_map
+                ]
+                related_sources = [source_guid_map[g] for g in related_source_guids]
+            else:
+                parsed = _parse_classification_response(response, source_name_map)
+                intent = parsed.get("intent", "").strip().lower()
+                related_sources = parsed.get("related_sources", [])
+                related_source_guids = [
+                    name_to_guid_map[n.lower()] for n in related_sources if n.lower() in name_to_guid_map
+                ]
 
         if intent in VALID_INTENTS:
             logger.info(f"Query classified as '{intent}': {query[:80]}")
-            return intent
+            return {
+                "intent": intent,
+                "related_sources": related_sources,
+                "related_source_guids": related_source_guids,
+            }
 
         # LLM returned something unexpected — default to data_query
         logger.warning(f"LLM returned unrecognized intent '{intent}' for: {query[:80]}. Defaulting to data_query.")
-        return "data_query"
+        return {"intent": "data_query", "related_sources": [], "related_source_guids": []}
 
     except Exception as e:
         logger.error(f"Intent classification failed: {e}. Defaulting to data_query.")
-        return "data_query"
+        return {"intent": "data_query", "related_sources": [], "related_source_guids": []}
 
 
 # --- System View Reference (constant) ---

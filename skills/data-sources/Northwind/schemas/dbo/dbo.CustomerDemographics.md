@@ -1,8 +1,8 @@
 # Table: [dbo].[CustomerDemographics]
 
-**Data Source:** Auto-generated  
-**Schema:** dbo  
-**Type:** Table  
+**Data Source:** Northwind
+**Schema:** dbo
+**Type:** Table
 
 ## Description
 
@@ -15,3 +15,4 @@
 | 1 | `CustomerTypeID` | NCHAR(10) | Primary key, Unique identifier for the customer demographic category. |
 | 2 | `CustomerDesc` | NTEXT | Description of the customer demographic category. |
 ---
+

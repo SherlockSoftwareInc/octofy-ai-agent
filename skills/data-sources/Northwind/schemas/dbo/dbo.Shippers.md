@@ -1,8 +1,8 @@
 # Table: [dbo].[Shippers]
 
-**Data Source:** Auto-generated  
-**Schema:** dbo  
-**Type:** Table  
+**Data Source:** Northwind
+**Schema:** dbo
+**Type:** Table
 
 ## Description
 
@@ -16,3 +16,4 @@
 | 2 | `CompanyName` | NVARCHAR(40) | Name of the shipping company. |
 | 3 | `Phone` | NVARCHAR(24) | Contact phone number for the shipping company. |
 ---
+

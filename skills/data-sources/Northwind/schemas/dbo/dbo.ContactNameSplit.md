@@ -1,8 +1,8 @@
 # Table: [dbo].[ContactNameSplit]
 
-**Data Source:** Auto-generated  
-**Schema:** dbo  
-**Type:** Table  
+**Data Source:** Northwind
+**Schema:** dbo
+**Type:** Table
 
 ## Description
 
@@ -18,3 +18,4 @@
 | 4 | `Fax` | NVARCHAR(24) | Fax number associated with the contact person. |
 | 5 | `ContactType` | NVARCHAR(50) | Specifies the type or role of the contact, such as customer, supplier, or employee. |
 ---
+
