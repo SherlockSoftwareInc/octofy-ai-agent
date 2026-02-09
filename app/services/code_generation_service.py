@@ -142,11 +142,18 @@ def generate_r_for_request(request: GenerateSQLRequest) -> Generator[Union[Agent
 
     try:
         settings = get_settings_for_display()
-        friendly_name = settings.target_db.friendly_name
-        db_description = settings.target_db.description
-        db_keywords = settings.target_db.keywords
-        server_name = settings.target_db.server or ""
-        database_name = settings.target_db.database_name or ""
+        if settings.target_db is not None:
+            friendly_name = settings.target_db.friendly_name
+            db_description = settings.target_db.description
+            db_keywords = settings.target_db.keywords
+            server_name = settings.target_db.server or ""
+            database_name = settings.target_db.database_name or ""
+        else:
+            friendly_name = "Target Database"
+            db_description = "Business Data"
+            db_keywords = []
+            server_name = ""
+            database_name = ""
     except Exception as e:
         logger.warning(f"Failed to load settings for R dbConnect: {e}")
         friendly_name = "Target Database"
@@ -505,11 +512,18 @@ def generate_sas_for_request(request: GenerateSQLRequest) -> Generator[Union[Age
 
     try:
         settings = get_settings_for_display()
-        friendly_name = settings.target_db.friendly_name
-        db_description = settings.target_db.description
-        db_keywords = settings.target_db.keywords
-        server_name = settings.target_db.server or ""
-        database_name = settings.target_db.database_name or ""
+        if settings.target_db is not None:
+            friendly_name = settings.target_db.friendly_name
+            db_description = settings.target_db.description
+            db_keywords = settings.target_db.keywords
+            server_name = settings.target_db.server or ""
+            database_name = settings.target_db.database_name or ""
+        else:
+            friendly_name = "Target Database"
+            db_description = "Business Data"
+            db_keywords = []
+            server_name = ""
+            database_name = ""
     except Exception as e:
         logger.warning(f"Failed to load settings for SAS generation: {e}")
         friendly_name = "Target Database"
@@ -864,11 +878,18 @@ def generate_python_for_request(request: GenerateSQLRequest) -> Generator[Union[
 
     try:
         settings = get_settings_for_display()
-        friendly_name = settings.target_db.friendly_name
-        db_description = settings.target_db.description
-        db_keywords = settings.target_db.keywords
-        server_name = settings.target_db.server or ""
-        database_name = settings.target_db.database_name or ""
+        if settings.target_db is not None:
+            friendly_name = settings.target_db.friendly_name
+            db_description = settings.target_db.description
+            db_keywords = settings.target_db.keywords
+            server_name = settings.target_db.server or ""
+            database_name = settings.target_db.database_name or ""
+        else:
+            friendly_name = "Target Database"
+            db_description = "Business Data"
+            db_keywords = []
+            server_name = ""
+            database_name = ""
     except Exception as e:
         logger.warning(f"Failed to load settings for Python engine: {e}")
         friendly_name = "Target Database"

@@ -2,6 +2,7 @@ from typing import Any, Dict, List, Optional
 import sys
 import io
 import re
+import warnings
 import sqlalchemy
 import pandas as pd
 import json
@@ -150,6 +151,9 @@ def execute_python_code(
     stdout_buffer = io.StringIO()
     original_stdout = sys.stdout
     
+    # Suppress pandas warning about raw DBAPI2 connections (we use engine.raw_connection() by design)
+    warnings.filterwarnings("ignore", message="pandas only supports SQLAlchemy connectable")
+    
     # Prepare execution scope with proper globals
     # We need __builtins__ in globals for imports to work
     global_scope = {
@@ -271,7 +275,7 @@ def execute_python_code(
                             try:
                                 sample = df_head[col].dropna().head(10)
                                 if len(sample) > 0:
-                                    pd.to_datetime(sample)
+                                    pd.to_datetime(sample, format='mixed')
                                     datetime_cols.append(col)
                                     categorical_cols.remove(col)
                             except:
@@ -365,7 +369,7 @@ def execute_python_code(
                                 try:
                                     sample = df_head[col].dropna().head(10)
                                     if len(sample) > 0:
-                                        pd.to_datetime(sample)
+                                        pd.to_datetime(sample, format='mixed')
                                         datetime_cols.append(col)
                                         categorical_cols.remove(col)
                                 except:
