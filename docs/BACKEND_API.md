@@ -1,16 +1,19 @@
 # Backend API Documentation
 
-> FastAPI backend for the Octofy AI Agent - Natural Language to SQL generation service.
+FastAPI backend for the Octofy AI Agent, focused on natural language to SQL generation with RAG-based discovery and validation.
 
 ---
 
-## Overview
+## Backend Feature Summary
 
-The backend provides RESTful APIs and Server-Sent Events (SSE) for:
-- Natural language to SQL/R/SAS/Python code generation
-- Schema discovery and semantic search
-- Admin management for schemas, knowledge base, and value index
-- User contribution submission and review
+- Query classification for database vs general vs uncertain intent, with explicit clarification support.
+- Semantic discovery of schemas, examples, and values via Milvus-backed embeddings.
+- Reasoning-first SQL generation with mandatory table aliasing and deterministic output settings.
+- Iterative SQL validation against SQL Server parsing rules with targeted recovery.
+- Streaming generation via SSE with step-by-step status events.
+- Admin workflows for schema indexing, knowledge base curation, and value index management.
+- Optional Python execution with profiling, visualization guidance, and result summarization.
+- Contribution review pipeline for user-submitted examples.
 
 ---
 
@@ -18,48 +21,12 @@ The backend provides RESTful APIs and Server-Sent Events (SSE) for:
 
 | Technology | Purpose |
 |------------|---------|
-| **FastAPI** | Web framework |
-| **SQLAlchemy + pyodbc** | SQL Server connectivity |
-| **Milvus** | Vector database |
-| **OpenAI** | LLM and embeddings |
-| **LiteLLM** | Multi-provider LLM support |
-| **Pydantic** | Data validation |
-
----
-
-## Project Structure
-
-```
-app/
-├── api/endpoints/
-│   ├── discovery.py      # Schema discovery
-│   ├── generation.py     # SQL/code generation (SSE)
-│   ├── schema.py         # Schema lookup
-│   ├── admin.py          # Admin operations
-│   ├── settings.py       # Configuration
-│   ├── contributions.py  # User contributions
-│   └── summarize.py      # Result summarization
-├── core/
-│   ├── config.py         # Settings (env vars)
-│   ├── database.py       # SQLAlchemy engine
-│   └── auth.py           # API key validation
-├── models/
-│   └── schemas.py        # Pydantic models
-├── services/
-│   ├── generation_service.py   # SQL generation logic
-│   ├── discovery_service.py    # Context discovery
-│   ├── llm_service.py          # LLM interactions
-│   ├── validation_service.py   # SQL validation
-│   ├── vector_store.py         # Milvus operations
-│   ├── ingest_service.py       # Schema ingestion
-│   ├── execution_service.py    # Python execution
-│   ├── visualization_service.py # Chart recommendations
-│   ├── profiling_service.py    # Data profiling
-│   ├── insight_service.py      # AI insights
-│   └── settings_service.py     # Settings management
-└── utils/
-    └── logging_utils.py        # LLM interaction logging
-```
+| FastAPI | Web framework |
+| SQLAlchemy + pyodbc | SQL Server connectivity |
+| Milvus | Vector search |
+| OpenAI | Embeddings and LLM |
+| LiteLLM | Multi-provider LLM support |
+| Pydantic | Data validation |
 
 ---
 
@@ -67,12 +34,10 @@ app/
 
 | Item | Value |
 |------|-------|
-| **Base URL** | `/api/v1` |
-| **Health Check** | `GET /` → `{"message":"Octofy AI Agent API is running"}` |
-| **OpenAPI Spec** | `GET /api/v1/openapi.json` |
-| **Swagger UI** | `http://localhost:8000/docs` |
-
-### Authentication
+| Base URL | `/api/v1` |
+| Health Check | `GET /` -> `{"message":"Octofy AI Agent API is running"}` |
+| OpenAPI Spec | `GET /api/v1/openapi.json` |
+| Swagger UI | `http://localhost:8000/docs` |
 
 All endpoints require API key authentication (unless noted):
 
@@ -81,6 +46,7 @@ X-API-Key: <your-api-key>
 ```
 
 Configure in `.env` or `app/core/config.py`:
+
 ```env
 API_KEY=your-secure-api-key
 ```
@@ -89,14 +55,14 @@ API_KEY=your-secure-api-key
 
 | Status | Response |
 |--------|----------|
-| `400` | `{"detail": "Bad request message"}` |
-| `401` | `{"detail": "Invalid or missing API key"}` |
-| `404` | `{"detail": "Resource not found"}` |
-| `500` | `{"detail": "Internal server error"}` |
+| 400 | `{"detail": "Bad request message"}` |
+| 401 | `{"detail": "Invalid or missing API key"}` |
+| 404 | `{"detail": "Resource not found"}` |
+| 500 | `{"detail": "Internal server error"}` |
 
 ---
 
-## Core API Endpoints
+## Core Endpoints
 
 ### Discovery
 
@@ -107,6 +73,7 @@ POST /api/v1/discovery
 ```
 
 **Request Body:**
+
 ```json
 {
   "query": "Show me top customers by revenue",
@@ -115,6 +82,7 @@ POST /api/v1/discovery
 ```
 
 **Response:**
+
 ```json
 {
   "query": "Show me top customers by revenue",
@@ -141,11 +109,9 @@ POST /api/v1/discovery
 
 ---
 
-### SQL/Code Generation (Streaming SSE)
+### SQL or Code Generation (Streaming SSE)
 
-Generate SQL or code with real-time status updates via Server-Sent Events.
-
-#### Endpoints
+Generate SQL or code with status updates streamed via Server-Sent Events.
 
 | Endpoint | Purpose |
 |----------|---------|
@@ -154,7 +120,8 @@ Generate SQL or code with real-time status updates via Server-Sent Events.
 | `POST /api/v1/generate-sas` | SAS code generation |
 | `POST /api/v1/generate-python` | Python code generation |
 
-**Request Body (`GenerateSQLRequest`):**
+**Request Body (GenerateSQLRequest):**
+
 ```json
 {
   "query": "Top 10 customers by revenue",
@@ -170,16 +137,16 @@ Generate SQL or code with real-time status updates via Server-Sent Events.
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `query` | string | Natural language question (required) |
-| `context` | DiscoveryContext | Pre-computed context (optional) |
-| `previousSQL` | string | Previous SQL for refinement (optional) |
-| `queryHistory` | string | Conversation history (optional) |
-| `forceGeneral` | boolean | Skip classification, use general LLM (default: false) |
-| `queryMode` | string | `"generate"` or `"search"` (default: generate) |
-| `table_override` | string[] | Lock context to specific tables (optional) |
-| `chart_type_override` | string | Requested chart type (optional) |
+| query | string | Natural language question (required) |
+| context | DiscoveryContext | Pre-computed context (optional) |
+| previousSQL | string | Previous SQL for refinement (optional) |
+| queryHistory | string | Conversation history (optional) |
+| forceGeneral | boolean | Skip classification, use general LLM (default: false) |
+| queryMode | string | `"generate"` or `"search"` (default: generate) |
+| table_override | string[] | Lock context to specific tables (optional) |
+| chart_type_override | string | Requested chart type (optional) |
 
-**SSE Response Events:**
+**SSE Events:**
 
 ```
 data: {"step_id":1,"message":"Analyzing query...","type":"status","timestamp":1234567890.0}
@@ -189,15 +156,14 @@ data: {"step_id":2,"message":"Discovering relevant schemas...","type":"status","
 data: {"type":"result","payload":{"sql":"SELECT TOP 10...","explanation":"...","query_type":"database"}}
 ```
 
-**Event Types:**
-
-| Type | Description |
-|------|-------------|
-| `status` | Progress update with step info |
-| `result` | Final generated SQL/code |
-| `error` | Error message |
+| Event Type | Description |
+|------------|-------------|
+| status | Progress update with step info |
+| result | Final generated SQL or code |
+| error | Error message |
 
 **Example cURL:**
+
 ```bash
 curl -N -H "X-API-Key: your-key" \
   -H "Content-Type: application/json" \
@@ -216,9 +182,11 @@ GET /api/v1/schema/{object_name}
 ```
 
 **Parameters:**
+
 - `object_name`: Format `schema.table` (brackets stripped automatically)
 
-**Response (`TableSchema`):**
+**Response (TableSchema):**
+
 ```json
 {
   "schema_name": "dbo",
@@ -242,6 +210,7 @@ POST /api/v1/execute-python
 ```
 
 **Request Body:**
+
 ```json
 {
   "code": "import pandas as pd\ndf = pd.read_sql(...)",
@@ -250,7 +219,8 @@ POST /api/v1/execute-python
 }
 ```
 
-**Response (`ExecutePythonResponse`):**
+**Response (ExecutePythonResponse):**
+
 ```json
 {
   "success": true,
@@ -288,13 +258,14 @@ POST /api/v1/execute-python
 
 ### Result Summarization
 
-Generate natural language summary of query results.
+Generate a natural language summary of query results.
 
 ```http
 POST /api/v1/summarize-results
 ```
 
 **Request Body:**
+
 ```json
 {
   "user_request": "Top customers by revenue",
@@ -304,6 +275,7 @@ POST /api/v1/summarize-results
 ```
 
 **Response:**
+
 ```json
 {
   "summary": "The top customer is Customer A with $50,000 in revenue..."
@@ -332,6 +304,7 @@ All admin endpoints are prefixed with `/api/v1/admin/` and require authenticatio
 | `/admin/ingest-schemas` | POST | Import schemas from Excel |
 
 **Batch Sync Request:**
+
 ```json
 {
   "table_names": ["dbo.Customers", "Orders", "Products"]
@@ -339,6 +312,7 @@ All admin endpoints are prefixed with `/api/v1/admin/` and require authenticatio
 ```
 
 **Batch Sync Response:**
+
 ```json
 {
   "total": 3,
@@ -363,6 +337,7 @@ All admin endpoints are prefixed with `/api/v1/admin/` and require authenticatio
 | `/admin/ingest-fewshots` | POST | Import from Excel |
 
 **FewShotItem:**
+
 ```json
 {
   "id": "12345",
@@ -387,9 +362,10 @@ All admin endpoints are prefixed with `/api/v1/admin/` and require authenticatio
 | `/admin/values/clear` | POST | Clear all values |
 | `/admin/values/export` | GET | Export to Excel |
 | `/admin/values/template` | GET | Download Excel template |
-| `/admin/ingest-values` | POST | Import from Excel/CSV |
+| `/admin/ingest-values` | POST | Import from Excel or CSV |
 
 **Value Index Item:**
+
 ```json
 {
   "id": "67890",
