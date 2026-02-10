@@ -56,11 +56,15 @@ class VectorStoreBase(ABC):
         pass
         
     @abstractmethod
-    def insert_fewshot_item(self, question: str, sql_query: str, knowledge_type: str = "sql_query"):
+    def insert_fewshot_item(self, question: str, sql_query: str, knowledge_type: str = "sql_query", source_guid: str = None):
         pass
         
     @abstractmethod
     def delete_fewshot_item(self, item_id: int):
+        pass
+
+    @abstractmethod
+    def clear_fewshots_collection(self):
         pass
     
     # --- Value Index Methods ---
@@ -73,11 +77,11 @@ class VectorStoreBase(ABC):
         pass
     
     @abstractmethod
-    def insert_value_item(self, value: str, schema_name: str, table_name: str, column_name: str, metadata: dict = None):
+    def insert_value_item(self, value: str, schema_name: str, table_name: str, column_name: str, metadata: dict = None, source_guid: str = None):
         pass
 
     @abstractmethod
-    def insert_value_items_batch(self, items: List[Dict[str, Any]]):
+    def insert_value_items_batch(self, items: List[Dict[str, Any]], source_guid: str = None):
         """
         Batch insert value items.
         items: List of dicts with keys: value, schema_name, table_name, column_name, metadata (optional)
@@ -171,8 +175,8 @@ class MilvusVectorStore(VectorStoreBase):
 
     def _ensure_values_collection(self):
         """
-        Ensure the value index collection exists with plain_value field for text search.
-        If the collection exists but lacks plain_value, it is dropped and recreated.
+        Ensure the value index collection exists with source_guid partitioning.
+        If the collection exists but lacks required fields, it is dropped and recreated.
         """
         try:
             if utility.has_collection(settings.MILVUS_COLLECTION_VALUES):
@@ -187,9 +191,11 @@ class MilvusVectorStore(VectorStoreBase):
                         utility.drop_collection(settings.MILVUS_COLLECTION_VALUES)
                         # Fall through to recreate
                     else:
-                        # Check schema fields
-                        if "plain_value" in fields:
+                        # Check schema fields - must have both plain_value and source_guid
+                        required_fields = ["plain_value", "source_guid"]
+                        if all(field in fields for field in required_fields):
                             return
+                        print(f"Value collection missing required fields. Recreating.")
                         utility.drop_collection(settings.MILVUS_COLLECTION_VALUES)
                 else:
                     utility.drop_collection(settings.MILVUS_COLLECTION_VALUES)
@@ -197,6 +203,7 @@ class MilvusVectorStore(VectorStoreBase):
             val_fields = [
                 FieldSchema(name="id", dtype=DataType.INT64, is_primary=True, auto_id=True),
                 FieldSchema(name="embedding", dtype=DataType.FLOAT_VECTOR, dim=self._embedding_dim),
+                FieldSchema(name="source_guid", dtype=DataType.VARCHAR, max_length=128, is_partition_key=True),
                 FieldSchema(name="value", dtype=DataType.VARCHAR, max_length=256),
                 FieldSchema(name="plain_value", dtype=DataType.VARCHAR, max_length=256),  # Plain text for search
                 FieldSchema(name="schema_name", dtype=DataType.VARCHAR, max_length=128),
@@ -212,6 +219,7 @@ class MilvusVectorStore(VectorStoreBase):
             }
             coll.create_index(field_name="embedding", index_params=index_params)
             coll.flush()
+            print(f"Created/updated value collection: {settings.MILVUS_COLLECTION_VALUES}")
         except Exception as e:
             print(f"Failed to ensure value collection: {e}")
 
@@ -315,9 +323,8 @@ class MilvusVectorStore(VectorStoreBase):
 
     def _ensure_fewshot_collection(self):
         """
-        Ensure the few-shot collection exists and has the expected fields.
-        If the collection exists but lacks new fields (knowledge_type),
-        it is dropped and recreated.
+        Ensure the few-shot collection exists with source_guid partitioning.
+        If the collection exists but lacks required fields, it is dropped and recreated.
         """
         try:
             if utility.has_collection(settings.MILVUS_COLLECTION_FEWSHOT):
@@ -331,9 +338,11 @@ class MilvusVectorStore(VectorStoreBase):
                         print(f"WARNING: Dimension mismatch for {settings.MILVUS_COLLECTION_FEWSHOT}. Expected {self._embedding_dim}, found {dim}. Recreating collection.")
                         utility.drop_collection(settings.MILVUS_COLLECTION_FEWSHOT)
                     else:
-                        if "knowledge_type" in fields:
+                        required_fields = ["knowledge_type", "source_guid"]
+                        if all(field in fields for field in required_fields):
                             return
                         # Recreate if schema is outdated
+                        print(f"Fewshot collection missing required fields. Recreating.")
                         utility.drop_collection(settings.MILVUS_COLLECTION_FEWSHOT)
                 else:
                     utility.drop_collection(settings.MILVUS_COLLECTION_FEWSHOT)
@@ -341,6 +350,7 @@ class MilvusVectorStore(VectorStoreBase):
             fewshot_fields = [
                 FieldSchema(name="id", dtype=DataType.INT64, is_primary=True, auto_id=True),
                 FieldSchema(name="embedding", dtype=DataType.FLOAT_VECTOR, dim=self._embedding_dim),
+                FieldSchema(name="source_guid", dtype=DataType.VARCHAR, max_length=128, is_partition_key=True),
                 FieldSchema(name="question", dtype=DataType.VARCHAR, max_length=512),
                 FieldSchema(name="sql_query", dtype=DataType.VARCHAR, max_length=8192),  # Also used for R/SAS code
                 FieldSchema(name="knowledge_type", dtype=DataType.VARCHAR, max_length=32)  # "general", "sql_query", "r_code", "sas_code"
@@ -1047,13 +1057,13 @@ class MilvusVectorStore(VectorStoreBase):
         
         res = collection.query(
             expr="id >= 0",
-            output_fields=["id", "question", "sql_query", "knowledge_type"],
+            output_fields=["id", "question", "sql_query", "knowledge_type", "source_guid"],
             limit=1000,
             consistency_level="Strong"
         )
         return res
 
-    def insert_fewshot_item(self, question: str, sql_query: str, knowledge_type: str = "sql_query"):
+    def insert_fewshot_item(self, question: str, sql_query: str, knowledge_type: str = "sql_query", source_guid: str = None):
         if not self._connected:
             raise Exception("Milvus is not connected. Cannot insert fewshot item.")
         self._ensure_fewshot_collection()
@@ -1061,9 +1071,12 @@ class MilvusVectorStore(VectorStoreBase):
         
         embedding = self._get_embedding(question)
         
-        # Schema: [embedding], [question], [sql_query], [knowledge_type]
+        resolved_source_guid = source_guid or self._resolve_default_source_guid()
+        
+        # Schema: [embedding], [source_guid], [question], [sql_query], [knowledge_type]
         data = [
             [embedding],
+            [resolved_source_guid],
             [question],
             [sql_query],
             [knowledge_type]
@@ -1100,13 +1113,13 @@ class MilvusVectorStore(VectorStoreBase):
         
         res = collection.query(
             expr="id >= 0",
-            output_fields=["id", "value", "schema_name", "table_name", "column_name"],
+            output_fields=["id", "value", "schema_name", "table_name", "column_name", "source_guid"],
             limit=10000,
             consistency_level="Strong"
         )
         return res
     
-    def insert_value_item(self, value: str, schema_name: str, table_name: str, column_name: str, metadata: dict = None):
+    def insert_value_item(self, value: str, schema_name: str, table_name: str, column_name: str, metadata: dict = None, source_guid: str = None):
         if not self._connected:
             raise Exception("Milvus is not connected. Cannot insert value item.")
         self._ensure_values_collection()
@@ -1117,9 +1130,12 @@ class MilvusVectorStore(VectorStoreBase):
         if metadata is None:
             metadata = {}
         
-        # Schema: [embedding], [value], [plain_value], [schema_name], [table_name], [column_name]
+        resolved_source_guid = source_guid or self._resolve_default_source_guid()
+        
+        # Schema: [embedding], [source_guid], [value], [plain_value], [schema_name], [table_name], [column_name]
         data = [
             [embedding],
+            [resolved_source_guid],
             [value],
             [value.lower()],  # Store lowercase for case-insensitive search
             [schema_name],
@@ -1130,7 +1146,7 @@ class MilvusVectorStore(VectorStoreBase):
         collection.insert(data)
         collection.flush()
     
-    def insert_value_items_batch(self, items: List[Dict[str, Any]]):
+    def insert_value_items_batch(self, items: List[Dict[str, Any]], source_guid: str = None):
         if not items:
             return
         if not self._connected:
@@ -1146,8 +1162,10 @@ class MilvusVectorStore(VectorStoreBase):
         embeddings = self._get_embeddings_batch(values)
         
         # Prepare data columns
-        # Schema: [embedding], [value], [plain_value], [schema_name], [table_name], [column_name]
+        # Schema: [embedding], [source_guid], [value], [plain_value], [schema_name], [table_name], [column_name]
+        resolved_source_guid = source_guid or self._resolve_default_source_guid()
         col_embeddings = embeddings
+        col_source_guids = [resolved_source_guid] * len(items)
         col_values = values
         col_plain_values = [v.lower() for v in values]
         col_schema_names = [str(item['schema_name']) for item in items]
@@ -1156,6 +1174,7 @@ class MilvusVectorStore(VectorStoreBase):
         
         data = [
             col_embeddings,
+            col_source_guids,
             col_values,
             col_plain_values,
             col_schema_names,
@@ -1184,6 +1203,20 @@ class MilvusVectorStore(VectorStoreBase):
             return
         collection = Collection(settings.MILVUS_COLLECTION_VALUES)
         # Ensure collection is loaded before delete
+        try:
+            collection.load()
+        except Exception:
+            pass
+        collection.delete("id >= 0")
+        collection.flush()
+
+    def clear_fewshots_collection(self):
+        if not self._connected:
+            return
+        self._ensure_fewshot_collection()
+        if not utility.has_collection(settings.MILVUS_COLLECTION_FEWSHOT):
+            return
+        collection = Collection(settings.MILVUS_COLLECTION_FEWSHOT)
         try:
             collection.load()
         except Exception:
@@ -1456,16 +1489,22 @@ class NullVectorStore(VectorStoreBase):
     def get_all_fewshots(self) -> List[Dict[str, Any]]:
         return []
 
-    def insert_fewshot_item(self, question: str, sql_query: str, knowledge_type: str = "sql_query"):
+    def insert_fewshot_item(self, question: str, sql_query: str, knowledge_type: str = "sql_query", source_guid: str = None):
         return None
 
     def delete_fewshot_item(self, item_id: int):
         return None
 
+    def clear_fewshots_collection(self):
+        return None
+
     def get_all_values(self) -> List[Dict[str, Any]]:
         return []
 
-    def insert_value_item(self, value: str, schema_name: str, table_name: str, column_name: str, metadata: dict = None):
+    def insert_value_item(self, value: str, schema_name: str, table_name: str, column_name: str, metadata: dict = None, source_guid: str = None):
+        return None
+
+    def insert_value_items_batch(self, items: List[Dict[str, Any]], source_guid: str = None):
         return None
 
     def delete_value_item(self, item_id: int):

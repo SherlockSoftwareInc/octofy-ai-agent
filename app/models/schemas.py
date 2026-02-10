@@ -25,6 +25,7 @@ class TableSchema(BaseModel):
     table_type: Optional[str] = "table"  # 'table' or 'view'
     description: Optional[str] = None  # Rich Markdown description (also used for embedding)
     columns: List[ColumnInfo] = []
+    source_guid: Optional[str] = None  # Links to data source for partitioning
 
 class DataObject(BaseModel):
     """Unified model for all database objects (tables, views, SPs, functions)"""
@@ -349,6 +350,7 @@ class SyncRequest(BaseModel):
 
 class BatchSyncRequest(BaseModel):
     table_names: List[str] = Field(..., description="List of table names to sync (format: 'table' or 'schema.table')")
+    source_id: Optional[str] = Field(None, description="Data source ID to use for database connection")
 
 class BatchSyncResult(BaseModel):
     table_name: str

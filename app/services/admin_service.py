@@ -1,4 +1,4 @@
-from app.core.database import get_db_engine
+from app.core.database import get_db_engine, get_database_engine
 from typing import List, Dict, Any, Optional
 from app.models.schemas import TableSchema, AdminSchemaStatus, ColumnInfo, ValueIndexItem
 from app.services.vector_store import get_vector_store
@@ -211,7 +211,7 @@ def get_schema_status(include_database_inspection: bool = False) -> List[AdminSc
     
     return status_list
 
-def sync_specific_table(schema_name: str, table_name: str, custom_description: Optional[str] = None):
+def sync_specific_table(schema_name: str, table_name: str, custom_description: Optional[str] = None, source_id: Optional[str] = None):
     """
     Sync a specific table or view from the database to the vector store.
     
@@ -220,10 +220,11 @@ def sync_specific_table(schema_name: str, table_name: str, custom_description: O
         table_name: Table or view name
         custom_description: Optional custom table description. If not provided,
                            attempts to extract from database, then falls back to default.
+        source_id: Optional data source ID for database connection
     """
     vector_store = get_vector_store()
     # 1. Inspect DB
-    engine = get_db_engine()
+    engine = get_database_engine(source_id) if source_id else get_db_engine()
     inspector = inspect(engine)
     columns = inspector.get_columns(table_name, schema=schema_name)
     
@@ -291,6 +292,10 @@ def sync_specific_table(schema_name: str, table_name: str, custom_description: O
         description=markdown_description,
         columns=col_list
     )
+    
+    # Set source_guid if a specific source_id was provided
+    if source_id:
+        schema_obj.source_guid = source_id
     
     # 7. Update Vector Store
     vector_store.insert_schema_embedding(schema_obj, embedding_text)
@@ -366,17 +371,18 @@ def validate_table_exists(engine, schema_name: str, table_name: str) -> tuple[bo
     except Exception as e:
         return False, "", f"Error checking object '{schema_name}.{table_name}': {str(e)}"
 
-def batch_sync_tables(table_identifiers: List[str]) -> Dict[str, Any]:
+def batch_sync_tables(table_identifiers: List[str], source_id: Optional[str] = None) -> Dict[str, Any]:
     """
     Batch sync multiple tables from the database to the vector store.
     
     Args:
         table_identifiers: List of table names in format 'table' or 'schema.table'
+        source_id: Optional data source ID for database connection
     
     Returns:
         Dictionary with sync results
     """
-    engine = get_db_engine()
+    engine = get_database_engine(source_id) if source_id else get_db_engine()
     results = []
     successful = 0
     failed = 0
@@ -400,7 +406,7 @@ def batch_sync_tables(table_identifiers: List[str]) -> Dict[str, Any]:
                 continue
             
             # Sync the table
-            sync_specific_table(schema_name, table_name)
+            sync_specific_table(schema_name, table_name, source_id=source_id)
             results.append({
                 "table_name": table_name,
                 "schema_name": schema_name,
@@ -440,7 +446,7 @@ def batch_sync_tables(table_identifiers: List[str]) -> Dict[str, Any]:
 
 # --- Value Index Management ---
 
-def ingest_values_from_excel(file_content: bytes, mode: str = "append", file_type: str = "xlsx", progress_callback=None) -> Dict[str, Any]:
+def ingest_values_from_excel(file_content: bytes, mode: str = "append", file_type: str = "xlsx", progress_callback=None, source_id: str = None) -> Dict[str, Any]:
     """
     Parse Excel or CSV file and ingest values into the value index.
     
@@ -555,7 +561,7 @@ def ingest_values_from_excel(file_content: bytes, mode: str = "append", file_typ
         for i in range(0, len(all_items), batch_size):
             batch = all_items[i:i + batch_size]
             try:
-                vector_store.insert_value_items_batch(batch)
+                vector_store.insert_value_items_batch(batch, source_guid=source_id)
                 success_count += len(batch)
             except Exception as e:
                 print(f"Failed to ingest batch {i // batch_size}: {e}")
@@ -618,7 +624,7 @@ def clear_all_values() -> bool:
     except Exception as e:
         print(f"Error clearing values: {e}")
         return False
-def ingest_schemas_from_excel(file_content: bytes, mode: str = "append", progress_callback=None) -> Dict[str, Any]:
+def ingest_schemas_from_excel(file_content: bytes, mode: str = "append", progress_callback=None, source_id: str = None) -> Dict[str, Any]:
     """
     Parse Excel file and ingest schema/table metadata.
     
@@ -701,6 +707,10 @@ def ingest_schemas_from_excel(file_content: bytes, mode: str = "append", progres
                     columns=[]  # No columns in this import
                 )
                 
+                # Set source_guid if provided
+                if source_id:
+                    schema_obj.source_guid = source_id
+                
                 # Insert into vector store - description is used for both embedding and storage
                 text_for_embedding = str(row['description'])
                 vector_store.insert_schema_embedding(schema_obj, text_for_embedding, str(row['table_type']))
@@ -730,7 +740,7 @@ def ingest_schemas_from_excel(file_content: bytes, mode: str = "append", progres
             "rows_processed": 0
         }
 
-def ingest_fewshots_from_excel(file_content: bytes, mode: str = "append", progress_callback=None) -> Dict[str, Any]:
+def ingest_fewshots_from_excel(file_content: bytes, mode: str = "append", progress_callback=None, source_id: str = None) -> Dict[str, Any]:
     """
     Parse Excel file and ingest few-shot examples.
     
@@ -808,7 +818,8 @@ def ingest_fewshots_from_excel(file_content: bytes, mode: str = "append", progre
                 vector_store.insert_fewshot_item(
                     question=str(row['question']),
                     sql_query=str(row['sql_query']),
-                    knowledge_type=str(row['knowledge_type'])
+                    knowledge_type=str(row['knowledge_type']),
+                    source_guid=source_id
                 )
                 success_count += 1
             except Exception as e:

@@ -1,4 +1,4 @@
-﻿from fastapi import APIRouter, HTTPException, UploadFile, File, Depends
+﻿from fastapi import APIRouter, HTTPException, UploadFile, File, Form, Depends
 from fastapi.responses import StreamingResponse, FileResponse
 from typing import List, Dict, Optional
 from app.models.schemas import (
@@ -79,7 +79,7 @@ def batch_sync(request: BatchSyncRequest, current_user: User = Depends(get_curre
         if not request.table_names:
             raise HTTPException(status_code=400, detail="table_names list cannot be empty")
         
-        result = batch_sync_tables(request.table_names)
+        result = batch_sync_tables(request.table_names, source_id=request.source_id)
         return BatchSyncResponse(**result)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -143,7 +143,7 @@ def export_schemas(current_user: User = Depends(get_current_active_admin)):
         raise HTTPException(status_code=500, detail=f"Error exporting schemas: {str(e)}")
 
 @router.post("/ingest-schemas")
-async def ingest_schemas(file: UploadFile = File(...), mode: str = "append", current_user: User = Depends(get_current_active_admin)):
+async def ingest_schemas(file: UploadFile = File(...), mode: str = Form("append"), source_id: Optional[str] = Form(None), current_user: User = Depends(get_current_active_admin)):
     """
     Upload an Excel file to ingest schema/table metadata.
     
@@ -155,6 +155,9 @@ async def ingest_schemas(file: UploadFile = File(...), mode: str = "append", cur
     global _upload_progress
     
     try:
+        if not source_id:
+            raise HTTPException(status_code=400, detail="A data source must be selected before uploading. Please select a data source and try again.")
+        
         if not file.filename.endswith(('.xlsx', '.xls')):
             raise HTTPException(status_code=400, detail="File must be Excel format (.xlsx or .xls)")
         
@@ -171,7 +174,7 @@ async def ingest_schemas(file: UploadFile = File(...), mode: str = "append", cur
             global _upload_progress
             _upload_progress = {"current": current, "total": total, "status": "processing"}
         
-        result = ingest_schemas_from_excel(contents, mode, progress_callback)
+        result = ingest_schemas_from_excel(contents, mode, progress_callback, source_id=source_id)
         
         # Mark as complete
         _upload_progress = {"current": result.get("rows_processed", 0), "total": result.get("total_rows", 0), "status": "complete"}
@@ -464,7 +467,7 @@ def discover_objects(request: DiscoverObjectsRequest, current_user: User = Depen
         raise HTTPException(status_code=500, detail=f"Failed to discover objects: {str(e)}")
 
 @router.post("/ingest-fewshots")
-async def ingest_fewshots(file: UploadFile = File(...), mode: str = "append", current_user: User = Depends(get_current_active_admin)):
+async def ingest_fewshots(file: UploadFile = File(...), mode: str = Form("append"), source_id: Optional[str] = Form(None), current_user: User = Depends(get_current_active_admin)):
     """
     Upload an Excel file to ingest few-shot examples.
     
@@ -475,6 +478,9 @@ async def ingest_fewshots(file: UploadFile = File(...), mode: str = "append", cu
     global _upload_progress
     
     try:
+        if not source_id:
+            raise HTTPException(status_code=400, detail="A data source must be selected before uploading. Please select a data source and try again.")
+        
         if not file.filename.endswith(('.xlsx', '.xls')):
             raise HTTPException(status_code=400, detail="File must be Excel format (.xlsx or .xls)")
         
@@ -491,7 +497,7 @@ async def ingest_fewshots(file: UploadFile = File(...), mode: str = "append", cu
             global _upload_progress
             _upload_progress = {"current": current, "total": total, "status": "processing"}
         
-        result = ingest_fewshots_from_excel(contents, mode, progress_callback)
+        result = ingest_fewshots_from_excel(contents, mode, progress_callback, source_id=source_id)
         
         # Mark as complete
         _upload_progress = {"current": result.get("rows_processed", 0), "total": result.get("total_rows", 0), "status": "complete"}
@@ -584,7 +590,7 @@ def export_fewshots(current_user: User = Depends(get_current_active_admin)):
 # --- Value Index Management ---
 
 @router.post("/ingest-values")
-async def ingest_values(file: UploadFile = File(...), mode: str = "append", current_user: User = Depends(get_current_active_admin)):
+async def ingest_values(file: UploadFile = File(...), mode: str = Form("append"), source_id: Optional[str] = Form(None), current_user: User = Depends(get_current_active_admin)):
     """
     Upload an Excel or CSV file to ingest values into the value index.
     
@@ -598,6 +604,9 @@ async def ingest_values(file: UploadFile = File(...), mode: str = "append", curr
     global _upload_progress
     
     try:
+        if not source_id:
+            raise HTTPException(status_code=400, detail="A data source must be selected before uploading. Please select a data source and try again.")
+        
         if not file.filename.endswith(('.xlsx', '.xls', '.csv')):
             raise HTTPException(status_code=400, detail="File must be Excel (.xlsx/.xls) or CSV format")
         
@@ -617,7 +626,7 @@ async def ingest_values(file: UploadFile = File(...), mode: str = "append", curr
             global _upload_progress
             _upload_progress = {"current": current, "total": total, "status": "processing"}
         
-        result = ingest_values_from_excel(contents, mode, file_type, progress_callback)
+        result = ingest_values_from_excel(contents, mode, file_type, progress_callback, source_id=source_id)
         
         # Mark as complete
         _upload_progress = {"current": result.get("rows_processed", 0), "total": result.get("total_rows", 0), "status": "complete"}

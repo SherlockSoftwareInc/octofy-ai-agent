@@ -3,6 +3,7 @@ import { api } from '../../api/client';
 import type { FewShotItem } from '../../api/client';
 import { Trash2, Plus, BrainCircuit, Upload, Loader2, CheckCircle, AlertCircle, Download, RefreshCw, Search } from 'lucide-react';
 import { Pagination } from '../../components/Pagination';
+import { DataSourceSelector } from '../../components/DataSourceSelector';
 
 interface UploadStatus {
     status: 'idle' | 'loading' | 'success' | 'error';
@@ -30,6 +31,7 @@ export const FewShotManager: React.FC<FewShotManagerProps> = ({ onUploadStateCha
     const [uploadStatus, setUploadStatus] = useState<UploadStatus>({ status: 'idle' });
     const [uploadProgress, setUploadProgress] = useState(0);
     const [uploadMode, setUploadMode] = useState<'append' | 'replace'>('append');
+    const [selectedSourceId, setSelectedSourceId] = useState('');
     const [searchQuery, setSearchQuery] = useState('');
     const [currentPage, setCurrentPage] = useState(0);
 
@@ -102,6 +104,16 @@ export const FewShotManager: React.FC<FewShotManagerProps> = ({ onUploadStateCha
         const file = event.target.files?.[0];
         if (!file) return;
 
+        // Validate data source selection
+        if (!selectedSourceId) {
+            setUploadStatus({
+                status: 'error',
+                message: 'Please select a data source before uploading.',
+            });
+            event.target.value = '';
+            return;
+        }
+
         // Validate file type - Excel only
         if (!file.name.endsWith('.xlsx') && !file.name.endsWith('.xls')) {
             setUploadStatus({
@@ -117,7 +129,7 @@ export const FewShotManager: React.FC<FewShotManagerProps> = ({ onUploadStateCha
         try {
             const response = await api.admin.ingestFewShots(file, uploadMode, (progress) => {
                 setUploadProgress(progress.percentage);
-            });
+            }, selectedSourceId || undefined);
 
             setUploadStatus({
                 status: 'success',
@@ -222,6 +234,13 @@ export const FewShotManager: React.FC<FewShotManagerProps> = ({ onUploadStateCha
                 <h3 className="text-lg font-semibold text-white mb-4">Upload Examples (Excel)</h3>
 
                 <div className="space-y-4">
+                    {/* Data Source Selection */}
+                    <DataSourceSelector
+                        selectedSourceId={selectedSourceId}
+                        onSourceChange={setSelectedSourceId}
+                        disabled={uploadStatus.status === 'loading'}
+                    />
+
                     {/* Mode Selection */}
                     <div className="flex gap-4">
                         <label className="flex items-center gap-2 cursor-pointer">
@@ -245,19 +264,25 @@ export const FewShotManager: React.FC<FewShotManagerProps> = ({ onUploadStateCha
                     </div>
 
                     {/* Upload Area */}
-                    <div className="border-2 border-dashed border-slate-700 rounded-lg p-8 text-center hover:border-indigo-500/50 transition">
+                    <div className={`border-2 border-dashed rounded-lg p-8 text-center transition ${!selectedSourceId ? 'border-slate-800 opacity-50 cursor-not-allowed' : 'border-slate-700 hover:border-indigo-500/50'}`}>
                         <input
                             type="file"
                             id="fewshot-file-upload"
                             accept=".xlsx,.xls"
                             onChange={handleFileUpload}
-                            disabled={uploadStatus.status === 'loading'}
+                            disabled={uploadStatus.status === 'loading' || !selectedSourceId}
                             className="hidden"
                         />
-                        <label htmlFor="fewshot-file-upload" className="cursor-pointer block">
+                        <label htmlFor="fewshot-file-upload" className={`block ${!selectedSourceId ? 'cursor-not-allowed' : 'cursor-pointer'}`}>
                             <Upload className="w-8 h-8 text-slate-400 mx-auto mb-2" />
-                            <p className="text-slate-300 font-medium">Click to upload or drag and drop</p>
-                            <p className="text-slate-500 text-sm">Excel files only (.xlsx, .xls)</p>
+                            {!selectedSourceId ? (
+                                <p className="text-slate-500 font-medium">Select a data source above to enable upload</p>
+                            ) : (
+                                <>
+                                    <p className="text-slate-300 font-medium">Click to upload or drag and drop</p>
+                                    <p className="text-slate-500 text-sm">Excel files only (.xlsx, .xls)</p>
+                                </>
+                            )}
                         </label>
                     </div>
 

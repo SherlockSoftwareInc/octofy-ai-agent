@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo, type FC } from 'react';
 import { Upload, Download, Trash2, Loader2, CheckCircle, AlertCircle, RefreshCw, Search } from 'lucide-react';
 import { api } from '../../api/client';
 import { Pagination } from '../../components/Pagination';
+import { DataSourceSelector } from '../../components/DataSourceSelector';
 
 interface ValueItem {
   id: number;
@@ -28,6 +29,7 @@ export const ValueManager: FC<ValueManagerProps> = ({ onUploadStateChange }) => 
   const [isLoading, setIsLoading] = useState(false);
   const [uploadMode, setUploadMode] = useState<'append' | 'replace'>('append');
   const [uploadProgress, setUploadProgress] = useState(0);
+  const [selectedSourceId, setSelectedSourceId] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
   const [currentPage, setCurrentPage] = useState(0);
   const [isSearching, setIsSearching] = useState(false);
@@ -81,6 +83,16 @@ export const ValueManager: FC<ValueManagerProps> = ({ onUploadStateChange }) => 
     const file = event.target.files?.[0];
     if (!file) return;
 
+    // Validate data source selection
+    if (!selectedSourceId) {
+      setUploadStatus({
+        status: 'error',
+        message: 'Please select a data source before uploading.',
+      });
+      event.target.value = '';
+      return;
+    }
+
     // Validate file type
     const validTypes = ['application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', 'text/csv', 'application/vnd.ms-excel'];
     if (!validTypes.includes(file.type) && !file.name.endsWith('.xlsx') && !file.name.endsWith('.csv')) {
@@ -97,7 +109,7 @@ export const ValueManager: FC<ValueManagerProps> = ({ onUploadStateChange }) => 
     try {
       const response = await api.admin.ingestValues(file, uploadMode, (progress) => {
         setUploadProgress(progress.percentage);
-      });
+      }, selectedSourceId || undefined);
 
       setUploadStatus({
         status: 'success',
@@ -280,6 +292,13 @@ export const ValueManager: FC<ValueManagerProps> = ({ onUploadStateChange }) => 
         <h3 className="text-lg font-semibold text-white mb-4">Upload Values</h3>
 
         <div className="space-y-4">
+          {/* Data Source Selection */}
+          <DataSourceSelector
+            selectedSourceId={selectedSourceId}
+            onSourceChange={setSelectedSourceId}
+            disabled={uploadStatus.status === 'loading'}
+          />
+
           {/* Mode Selection */}
           <div className="flex gap-4">
             <label className="flex items-center gap-2 cursor-pointer">
@@ -303,19 +322,25 @@ export const ValueManager: FC<ValueManagerProps> = ({ onUploadStateChange }) => 
           </div>
 
           {/* Upload Area */}
-          <div className="border-2 border-dashed border-slate-700 rounded-lg p-8 text-center hover:border-indigo-500/50 transition">
+          <div className={`border-2 border-dashed rounded-lg p-8 text-center transition ${!selectedSourceId ? 'border-slate-800 opacity-50 cursor-not-allowed' : 'border-slate-700 hover:border-indigo-500/50'}`}>
             <input
               type="file"
               id="file-upload"
               accept=".xlsx,.xls,.csv"
               onChange={handleFileUpload}
-              disabled={uploadStatus.status === 'loading'}
+              disabled={uploadStatus.status === 'loading' || !selectedSourceId}
               className="hidden"
             />
-            <label htmlFor="file-upload" className="cursor-pointer block">
+            <label htmlFor="file-upload" className={`block ${!selectedSourceId ? 'cursor-not-allowed' : 'cursor-pointer'}`}>
               <Upload className="w-8 h-8 text-slate-400 mx-auto mb-2" />
-              <p className="text-slate-300 font-medium">Click to upload or drag and drop</p>
-              <p className="text-slate-500 text-sm">Excel (.xlsx) or CSV files</p>
+              {!selectedSourceId ? (
+                <p className="text-slate-500 font-medium">Select a data source above to enable upload</p>
+              ) : (
+                <>
+                  <p className="text-slate-300 font-medium">Click to upload or drag and drop</p>
+                  <p className="text-slate-500 text-sm">Excel (.xlsx) or CSV files</p>
+                </>
+              )}
             </label>
           </div>
 

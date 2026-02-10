@@ -652,8 +652,8 @@ export const api = {
         syncAllSchemas: async () => {
             await axios.post(`${API_BASE_URL}/admin/schema/sync-full`);
         },
-        batchSyncTables: async (tableNames: string[]) => {
-            const response = await axios.post(`${API_BASE_URL}/admin/schema/batch-sync`, { table_names: tableNames });
+        batchSyncTables: async (tableNames: string[], sourceId?: string) => {
+            const response = await axios.post(`${API_BASE_URL}/admin/schema/batch-sync`, { table_names: tableNames, source_id: sourceId || undefined });
             return response.data;
         },
         getFewShots: async (): Promise<FewShotItem[]> => {
@@ -721,10 +721,13 @@ export const api = {
             });
             return response.data;
         },
-        ingestValues: async (file: File, mode: 'append' | 'replace' = 'append', onProgress?: (progress: { current: number; total: number; percentage: number }) => void) => {
+        ingestValues: async (file: File, mode: 'append' | 'replace' = 'append', onProgress?: (progress: { current: number; total: number; percentage: number }) => void, sourceId?: string) => {
             const formData = new FormData();
             formData.append('file', file);
             formData.append('mode', mode);
+            if (sourceId) {
+                formData.append('source_id', sourceId);
+            }
 
             // Create abort controller for cleanup
             const abortController = new AbortController();
@@ -814,10 +817,13 @@ export const api = {
             });
             return response.data;
         },
-        ingestSchemas: async (file: File, mode: 'append' | 'replace' = 'append', onProgress?: (progress: { current: number; total: number; percentage: number }) => void) => {
+        ingestSchemas: async (file: File, mode: 'append' | 'replace' = 'append', onProgress?: (progress: { current: number; total: number; percentage: number }) => void, sourceId?: string) => {
             const formData = new FormData();
             formData.append('file', file);
             formData.append('mode', mode);
+            if (sourceId) {
+                formData.append('source_id', sourceId);
+            }
 
             // Create abort controller for cleanup
             const abortController = new AbortController();
@@ -876,10 +882,13 @@ export const api = {
                 throw error;
             }
         },
-        ingestFewShots: async (file: File, mode: 'append' | 'replace' = 'append', onProgress?: (progress: { current: number; total: number; percentage: number }) => void) => {
+        ingestFewShots: async (file: File, mode: 'append' | 'replace' = 'append', onProgress?: (progress: { current: number; total: number; percentage: number }) => void, sourceId?: string) => {
             const formData = new FormData();
             formData.append('file', file);
             formData.append('mode', mode);
+            if (sourceId) {
+                formData.append('source_id', sourceId);
+            }
 
             // Create abort controller for cleanup
             const abortController = new AbortController();
