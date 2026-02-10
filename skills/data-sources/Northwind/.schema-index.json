@@ -4,7 +4,18 @@
   "schemas": [
     {
       "schema_name": "dbo",
-      "description": "Contains 22 tables and 16 views",
+      "description": "Sales, orders, product catalog, and customer data for the Northwind sample database.",
+      "keywords": [
+        "sales",
+        "orders",
+        "products",
+        "customers",
+        "employees",
+        "suppliers",
+        "shipping",
+        "inventory",
+        "categories"
+      ],
       "object_index_file": "schemas/dbo/.object-index.json",
       "total_objects": 38,
       "tables": 22,

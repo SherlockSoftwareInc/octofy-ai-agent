@@ -1,4 +1,4 @@
-﻿from fastapi import APIRouter, HTTPException, UploadFile, File, Form, Depends
+from fastapi import APIRouter, HTTPException, UploadFile, File, Form, Depends
 from fastapi.responses import StreamingResponse, FileResponse
 from typing import List, Dict, Optional
 from app.models.schemas import (
@@ -1151,16 +1151,18 @@ def search_schemas(
     data_source: Optional[str] = None,
     object_type: Optional[str] = None,
     top_k: int = 10,
+    domain: Optional[str] = None,
     current_user: User = Depends(get_current_active_admin)
 ):
     """
-    Search for data objects using keyword-based index search
-    
+    Search for data objects using keyword-based index search (two-stage schema-first discovery).
+
     Args:
         query: Search keywords
         data_source: Optional filter by data source name
         object_type: Optional filter by object type (Table/View)
         top_k: Maximum number of results (default: 10)
+        domain: Optional domain filter (e.g. Sales, HR) to restrict to schemas matching this domain
     """
     try:
         skills_service = get_skills_service()
@@ -1168,7 +1170,8 @@ def search_schemas(
             query=query,
             data_source=data_source,
             object_type=object_type,
-            top_k=top_k
+            top_k=top_k,
+            domain=domain,
         )
         return {
             "query": query,
@@ -1240,17 +1243,20 @@ def get_object_by_name(
 @router.get("/skills/statistics")
 def get_schema_statistics(
     data_source: Optional[str] = None,
+    query: Optional[str] = None,
     current_user: User = Depends(get_current_active_admin)
 ):
     """
-    Get statistics about available schemas using index files
-    
+    Get statistics about available schemas using index files.
+    When query is provided, also returns recommended_schemas (top 10 by relevance to the query).
+
     Args:
         data_source: Optional filter by data source name
+        query: Optional search query; when set, response includes recommended_schemas
     """
     try:
         skills_service = get_skills_service()
-        stats = skills_service.get_schema_statistics(data_source=data_source)
+        stats = skills_service.get_schema_statistics(data_source=data_source, query=query)
         return stats
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

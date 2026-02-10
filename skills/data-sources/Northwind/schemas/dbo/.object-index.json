@@ -1,17 +1,31 @@
 {
   "schema": "dbo",
-  "total_objects": 38,
+  "total_objects": 39,
   "tables": 22,
   "views": 16,
   "objects": [
+    {
+      "object_type": "unknown",
+      "schema_name": "unknown",
+      "object_name": "_schema",
+      "description": "",
+      "keywords": [
+        "schema"
+      ],
+      "file_name": "_schema.md"
+    },
     {
       "object_type": "Table",
       "schema_name": "dbo",
       "object_name": "ActiveProductsFedarated",
       "description": "Stores details of products that are currently active and federated across multiple systems or sources within the organization.",
       "keywords": [
-        "active",
+        "stores",
+        "details",
         "products",
+        "that",
+        "currently",
+        "active",
         "fedarated"
       ],
       "file_name": "dbo.ActiveProductsFedarated.md"
@@ -22,10 +36,29 @@
       "object_name": "AddressSplit",
       "description": "Contains normalized address information with separate fields for address line, city, region, postal code, country, and contact type for entities such as customers, employees, or suppliers.",
       "keywords": [
+        "contains",
+        "normalized",
         "address",
+        "information",
+        "separate",
         "split"
       ],
       "file_name": "dbo.AddressSplit.md"
+    },
+    {
+      "object_type": "View",
+      "schema_name": "dbo",
+      "object_name": "Alphabetical list of products",
+      "description": "View providing an alphabetical listing of products with related supplier and category information, including inventory and pricing details.",
+      "keywords": [
+        "view",
+        "providing",
+        "alphabetical",
+        "listing",
+        "products",
+        "list"
+      ],
+      "file_name": "dbo.Alphabetical list of products.md"
     },
     {
       "object_type": "Table",
@@ -33,8 +66,12 @@
       "object_name": "BaseContactSplit",
       "description": "Stores contact information for companies, including contact names, phone numbers, and contact types.",
       "keywords": [
-        "base",
+        "stores",
         "contact",
+        "information",
+        "companies",
+        "including",
+        "base",
         "split"
       ],
       "file_name": "dbo.BaseContactSplit.md"
@@ -45,6 +82,11 @@
       "object_name": "BaseProductsFedarated",
       "description": "Contains core product information that is synchronized across multiple systems or sources within the specialty foods sales database.",
       "keywords": [
+        "contains",
+        "core",
+        "product",
+        "information",
+        "that",
         "base",
         "products",
         "fedarated"
@@ -57,9 +99,29 @@
       "object_name": "Categories",
       "description": "Stores information about product categories, allowing for the classification and organization of products within the sales database.",
       "keywords": [
+        "stores",
+        "information",
+        "about",
+        "product",
         "categories"
       ],
       "file_name": "dbo.Categories.md"
+    },
+    {
+      "object_type": "View",
+      "schema_name": "dbo",
+      "object_name": "Category Sales for 1997",
+      "description": "Aggregated sales report showing total revenue by product category for the year 1997. This table provides summarized sales data for analysis and reporting purposes.",
+      "keywords": [
+        "aggregated",
+        "sales",
+        "report",
+        "showing",
+        "total",
+        "category",
+        "for"
+      ],
+      "file_name": "dbo.Category Sales for 1997.md"
     },
     {
       "object_type": "Table",
@@ -67,7 +129,11 @@
       "object_name": "ContactNameSplit",
       "description": "Stores parsed contact information, including separated name, title, fax number, and contact type for individuals associated with the business.",
       "keywords": [
+        "stores",
+        "parsed",
         "contact",
+        "information",
+        "including",
         "name",
         "split"
       ],
@@ -79,9 +145,46 @@
       "object_name": "Contacts",
       "description": "The table stores detailed contact information for individuals or organizations.",
       "keywords": [
+        "table",
+        "stores",
+        "detailed",
+        "contact",
+        "information",
         "contacts"
       ],
       "file_name": "dbo.Contacts.md"
+    },
+    {
+      "object_type": "View",
+      "schema_name": "dbo",
+      "object_name": "Current Product List",
+      "description": "Stores a current list of active products available for sale in the specialty foods business. This table typically contains a subset of products that are currently being offered to customers.",
+      "keywords": [
+        "stores",
+        "current",
+        "list",
+        "active",
+        "products",
+        "product"
+      ],
+      "file_name": "dbo.Current Product List.md"
+    },
+    {
+      "object_type": "View",
+      "schema_name": "dbo",
+      "object_name": "Customer and Suppliers by City",
+      "description": "Aggregated view of customers and suppliers organized by their city location, providing a consolidated reference for business contacts.",
+      "keywords": [
+        "aggregated",
+        "view",
+        "customers",
+        "suppliers",
+        "organized",
+        "customer",
+        "and",
+        "city"
+      ],
+      "file_name": "dbo.Customer and Suppliers by City.md"
     },
     {
       "object_type": "Table",
@@ -89,6 +192,11 @@
       "object_name": "CustomerCustomerDemo",
       "description": "Associative table linking customers to their customer demographic types.",
       "keywords": [
+        "associative",
+        "table",
+        "linking",
+        "customers",
+        "their",
         "customer",
         "demo"
       ],
@@ -100,6 +208,10 @@
       "object_name": "CustomerDemographics",
       "description": "Stores information about different customer demographic categories used to classify customers.",
       "keywords": [
+        "stores",
+        "information",
+        "about",
+        "different",
         "customer",
         "demographics"
       ],
@@ -111,6 +223,10 @@
       "object_name": "Customers",
       "description": "Stores detailed information about customers, including company details, contact information, and address data.",
       "keywords": [
+        "stores",
+        "detailed",
+        "information",
+        "about",
         "customers"
       ],
       "file_name": "dbo.Customers.md"
@@ -121,7 +237,11 @@
       "object_name": "Department",
       "description": "The Department table stores information about departmental structure within an organization. It includes details such as department IDs, names, manager information, parent department relationships, and system timestamps for tracking and logging.",
       "keywords": [
-        "department"
+        "department",
+        "table",
+        "stores",
+        "information",
+        "about"
       ],
       "file_name": "dbo.Department.md"
     },
@@ -131,8 +251,12 @@
       "object_name": "DiscontinuedProductsFedarated",
       "description": "Contains information about products that have been discontinued, aggregated from multiple sources or systems.",
       "keywords": [
-        "discontinued",
+        "contains",
+        "information",
+        "about",
         "products",
+        "that",
+        "discontinued",
         "fedarated"
       ],
       "file_name": "dbo.DiscontinuedProductsFedarated.md"
@@ -143,6 +267,11 @@
       "object_name": "Employees",
       "description": "This table is used to store employee details for human resources, payroll, HR management, or organizational development purposes.",
       "keywords": [
+        "this",
+        "table",
+        "used",
+        "store",
+        "employee",
         "employees"
       ],
       "file_name": "dbo.Employees.md"
@@ -153,7 +282,11 @@
       "object_name": "EmployeeSplit",
       "description": "Stores supplementary employee information, such as phone extension and photo path, to extend the core employee records.",
       "keywords": [
+        "stores",
+        "supplementary",
         "employee",
+        "information",
+        "such",
         "split"
       ],
       "file_name": "dbo.EmployeeSplit.md"
@@ -164,130 +297,14 @@
       "object_name": "EmployeeTerritories",
       "description": "Stores the associations between employees and the territories to which they are assigned.",
       "keywords": [
-        "employee",
-        "territories"
+        "stores",
+        "associations",
+        "between",
+        "employees",
+        "territories",
+        "employee"
       ],
       "file_name": "dbo.EmployeeTerritories.md"
-    },
-    {
-      "object_type": "Table",
-      "schema_name": "dbo",
-      "object_name": "Order Details",
-      "description": "This table serves as a line-item registry for every product included in a customer order.",
-      "keywords": [
-        "order",
-        "details"
-      ],
-      "file_name": "dbo.Order Details.md"
-    },
-    {
-      "object_type": "Table",
-      "schema_name": "dbo",
-      "object_name": "Orders",
-      "description": "Stores information about customer orders, including order details, customer and employee associations, shipping information, and key dates.",
-      "keywords": [
-        "orders"
-      ],
-      "file_name": "dbo.Orders.md"
-    },
-    {
-      "object_type": "Table",
-      "schema_name": "dbo",
-      "object_name": "Products",
-      "description": "Stores information about all specialty food products available for sale, including product details, supplier, category, pricing, and inventory status.",
-      "keywords": [
-        "products"
-      ],
-      "file_name": "dbo.Products.md"
-    },
-    {
-      "object_type": "Table",
-      "schema_name": "dbo",
-      "object_name": "Region",
-      "description": "Contains information about geographical regions used for organizing sales territories or shipping areas.",
-      "keywords": [
-        "region"
-      ],
-      "file_name": "dbo.Region.md"
-    },
-    {
-      "object_type": "Table",
-      "schema_name": "dbo",
-      "object_name": "Shippers",
-      "description": "Contains details of shipping companies responsible for delivering customer orders.",
-      "keywords": [
-        "shippers"
-      ],
-      "file_name": "dbo.Shippers.md"
-    },
-    {
-      "object_type": "Table",
-      "schema_name": "dbo",
-      "object_name": "Suppliers",
-      "description": "Contains detailed information about companies that supply products, including company details, contact information, and address data.",
-      "keywords": [
-        "suppliers"
-      ],
-      "file_name": "dbo.Suppliers.md"
-    },
-    {
-      "object_type": "Table",
-      "schema_name": "dbo",
-      "object_name": "Territories",
-      "description": "Stores information about sales territories, including their unique identifiers, descriptions, and associated regions.",
-      "keywords": [
-        "territories"
-      ],
-      "file_name": "dbo.Territories.md"
-    },
-    {
-      "object_type": "View",
-      "schema_name": "dbo",
-      "object_name": "Alphabetical list of products",
-      "description": "View providing an alphabetical listing of products with related supplier and category information, including inventory and pricing details.",
-      "keywords": [
-        "alphabetical",
-        "list",
-        "products"
-      ],
-      "file_name": "dbo.Alphabetical list of products.md"
-    },
-    {
-      "object_type": "View",
-      "schema_name": "dbo",
-      "object_name": "Category Sales for 1997",
-      "description": "Aggregated sales report showing total revenue by product category for the year 1997. This table provides summarized sales data for analysis and reporting purposes.",
-      "keywords": [
-        "category",
-        "sales",
-        "for"
-      ],
-      "file_name": "dbo.Category Sales for 1997.md"
-    },
-    {
-      "object_type": "View",
-      "schema_name": "dbo",
-      "object_name": "Current Product List",
-      "description": "Stores a current list of active products available for sale in the specialty foods business. This table typically contains a subset of products that are currently being offered to customers.",
-      "keywords": [
-        "current",
-        "product",
-        "list"
-      ],
-      "file_name": "dbo.Current Product List.md"
-    },
-    {
-      "object_type": "View",
-      "schema_name": "dbo",
-      "object_name": "Customer and Suppliers by City",
-      "description": "Aggregated view of customers and suppliers organized by their city location, providing a consolidated reference for business contacts.",
-      "keywords": [
-        "customer",
-        "and",
-        "suppliers",
-        "city"
-      ],
-      "file_name": "dbo.Customer and Suppliers by City.md"
     },
     {
       "object_type": "View",
@@ -295,6 +312,11 @@
       "object_name": "Invoices",
       "description": "Stores detailed invoice information for customer orders, including shipping details, customer information, order specifics, and line item details with pricing.",
       "keywords": [
+        "stores",
+        "detailed",
+        "invoice",
+        "information",
+        "customer",
         "invoices"
       ],
       "file_name": "dbo.Invoices.md"
@@ -305,6 +327,10 @@
       "object_name": "Order Details Extended",
       "description": "Provides detailed information for each order line item, including product details, unit price, quantity, discount, and the calculated extended price per item.",
       "keywords": [
+        "provides",
+        "detailed",
+        "information",
+        "each",
         "order",
         "details",
         "extended"
@@ -312,11 +338,32 @@
       "file_name": "dbo.Order Details Extended.md"
     },
     {
+      "object_type": "Table",
+      "schema_name": "dbo",
+      "object_name": "Order Details",
+      "description": "This table serves as a line-item registry for every product included in a customer order.",
+      "keywords": [
+        "this",
+        "table",
+        "serves",
+        "line",
+        "item",
+        "order",
+        "details"
+      ],
+      "file_name": "dbo.Order Details.md"
+    },
+    {
       "object_type": "View",
       "schema_name": "dbo",
       "object_name": "Order Subtotals",
       "description": "Stores calculated subtotal amounts for each order, typically used for reporting, analysis, or as a derived view of order line items.",
       "keywords": [
+        "stores",
+        "calculated",
+        "subtotal",
+        "amounts",
+        "each",
         "order",
         "subtotals"
       ],
@@ -328,10 +375,29 @@
       "object_name": "Orders Qry",
       "description": "A query view that combines order information with customer details, providing a comprehensive view of sales transactions including shipping and customer location data.",
       "keywords": [
+        "query",
+        "view",
+        "that",
+        "combines",
+        "order",
         "orders",
         "qry"
       ],
       "file_name": "dbo.Orders Qry.md"
+    },
+    {
+      "object_type": "Table",
+      "schema_name": "dbo",
+      "object_name": "Orders",
+      "description": "Stores information about customer orders, including order details, customer and employee associations, shipping information, and key dates.",
+      "keywords": [
+        "stores",
+        "information",
+        "about",
+        "customer",
+        "orders"
+      ],
+      "file_name": "dbo.Orders.md"
     },
     {
       "object_type": "View",
@@ -339,8 +405,12 @@
       "object_name": "Product Sales for 1997",
       "description": "Aggregated sales data for products sold during the 1997 calendar year, organized by product category and product name.",
       "keywords": [
-        "product",
+        "aggregated",
         "sales",
+        "data",
+        "products",
+        "sold",
+        "product",
         "for"
       ],
       "file_name": "dbo.Product Sales for 1997.md"
@@ -351,7 +421,11 @@
       "object_name": "Products Above Average Price",
       "description": "A view that lists products with unit prices above the average price across all products in the database. Used for identifying premium or high-value items in the product catalog.",
       "keywords": [
+        "view",
+        "that",
+        "lists",
         "products",
+        "unit",
         "above",
         "average",
         "price"
@@ -364,10 +438,30 @@
       "object_name": "Products by Category",
       "description": "Categorized product listing showing inventory status and availability. This view organizes products by their category for reporting and inventory management purposes.",
       "keywords": [
+        "categorized",
+        "product",
+        "listing",
+        "showing",
+        "inventory",
         "products",
         "category"
       ],
       "file_name": "dbo.Products by Category.md"
+    },
+    {
+      "object_type": "Table",
+      "schema_name": "dbo",
+      "object_name": "Products",
+      "description": "Stores information about all specialty food products available for sale, including product details, supplier, category, pricing, and inventory status.",
+      "keywords": [
+        "stores",
+        "information",
+        "about",
+        "specialty",
+        "food",
+        "products"
+      ],
+      "file_name": "dbo.Products.md"
     },
     {
       "object_type": "View",
@@ -375,10 +469,30 @@
       "object_name": "Quarterly Orders",
       "description": "View aggregating customer order information by quarter, providing a summary of customer locations and company details for quarterly reporting and analysis.",
       "keywords": [
+        "view",
+        "aggregating",
+        "customer",
+        "order",
+        "information",
         "quarterly",
         "orders"
       ],
       "file_name": "dbo.Quarterly Orders.md"
+    },
+    {
+      "object_type": "Table",
+      "schema_name": "dbo",
+      "object_name": "Region",
+      "description": "Contains information about geographical regions used for organizing sales territories or shipping areas.",
+      "keywords": [
+        "contains",
+        "information",
+        "about",
+        "geographical",
+        "regions",
+        "region"
+      ],
+      "file_name": "dbo.Region.md"
     },
     {
       "object_type": "View",
@@ -386,7 +500,11 @@
       "object_name": "Sales by Category",
       "description": "Aggregates total sales revenue for each product, grouped by product category. Provides a summary view of sales performance across different food categories.",
       "keywords": [
+        "aggregates",
+        "total",
         "sales",
+        "revenue",
+        "each",
         "category"
       ],
       "file_name": "dbo.Sales by Category.md"
@@ -397,11 +515,30 @@
       "object_name": "Sales Totals by Amount",
       "description": "Aggregates sales data showing total order amounts with associated customer and shipping information for analysis of high-value transactions.",
       "keywords": [
+        "aggregates",
         "sales",
+        "data",
+        "showing",
+        "total",
         "totals",
         "amount"
       ],
       "file_name": "dbo.Sales Totals by Amount.md"
+    },
+    {
+      "object_type": "Table",
+      "schema_name": "dbo",
+      "object_name": "Shippers",
+      "description": "Contains details of shipping companies responsible for delivering customer orders.",
+      "keywords": [
+        "contains",
+        "details",
+        "shipping",
+        "companies",
+        "responsible",
+        "shippers"
+      ],
+      "file_name": "dbo.Shippers.md"
     },
     {
       "object_type": "View",
@@ -409,8 +546,12 @@
       "object_name": "Summary of Sales by Quarter",
       "description": "Aggregated view showing sales subtotals grouped by quarterly shipping periods. Provides a high-level overview of revenue trends across quarters.",
       "keywords": [
-        "summary",
+        "aggregated",
+        "view",
+        "showing",
         "sales",
+        "subtotals",
+        "summary",
         "quarter"
       ],
       "file_name": "dbo.Summary of Sales by Quarter.md"
@@ -421,11 +562,44 @@
       "object_name": "Summary of Sales by Year",
       "description": "Aggregated view showing annual sales totals for completed orders, providing a high-level overview of revenue by year.",
       "keywords": [
-        "summary",
+        "aggregated",
+        "view",
+        "showing",
+        "annual",
         "sales",
+        "summary",
         "year"
       ],
       "file_name": "dbo.Summary of Sales by Year.md"
+    },
+    {
+      "object_type": "Table",
+      "schema_name": "dbo",
+      "object_name": "Suppliers",
+      "description": "Contains detailed information about companies that supply products, including company details, contact information, and address data.",
+      "keywords": [
+        "contains",
+        "detailed",
+        "information",
+        "about",
+        "companies",
+        "suppliers"
+      ],
+      "file_name": "dbo.Suppliers.md"
+    },
+    {
+      "object_type": "Table",
+      "schema_name": "dbo",
+      "object_name": "Territories",
+      "description": "Stores information about sales territories, including their unique identifiers, descriptions, and associated regions.",
+      "keywords": [
+        "stores",
+        "information",
+        "about",
+        "sales",
+        "territories"
+      ],
+      "file_name": "dbo.Territories.md"
     }
   ]
 }

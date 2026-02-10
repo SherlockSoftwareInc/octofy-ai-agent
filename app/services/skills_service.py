@@ -29,6 +29,11 @@ class SkillsService:
         self._data_groups_cache: Optional[Dict[str, DataGroup]] = None
         self._schema_indices_cache: Optional[Dict[str, Dict]] = None
         self._object_indices_cache: Optional[Dict[str, Dict]] = None
+
+        # Stage 1 schema selection (semantic schema-first discovery)
+        self._top_schemas = 5
+        self._min_schema_score = 1.0
+        self._schema_match_multiplier = 1.5
         
     def load_data_sources_index(self) -> List[DataSource]:
         """
@@ -816,64 +821,133 @@ class SkillsService:
         
         self._object_indices_cache[resolved_source] = indices
         return indices
-    
-    def search_objects_by_keyword(self, query: str, data_source: Optional[str] = None, 
-                                   object_type: Optional[str] = None, top_k: int = 10) -> List[Dict]:
-        """
-        Search for data objects using keywords from index files
-        
-        Args:
-            query: Search query (keywords)
-            data_source: Optional filter by data source name
-            object_type: Optional filter by object type (Table/View)
-            top_k: Maximum number of results to return
-            
-        Returns:
-            List of matching objects with metadata
-        """
+
+    def _normalize_query_terms(self, query: str) -> Set[str]:
+        """Normalize query into a set of terms (lowercase, no stop words, length > 2)."""
+        stop_words = {
+            'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for',
+            'of', 'with', 'by', 'from', 'up', 'about', 'into', 'through', 'during',
+            'show', 'me', 'get', 'find', 'list', 'all', 'what', 'which', 'who', 'where',
+            'when', 'how', 'is', 'are', 'was', 'were', 'be', 'been', 'being', 'have',
+            'has', 'had', 'do', 'does', 'did', 'will', 'would', 'could', 'should',
+            'i', 'want', 'need', 'information', 'records', 'data',
+            'table', 'tables', 'view', 'views', 'column', 'columns',
+            'stored', 'stores', 'store', 'contains', 'contain', 'containing',
+            'database', 'schema', 'object', 'objects', 'field', 'fields',
+        }
         query_lower = query.lower()
-        # Filter out stop words and very short terms for better precision
-        stop_words = {'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 
-                     'of', 'with', 'by', 'from', 'up', 'about', 'into', 'through', 'during',
-                     'show', 'me', 'get', 'find', 'list', 'all', 'what', 'which', 'who', 'where',
-                     'when', 'how', 'is', 'are', 'was', 'were', 'be', 'been', 'being', 'have',
-                     'has', 'had', 'do', 'does', 'did', 'will', 'would', 'could', 'should',
-                     'i', 'want', 'need', 'information', 'records', 'data',
-                     'table', 'tables', 'view', 'views', 'column', 'columns',
-                     'stored', 'stores', 'store', 'contains', 'contain', 'containing',
-                     'database', 'schema', 'object', 'objects', 'field', 'fields'}
-        query_terms = set(word for word in re.findall(r'\w+', query_lower) 
-                        if word not in stop_words and len(word) > 2)
-        
-        results = []
-        
-        # Load schema indices
-        schema_indices = self.load_schema_indices()
-        
-        # Filter by data source if specified
+        return set(
+            word for word in re.findall(r'\w+', query_lower)
+            if word not in stop_words and len(word) > 2
+        )
+
+    def _score_schema(self, schema_entry: Dict, query_terms: Set[str]) -> float:
+        """
+        Score a schema entry by relevance to query terms.
+        Weights: schema_name +2, description +1, keyword +1.5.
+        """
+        score = 0.0
+        name_lower = (schema_entry.get('schema_name') or '').lower()
+        desc_lower = (schema_entry.get('description') or '').lower()
+        keywords = schema_entry.get('keywords') or []
+        for term in query_terms:
+            if term in name_lower:
+                score += 2.0
+            if term in desc_lower:
+                score += 1.0
+            for kw in keywords:
+                if term in kw.lower():
+                    score += 1.5
+                    break
+        return score
+
+    def _get_relevant_schemas(
+        self,
+        schema_indices: Dict[str, Dict],
+        query_terms: Set[str],
+        data_source: Optional[str] = None,
+        domain: Optional[str] = None,
+    ) -> Set[Tuple[str, str]]:
+        """
+        Stage 1: Return set of (data_source, schema_name) that are relevant to the query.
+        Uses top 5 schemas by score and minimum score 1.0. Optional domain pre-filter.
+        """
         resolved_source = self._resolve_data_source_name(data_source) if data_source else None
-        sources_to_search = [resolved_source] if resolved_source else schema_indices.keys()
-        
+        domain_terms = self._normalize_query_terms(domain) if domain else set()
+
+        # Build list of (ds_name, schema_entry) with optional domain filter
+        candidates: List[Tuple[str, Dict]] = []
+        for ds_name, index_data in schema_indices.items():
+            if resolved_source and ds_name != resolved_source:
+                continue
+            for schema_entry in index_data.get('schemas', []):
+                if domain_terms:
+                    # Pre-filter: schema must match at least one domain term
+                    desc = (schema_entry.get('description') or '').lower()
+                    keywords = [k.lower() for k in (schema_entry.get('keywords') or [])]
+                    if not any(
+                        term in desc or any(term in k for k in keywords)
+                        for term in domain_terms
+                    ):
+                        continue
+                candidates.append((ds_name, schema_entry))
+
+        if not query_terms:
+            # No query terms: take first top_schemas (or all if domain filter applied)
+            return set((ds, s['schema_name']) for ds, s in candidates[: self._top_schemas])
+
+        # Score and take top N with score >= min_schema_score
+        scored: List[Tuple[float, str, str]] = []
+        for ds_name, schema_entry in candidates:
+            sc = self._score_schema(schema_entry, query_terms)
+            if sc >= self._min_schema_score:
+                scored.append((sc, ds_name, schema_entry['schema_name']))
+        scored.sort(key=lambda x: x[0], reverse=True)
+        top = scored[: self._top_schemas]
+        return set((ds, schema_name) for _, ds, schema_name in top)
+
+    def search_objects_by_keyword(
+        self,
+        query: str,
+        data_source: Optional[str] = None,
+        object_type: Optional[str] = None,
+        top_k: int = 10,
+        domain: Optional[str] = None,
+    ) -> List[Dict]:
+        """
+        Search for data objects using keywords from index files.
+        Uses two-stage discovery: first select relevant schemas, then score objects within them.
+        Objects in relevant schemas receive a schema match bonus.
+        """
+        query_terms = self._normalize_query_terms(query)
+        schema_indices = self.load_schema_indices()
+        relevant_schemas = self._get_relevant_schemas(
+            schema_indices, query_terms, data_source=data_source, domain=domain
+        )
+
+        resolved_source = self._resolve_data_source_name(data_source) if data_source else None
+        sources_to_search = [resolved_source] if resolved_source else list(schema_indices.keys())
+
+        results = []
+        search_all = len(relevant_schemas) == 0  # Fallback to global search
+
         for ds_name in sources_to_search:
             if ds_name not in schema_indices:
                 continue
-            
-            # Load object indices for this data source
             object_indices = self.load_object_indices(ds_name)
-            
             for schema_name, obj_index in object_indices.items():
+                if not search_all and (ds_name, schema_name) not in relevant_schemas:
+                    continue
                 objects = obj_index.get('objects', [])
-                
+                in_relevant_schema = (ds_name, schema_name) in relevant_schemas
                 for obj in objects:
-                    # Filter by object type if specified
                     if object_type and obj.get('object_type') != object_type:
                         continue
-                    
-                    # Calculate relevance score
                     score = self._calculate_keyword_score(obj, query_terms)
-                    
                     if score > 0:
-                        result = {
+                        if in_relevant_schema:
+                            score *= self._schema_match_multiplier
+                        results.append({
                             'data_source': ds_name,
                             'schema_name': obj.get('schema_name'),
                             'object_name': obj.get('object_name'),
@@ -881,11 +955,9 @@ class SkillsService:
                             'description': obj.get('description', ''),
                             'keywords': obj.get('keywords', []),
                             'file_name': obj.get('file_name'),
-                            'score': score
-                        }
-                        results.append(result)
-        
-        # Sort by score and return top_k
+                            'score': score,
+                        })
+
         results.sort(key=lambda x: x['score'], reverse=True)
         return results[:top_k]
     
@@ -1016,57 +1088,74 @@ class SkillsService:
         
         return None
     
-    def get_schema_statistics(self, data_source: Optional[str] = None) -> Dict:
+    def get_schema_statistics(
+        self,
+        data_source: Optional[str] = None,
+        query: Optional[str] = None,
+    ) -> Dict:
         """
-        Get statistics about available schemas using index files
-        
-        Args:
-            data_source: Optional filter by data source name
-            
-        Returns:
-            Dictionary with schema statistics
+        Get statistics about available schemas using index files.
+        When query is provided, also return recommended_schemas (top 10 by schema relevance score).
         """
         schema_indices = self.load_schema_indices()
-        
+        result: Dict = {}
+
         resolved_source = self._resolve_data_source_name(data_source) if data_source else None
         if resolved_source and resolved_source in schema_indices:
-            # Stats for specific data source
             index_data = schema_indices[resolved_source]
-            return {
+            result = {
                 'data_source': resolved_source,
                 'total_schemas': index_data.get('total_schemas', 0),
-                'schemas': index_data.get('schemas', [])
+                'schemas': index_data.get('schemas', []),
             }
         else:
-            # Stats for all data sources
             total_schemas = 0
             total_objects = 0
             total_tables = 0
             total_views = 0
-            
             sources = []
-            
             for ds_name, index_data in schema_indices.items():
                 total_schemas += index_data.get('total_schemas', 0)
-                
                 for schema in index_data.get('schemas', []):
                     total_objects += schema.get('total_objects', 0)
                     total_tables += schema.get('tables', 0)
                     total_views += schema.get('views', 0)
-                
                 sources.append({
                     'name': ds_name,
-                    'schemas': index_data.get('total_schemas', 0)
+                    'schemas': index_data.get('total_schemas', 0),
                 })
-            
-            return {
+            result = {
                 'total_data_sources': len(schema_indices),
                 'total_schemas': total_schemas,
                 'total_objects': total_objects,
                 'total_tables': total_tables,
                 'total_views': total_views,
-                'data_sources': sources
+                'data_sources': sources,
             }
+
+        if query is not None and query.strip():
+            query_terms = self._normalize_query_terms(query)
+            scored_schemas: List[Tuple[float, str, Dict]] = []
+            for ds_name, index_data in schema_indices.items():
+                if resolved_source and ds_name != resolved_source:
+                    continue
+                for schema_entry in index_data.get('schemas', []):
+                    sc = self._score_schema(schema_entry, query_terms)
+                    if sc >= self._min_schema_score:
+                        scored_schemas.append((sc, ds_name, schema_entry))
+            scored_schemas.sort(key=lambda x: x[0], reverse=True)
+            recommended = []
+            for sc, ds_name, schema_entry in scored_schemas[:10]:
+                recommended.append({
+                    'data_source': ds_name,
+                    'schema_name': schema_entry.get('schema_name'),
+                    'description': schema_entry.get('description', ''),
+                    'keywords': schema_entry.get('keywords', []),
+                    'score': round(sc, 2),
+                })
+            result['recommended_schemas'] = recommended
+
+        return result
 
     def _resolve_data_source_name(self, data_source: str) -> str:
         """

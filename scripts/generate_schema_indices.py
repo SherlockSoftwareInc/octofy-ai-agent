@@ -9,7 +9,64 @@ import json
 import os
 import re
 from pathlib import Path
-from typing import Dict, List, Any
+from typing import Dict, List, Any, Optional, Tuple
+
+
+def extract_schema_metadata_from_md(schema_folder: Path) -> Tuple[Optional[str], List[str]]:
+    """
+    Extract purpose/domain and keywords from _schema.md in a schema folder.
+    Returns (description, keywords). If file is missing or empty, returns (None, []).
+    """
+    schema_md = schema_folder / '_schema.md'
+    if not schema_md.exists():
+        return None, []
+
+    try:
+        content = schema_md.read_text(encoding='utf-8')
+        description = None
+        keywords: List[str] = []
+
+        # Purpose or Domain section: first paragraph after the heading
+        for section_name in ('## Purpose', '## Domain'):
+            match = re.search(
+                rf'{re.escape(section_name)}\s*\n+(.+?)(?=\n##|\n\*\*|\Z)',
+                content,
+                re.DOTALL | re.IGNORECASE,
+            )
+            if match:
+                para = match.group(1).strip()
+                # Take first paragraph (up to double newline or single line)
+                para = para.split('\n\n')[0].strip()
+                para = re.sub(r'\s+', ' ', para)
+                if para:
+                    description = para
+                    break
+
+        # First block of body text if no Purpose/Domain (e.g. single blockquote/paragraph at top)
+        if not description and content.strip():
+            lines = content.strip().split('\n')
+            first_block = []
+            for line in lines:
+                if line.strip().startswith('#'):
+                    break
+                if line.strip():
+                    first_block.append(line.strip())
+            if first_block:
+                description = ' '.join(first_block)[:500]
+
+        # Keywords: **Keywords:** or ## Keywords section, comma-separated
+        kw_match = re.search(r'\*\*Keywords:\*\*\s*(.+?)(?=\n##|\n\*\*|\Z)', content, re.DOTALL | re.IGNORECASE)
+        if not kw_match:
+            kw_match = re.search(r'##\s*Keywords\s*\n+(.+?)(?=\n##|\Z)', content, re.DOTALL | re.IGNORECASE)
+        if kw_match:
+            raw = kw_match.group(1).strip().replace('\n', ' ')
+            keywords = [w.strip().lower() for w in re.split(r'[,;]', raw) if w.strip()]
+            keywords = list(dict.fromkeys(keywords))[:20]
+
+        return description, keywords
+    except Exception as e:
+        print(f"Error reading {schema_md}: {e}")
+        return None, []
 
 
 def extract_metadata_from_md(file_path: Path) -> Dict[str, Any]:
@@ -69,8 +126,8 @@ def generate_object_index(schema_path: Path) -> Dict[str, Any]:
     """Generate .object-index.json for a schema folder"""
     objects = []
     
-    # Get all .md files in the schema folder
-    md_files = sorted(schema_path.glob('*.md'))
+    # Get all .md files in the schema folder (exclude _schema.md)
+    md_files = sorted(f for f in schema_path.glob('*.md') if f.name != '_schema.md')
     
     for md_file in md_files:
         metadata = extract_metadata_from_md(md_file)
@@ -105,12 +162,15 @@ def generate_schema_index(data_source_path: Path) -> Dict[str, Any]:
     for schema_folder in sorted(schemas_path.iterdir()):
         if not schema_folder.is_dir():
             continue
-        
-        # Count objects
-        md_files = list(schema_folder.glob('*.md'))
+
+        # Schema-level metadata from _schema.md (purpose/domain and keywords)
+        schema_description, schema_keywords = extract_schema_metadata_from_md(schema_folder)
+
+        # Count objects (exclude _schema.md)
+        md_files = [f for f in schema_folder.glob('*.md') if f.name != '_schema.md']
         table_count = 0
         view_count = 0
-        
+
         for md_file in md_files:
             metadata = extract_metadata_from_md(md_file)
             if metadata:
@@ -118,10 +178,12 @@ def generate_schema_index(data_source_path: Path) -> Dict[str, Any]:
                     table_count += 1
                 elif metadata['object_type'] == 'View':
                     view_count += 1
-        
+
+        fallback_description = f'Contains {table_count} tables and {view_count} views'
         schemas.append({
             'schema_name': schema_folder.name,
-            'description': f'Contains {table_count} tables and {view_count} views',
+            'description': schema_description if schema_description else fallback_description,
+            'keywords': schema_keywords,
             'object_index_file': f'schemas/{schema_folder.name}/.object-index.json',
             'total_objects': len(md_files),
             'tables': table_count,

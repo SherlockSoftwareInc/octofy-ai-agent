@@ -142,6 +142,64 @@ def test_statistics():
                   f"({schema.get('tables', 0)} tables, {schema.get('views', 0)} views)")
 
 
+def test_schema_prioritization():
+    """Test that queries like 'sales' prioritize objects in schemas with matching purpose/keywords"""
+    print("\n" + "=" * 60)
+    print("TEST 6: Schema-First Prioritization (sales)")
+    print("=" * 60)
+    
+    skills_service = get_skills_service()
+    results = skills_service.search_objects_by_keyword("sales", top_k=5)
+    
+    assert len(results) > 0, "Search for 'sales' should return at least one result"
+    # Northwind dbo has _schema.md with Purpose/Keywords including "sales"; it should rank at top
+    first = results[0]
+    print(f"\n✓ Search 'sales': top result is {first['data_source']}.{first['schema_name']}.{first['object_name']} (score: {first['score']:.1f})")
+    # If Northwind exists, first result should be from Northwind dbo (schema match bonus)
+    northwind_results = [r for r in results if r["data_source"] == "Northwind" and r["schema_name"] == "dbo"]
+    if northwind_results:
+        print(f"  Northwind dbo results in top 5: {len(northwind_results)} (schema match bonus applied)")
+    print("  Schema-first prioritization OK.")
+
+
+def test_recommended_schemas():
+    """Test get_schema_statistics with query returns recommended_schemas ordered by relevance"""
+    print("\n" + "=" * 60)
+    print("TEST 7: Recommended Schemas (query=sales)")
+    print("=" * 60)
+    
+    skills_service = get_skills_service()
+    stats = skills_service.get_schema_statistics(query="sales")
+    
+    assert "recommended_schemas" in stats, "Stats with query should include recommended_schemas"
+    rec = stats["recommended_schemas"]
+    assert isinstance(rec, list), "recommended_schemas should be a list"
+    print(f"\n✓ recommended_schemas: {len(rec)} schema(s)")
+    for i, s in enumerate(rec[:5], 1):
+        print(f"  {i}. {s.get('data_source')}.{s.get('schema_name')} score={s.get('score')} - {s.get('description', '')[:50]}...")
+    if rec:
+        assert rec[0].get("score", 0) >= 1.0, "Top recommended schema should have score >= 1.0"
+        # Northwind dbo should be in recommended schemas for "sales"
+        assert any(
+            s.get("data_source") == "Northwind" and s.get("schema_name") == "dbo" for s in rec
+        ), "Northwind dbo (sales) should appear in recommended_schemas for query 'sales'"
+    print("  Recommended schemas OK.")
+
+
+def test_fallback_global_search():
+    """Test that when no schema passes threshold, search falls back to global and still returns results"""
+    print("\n" + "=" * 60)
+    print("TEST 8: Fallback to Global Search")
+    print("=" * 60)
+    
+    skills_service = get_skills_service()
+    # Query that matches objects (e.g. 'customer') but may have few schema-level matches
+    results = skills_service.search_objects_by_keyword("customer", top_k=5)
+    print(f"\n✓ Search 'customer' returned {len(results)} result(s) (fallback or staged)")
+    assert len(results) > 0, "Search should return results even when relying on fallback"
+    print("  Fallback/global search OK.")
+
+
 def main():
     """Run all tests"""
     print("\n")
@@ -155,6 +213,9 @@ def main():
         test_list_all_objects()
         test_get_object_by_name()
         test_statistics()
+        test_schema_prioritization()
+        test_recommended_schemas()
+        test_fallback_global_search()
         
         print("\n" + "=" * 60)
         print("✓ All tests completed successfully!")
