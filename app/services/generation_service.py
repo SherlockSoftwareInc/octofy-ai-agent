@@ -2218,6 +2218,7 @@ def generate_sql_for_request(request: GenerateSQLRequest, previous_sql: Optional
                     yield {"type": "done"}
                     return
             
+            last_sufficiency_result = sufficiency_result
             yield AgentStatus(step_id=10, message="Schema sufficiency validated. Proceeding with generation...")
             
         else:
@@ -2388,10 +2389,14 @@ Alternatively, if these table references are incorrect, please rephrase your que
                     yield {"type": "done"}
                     return
             
+            last_sufficiency_result = sufficiency_result
             yield AgentStatus(step_id=10, message="Schema sufficiency validated. Proceeding with generation...")
     else:
         value_mappings = {}
     
+    # Capture validation result for T-SQL prompt (mapping injection and schema adherence)
+    last_sufficiency_result: Optional[Dict[str, Any]] = None
+
     # Build dynamic database info from settings
     keywords_str = ", ".join(db_keywords[:5]) if db_keywords else "business data"
     database_info = f"{friendly_name}: {db_description} ({keywords_str})."
@@ -2438,9 +2443,25 @@ Alternatively, if these table references are incorrect, please rephrase your que
     # Log the initial context
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     
-    # Build initial schema text using shared utility
+    # Build initial schema text using shared utility (table names + column lists for T-SQL stage)
     from app.services.schema_context_utils import build_schema_text
     initial_schema_text = build_schema_text(context.relevant_tables, use_table_override=use_table_override)
+
+    # Build validated mapping block from pre-flight validation for T-SQL adherence
+    validated_mapping_section = ""
+    if last_sufficiency_result:
+        details = last_sufficiency_result.get("validation_details", []) or last_sufficiency_result.get("required_data_points", [])
+        found_with_mapping = [
+            d for d in details
+            if d.get("found", False) and (d.get("mapping") or d.get("column_mapping"))
+        ]
+        if found_with_mapping:
+            validated_mapping_section = "### VALIDATED MAPPING (use these exact tables/columns)\n"
+            for d in found_with_mapping:
+                mapping = d.get("mapping") or d.get("column_mapping")
+                req = d.get("requirement") or d.get("name", "requirement")
+                validated_mapping_section += f"- Requirement '{req}' -> {mapping}\n"
+            validated_mapping_section += "\n"
 
     context_guard = ""
     if use_table_override:
@@ -2475,7 +2496,7 @@ Date Ranges: {', '.join(date_ranges) if date_ranges else 'None'}
 ### KNOWLEDGE BASE EXAMPLES
 {reference_text}{value_context}
 
-{context_guard}### DATABASE SCHEMA
+{context_guard}{validated_mapping_section}### AVAILABLE SCHEMAS (table names and column lists — use only these)
 {initial_schema_text}
 
 ### REASONING PROCESS
@@ -2495,7 +2516,8 @@ First attempt.
 
 ## CRITICAL SQL RULES
 
-### 1. SCHEMA ADHERENCE
+### 1. SCHEMA ADHERENCE (STRICT)
+- You MUST use the table(s) identified in the prior validation analysis (e.g. VALIDATED MAPPING or validation_details). Do not assume the existence of tables or columns not explicitly listed in the PROVIDED TABLE SCHEMAS / AVAILABLE SCHEMAS above.
 - Use ONLY the tables and columns defined in the provided schema.
 - Pay strict attention to column data types such as INT, VARCHAR, and DATETIME.
 - Never assume column names or data types that are not explicitly shown.
@@ -2525,11 +2547,13 @@ First attempt.
 - If a type mismatch exists, determine which related table to JOIN to resolve it.
 - Analyze the foreign key relationships between the relevant tables.
 
-### 6. ERROR HANDLING
-- If a required column is missing from the schema, return: "COLUMN_VALIDATION_ERROR: Cannot find column [column_name]".
-- If a required table is missing, return: "TABLE_VALIDATION_ERROR: Cannot find table [table_name]".
+### 6. ERROR HANDLING (NO GUESSING)
+- If the user request requires a column not present in the provided schema, you are strictly forbidden from guessing. You MUST return: "COLUMN_VALIDATION_ERROR: Cannot find column [column_name]".
+- If the user request requires a table not present in the provided schema, you are strictly forbidden from guessing. You MUST return: "TABLE_VALIDATION_ERROR: Cannot find table [table_name]".
+- Do not enter a best-effort or TRY...CATCH path with guessed names when data is missing; return a validation error as above.
 
 ### 7. OUTPUT FORMAT
+- Return raw T-SQL code only. Do not wrap the code in markdown blocks (e.g. ``` sql or ```) as this causes execution failures.
 - Provide the explanation in a `/* ... */` comment block at the very top of the response.
 - Follow immediately with the T-SQL script. The script MAY contain multiple statements, variable declarations (`DECLARE`), and temporary table operations (`SELECT INTO #Temp`, `DROP TABLE IF EXISTS`).
 - Always begin multi-statement scripts with `SET NOCOUNT ON;` to suppress intermediate row-count messages.
@@ -2553,12 +2577,8 @@ Target Request: {combined_query}
     
     for attempt in range(5):
         yield AgentStatus(step_id=10 + attempt, message=f"Generating SQL (Attempt {attempt + 1})..." if attempt == 0 else f"Refining SQL (Attempt {attempt + 1})...")
-        # Dynamically build schema text
-        schema_text = "\n".join([
-            f"{t.description}"
-            for t in context.relevant_tables
-            if t.description
-        ])
+        # Use full schema (table names + column lists) for context continuity with validation stage
+        schema_text = initial_schema_text
 
         # Build attempt history section with failed SQL and errors
         attempt_history_section = ""
@@ -2575,7 +2595,7 @@ Target Request: {combined_query}
         else:
             attempt_history_section = "### ATTEMPT HISTORY\nFirst attempt."
 
-        # Construct the full prompt with failed SQL and error details
+        # Construct the full prompt with failed SQL and error details (include validated mapping + full schemas)
         current_prompt = f"""{database_info}
 
 ### QUERY ANALYSIS
@@ -2585,14 +2605,15 @@ Extracted Entities: {', '.join(entities) if entities else 'None'}
 ### KNOWLEDGE BASE EXAMPLES
 {reference_text}{value_context}
 
-{context_guard}### DATABASE SCHEMA
+{context_guard}{validated_mapping_section}### AVAILABLE SCHEMAS (table names and column lists — use only these)
 {schema_text}
 
 {attempt_history_section}
 
 {scripting_instruction}## CRITICAL SQL RULES
 
-### 1. SCHEMA ADHERENCE
+### 1. SCHEMA ADHERENCE (STRICT)
+- You MUST use the table(s) identified in the prior validation analysis (e.g. VALIDATED MAPPING or validation_details). Do not assume the existence of tables or columns not explicitly listed in the PROVIDED TABLE SCHEMAS / AVAILABLE SCHEMAS above.
 - Use ONLY the tables and columns defined in the provided schema.
 - Pay strict attention to column data types such as INT, VARCHAR, and DATETIME.
 - Never assume column names or data types that are not explicitly shown.
@@ -2622,11 +2643,13 @@ Extracted Entities: {', '.join(entities) if entities else 'None'}
 - If a type mismatch exists, determine which related table to JOIN to resolve it.
 - Analyze the foreign key relationships between the relevant tables.
 
-### 6. ERROR HANDLING
-- If a required column is missing from the schema, return: "COLUMN_VALIDATION_ERROR: Cannot find column [column_name]".
-- If a required table is missing, return: "TABLE_VALIDATION_ERROR: Cannot find table [table_name]".
+### 6. ERROR HANDLING (NO GUESSING)
+- If the user request requires a column not present in the provided schema, you are strictly forbidden from guessing. You MUST return: "COLUMN_VALIDATION_ERROR: Cannot find column [column_name]".
+- If the user request requires a table not present in the provided schema, you are strictly forbidden from guessing. You MUST return: "TABLE_VALIDATION_ERROR: Cannot find table [table_name]".
+- Do not enter a best-effort or TRY...CATCH path with guessed names when data is missing; return a validation error as above.
 
 ### 7. OUTPUT FORMAT
+- Return raw T-SQL code only. Do not wrap the code in markdown blocks (e.g. ``` sql or ```) as this causes execution failures.
 - Provide the explanation in a `/* ... */` comment block at the very top of the response.
 - Follow immediately with the T-SQL script. The script MAY contain multiple statements, variable declarations (`DECLARE`), and temporary table operations (`SELECT INTO #Temp`, `DROP TABLE IF EXISTS`).
 - Always begin multi-statement scripts with `SET NOCOUNT ON;` to suppress intermediate row-count messages.

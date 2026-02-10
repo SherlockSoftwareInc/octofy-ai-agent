@@ -586,6 +586,8 @@ the columns necessary to answer it - either directly or through computation/deri
 
 Your goal is to generate a valid T-SQL SELECT query to answer the user's question.
 
+Return raw T-SQL code only. Do not wrap the code in markdown blocks (e.g. ``` sql or ```) as this causes execution failures.
+
 {context_text}
 
 """
@@ -1205,6 +1207,8 @@ the columns necessary to answer it - either directly or through computation/deri
         system_prompt = f"""You are an expert T-SQL developer for Microsoft SQL Server.
 
 Your goal is to generate a valid T-SQL SELECT query to answer the user's question.
+
+Return raw T-SQL code only. Do not wrap the code in markdown blocks (e.g. ``` sql or ```) as this causes execution failures.
 
 {context_text}
 
