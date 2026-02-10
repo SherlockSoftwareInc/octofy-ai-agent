@@ -1039,6 +1039,28 @@ def get_raw_markdown(file_path: str, current_user: User = Depends(get_current_ac
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.post("/skills/sync-schema-markdown")
+def sync_schema_markdown(data: Dict, current_user: User = Depends(get_current_active_admin)):
+    """
+    Rebuild a schema library markdown file by loading table and column descriptions
+    from the database, then save the file. Returns the new markdown content.
+    """
+    try:
+        from app.services.schema_scan_service import sync_schema_file_from_database
+        file_path = data.get("file_path")
+        if not file_path:
+            raise HTTPException(status_code=400, detail="file_path is required")
+        content = sync_schema_file_from_database(file_path)
+        return {"content": content, "file_path": file_path, "status": "success"}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Sync schema markdown failed")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.put("/skills/raw-markdown")
 def save_raw_markdown(data: Dict, current_user: User = Depends(get_current_active_admin)):
     """Save raw markdown content to a skill file"""

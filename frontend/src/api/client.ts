@@ -1083,6 +1083,14 @@ export const api = {
         }): Promise<{ enhanced_markdown: string }> => {
             const response = await axios.post(`${API_BASE_URL}/admin/enhance-schema`, params);
             return response.data;
+        },
+
+        // Sync schema markdown from database (rebuild table/column descriptions)
+        syncSchemaMarkdown: async (filePath: string): Promise<string> => {
+            const response = await axios.post(`${API_BASE_URL}/admin/skills/sync-schema-markdown`, {
+                file_path: filePath
+            });
+            return response.data.content;
         }
     },
 

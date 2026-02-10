@@ -200,24 +200,124 @@ def scan_database_objects(
     return summary
 
 
-def _build_object_markdown(
-    engine, inspector, schema_name: str, obj_name: str,
-    obj_type: str, data_source_name: str
-) -> Tuple[str, Dict]:
+def _parse_schema_file_path(file_path: str) -> Tuple[str, str, str]:
     """
-    Build the full markdown file content and metadata dict for a single DB object.
+    Parse a schema library markdown file path into data_source_slug, schema_name, table_name.
+
+    Expected pattern: .../data-sources/{data_source_slug}/schemas/{schema_name}/{schema_name}.{table_name}.md
+    or Windows: ...\\data-sources\\{data_source_slug}\\schemas\\{schema_name}\\...
+
+    Returns:
+        (data_source_slug, schema_name, table_name)
+    """
+    path = Path(file_path)
+    parts = path.parts
+    try:
+        # Normalize to find "data-sources" in path
+        idx_ds = next(i for i, p in enumerate(parts) if p == "data-sources")
+        data_source_slug = parts[idx_ds + 1]
+        idx_schemas = next(i for i, p in enumerate(parts) if p == "schemas")
+        schema_name = parts[idx_schemas + 1]
+        stem = path.stem  # e.g. "dbo.ADM_Reports"
+        if "." in stem:
+            # schema.TableName or schema.ViewName
+            table_name = ".".join(stem.split(".")[1:])
+        else:
+            table_name = stem
+        return data_source_slug, schema_name, table_name
+    except (StopIteration, IndexError) as e:
+        raise ValueError(f"Cannot parse schema file path: {file_path}") from e
+
+
+def sync_schema_file_from_database(file_path: str) -> str:
+    """
+    Rebuild a schema library markdown file by loading table and column descriptions
+    from the database, then write the file and return the new content.
+
+    Args:
+        file_path: Path to the .md file (e.g. skills/data-sources/jcm/schemas/dbo/dbo.TableName.md)
+
+    Returns:
+        The new markdown content.
+
+    Raises:
+        ValueError: If path cannot be parsed or object not found.
+    """
+    from app.core.database import get_database_engine
+    from app.services.skills_service import get_skills_service
+
+    data_source_slug, schema_name, table_name = _parse_schema_file_path(file_path)
+
+    # Resolve display name for data source (for header)
+    data_source_name = data_source_slug
+    try:
+        skills = get_skills_service()
+        sources = skills.load_data_sources_index()
+        for s in sources:
+            sid = getattr(s, "source_id", None) or _slugify(getattr(s, "name", ""))
+            if sid == data_source_slug or (getattr(s, "name", "") or "").lower() == data_source_slug.lower():
+                data_source_name = getattr(s, "name", None) or getattr(s, "friendly_name", data_source_slug)
+                break
+    except Exception:
+        pass
+
+    engine = get_database_engine(data_source_slug)
+    inspector = inspect(engine)
+    tables = inspector.get_table_names(schema=schema_name)
+    views = inspector.get_view_names(schema=schema_name)
+    if table_name in views:
+        obj_type = "view"
+    elif table_name in tables:
+        obj_type = "table"
+    else:
+        raise ValueError(f"Object {schema_name}.{table_name} not found in database")
+
+    new_description_block = _build_description_and_columns_block(
+        engine, inspector, schema_name, table_name, obj_type
+    )
+
+    path = Path(file_path)
+    if not path.exists():
+        raise ValueError(f"File not found: {file_path}")
+
+    existing_content = path.read_text(encoding="utf-8")
+    merged = _merge_description_section(existing_content, new_description_block)
+    # If file had no "## Description" section, merge returns unchanged; then do full replace
+    if merged == existing_content:
+        content, _ = _build_object_markdown(
+            engine, inspector, schema_name, table_name, obj_type, data_source_name
+        )
+        path.write_text(content, encoding="utf-8")
+        content_to_return = content
+    else:
+        path.write_text(merged, encoding="utf-8")
+        content_to_return = merged
+
+    # Clear skills cache so next read sees the new content
+    try:
+        skills = get_skills_service()
+        skills._data_sources_cache = None
+        skills._data_groups_cache = None
+    except Exception:
+        pass
+
+    return content_to_return
+
+
+def _build_description_and_columns_block(
+    engine, inspector, schema_name: str, obj_name: str, obj_type: str
+) -> str:
+    """
+    Build only the table description and columns block (markdown_body) from the database.
+    Used when syncing to update just that section and preserve other manual sections.
     """
     columns = inspector.get_columns(obj_name, schema=schema_name)
-
     fk_map = get_foreign_key_map(inspector, obj_name, schema_name) if obj_type == "table" else {}
     pk_columns = get_primary_key_columns(inspector, obj_name, schema_name) if obj_type == "table" else []
     db_description = get_table_description(engine, obj_name, schema_name, obj_type)
-
     if not db_description:
         db_description = f"Stores {obj_name} data."
-
-    # Use the existing rich-markdown builder from ingest_service
-    markdown_body = build_table_markdown_description(
+    return build_table_markdown_description(
         schema_name=schema_name,
         table_name=obj_name,
         table_description=db_description,
@@ -225,6 +325,45 @@ def _build_object_markdown(
         fk_map=fk_map,
         pk_columns=pk_columns,
         table_type=obj_type,
+    )
+
+
+def _merge_description_section(existing_content: str, new_description_block: str) -> str:
+    """
+    Replace only the "## Description" section (table description + columns) in existing content.
+    Everything before (header, metadata) and after (other manual sections) is preserved.
+    If "## Description" is not found, returns existing_content unchanged (caller may fall back to full replace).
+    """
+    # Find start of ## Description (allow optional leading newline / at start of file)
+    desc_marker = "## Description"
+    start = existing_content.find(desc_marker)
+    if start == -1:
+        return existing_content
+    # End of section: next "\n## " (start of another section) or end of file
+    after_desc = start + len(desc_marker)
+    next_section = existing_content.find("\n## ", after_desc)
+    if next_section == -1:
+        end = len(existing_content)
+        content_after = ""
+    else:
+        end = next_section
+        content_after = existing_content[end:].lstrip("\n")
+    content_before = existing_content[:start]
+    new_section = "## Description\n\n" + new_description_block.rstrip()
+    if content_after:
+        return content_before + new_section + "\n\n" + content_after
+    return content_before + new_section
+
+
+def _build_object_markdown(
+    engine, inspector, schema_name: str, obj_name: str,
+    obj_type: str, data_source_name: str
+) -> Tuple[str, Dict]:
+    """
+    Build the full markdown file content and metadata dict for a single DB object.
+    """
+    markdown_body = _build_description_and_columns_block(
+        engine, inspector, schema_name, obj_name, obj_type
     )
 
     # Wrap with skill-file header
@@ -241,10 +380,9 @@ def _build_object_markdown(
 """
 
     # Build metadata for the object index
-    # Extract keywords from description + object name
+    db_description = get_table_description(engine, obj_name, schema_name, obj_type) or f"Stores {obj_name} data."
     kw_words = re.findall(r'[A-Z][a-z]+|[a-z]+', obj_name)
     keywords = list(dict.fromkeys([w.lower() for w in kw_words if len(w) > 2]))[:8]
-
     meta = {
         "object_type": type_label,
         "schema_name": schema_name,

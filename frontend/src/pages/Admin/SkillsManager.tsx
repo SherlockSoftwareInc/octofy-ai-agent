@@ -5,7 +5,7 @@ import type { FolderTreeNode } from '../../api/client';
 import {
     FolderTree, FolderOpen, Folder, FileText, ChevronRight, ChevronDown, 
     Loader2, AlertCircle, CheckCircle, X, FileCode, Save, Eye, Edit3, Sparkles, Undo2,
-    Plus, Trash2, Database, Layers, Table
+    Plus, Trash2, Database, Layers, Table, RefreshCw
 } from 'lucide-react';
 import { MarkdownViewer } from '../../components/MarkdownViewer';
 import { MarkdownEditor } from '../../components/MarkdownEditor';
@@ -33,6 +33,7 @@ export const SkillsManager: React.FC = () => {
     const [showCreateDataGroupModal, setShowCreateDataGroupModal] = useState(false);
     const [showCreateTableModal, setShowCreateTableModal] = useState(false);
     const [newItemName, setNewItemName] = useState('');
+    const [syncingFromDb, setSyncingFromDb] = useState(false);
 
     const loadFolderTree = useCallback(async () => {
         setLoading(true);
@@ -127,6 +128,25 @@ export const SkillsManager: React.FC = () => {
             setMarkdownContent(originalContent);
             setOriginalContent(null);
             showToast('success', 'AI changes undone');
+        }
+    };
+
+    const handleSyncFromDatabase = async () => {
+        if (!selectedFile) return;
+
+        setSyncingFromDb(true);
+        try {
+            const content = await api.admin.syncSchemaMarkdown(selectedFile);
+            setMarkdownContent(content);
+            setViewMode('view');
+            setIsEditing(false);
+            setOriginalContent(null);
+            showToast('success', 'Schema file rebuilt from database');
+        } catch (error) {
+            showToast('error', (error as { response?: { data?: { detail?: string } } })?.response?.data?.detail || 'Failed to sync from database');
+            console.error(error);
+        } finally {
+            setSyncingFromDb(false);
         }
     };
 
@@ -473,6 +493,19 @@ export const SkillsManager: React.FC = () => {
                                         >
                                             <FileCode size={16} />
                                             Raw
+                                        </button>
+                                        <button
+                                            onClick={handleSyncFromDatabase}
+                                            disabled={syncingFromDb}
+                                            className="px-3 py-1.5 rounded-md flex items-center gap-2 text-sm transition-colors text-slate-400 hover:text-slate-200 disabled:opacity-50"
+                                            title="Rebuild this file from database (table and column descriptions)"
+                                        >
+                                            {syncingFromDb ? (
+                                                <Loader2 size={16} className="animate-spin" />
+                                            ) : (
+                                                <RefreshCw size={16} />
+                                            )}
+                                            Sync
                                         </button>
                                     </div>
                                 )}
