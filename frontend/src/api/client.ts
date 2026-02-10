@@ -691,8 +691,10 @@ export const api = {
         deleteSchema: async (schema: string, table: string) => {
             await axios.delete(`${API_BASE_URL}/admin/schema`, { params: { schema, table } });
         },
-        clearAllSchemas: async () => {
-            await axios.post(`${API_BASE_URL}/admin/schema/clear`);
+        clearAllSchemas: async (sourceId?: string) => {
+            await axios.post(`${API_BASE_URL}/admin/schema/clear`, null, {
+                params: sourceId ? { source_id: sourceId } : {}
+            });
         },
         getSchemaStatus: async (includeDbInspection: boolean = false): Promise<AdminSchemaStatus[]> => {
             const params = includeDbInspection ? { include_db_inspection: 'true' } : {};
@@ -789,8 +791,10 @@ export const api = {
         deleteValue: async (id: number) => {
             await axios.delete(`${API_BASE_URL}/admin/values/${id}`);
         },
-        clearAllValues: async () => {
-            await axios.post(`${API_BASE_URL}/admin/values/clear`);
+        clearAllValues: async (sourceId?: string) => {
+            await axios.post(`${API_BASE_URL}/admin/values/clear`, null, {
+                params: sourceId ? { source_id: sourceId } : {}
+            });
         },
         getValueTemplate: async () => {
             const response = await axios.get(`${API_BASE_URL}/admin/values/template`, {

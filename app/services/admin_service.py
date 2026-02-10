@@ -613,13 +613,13 @@ def delete_value_item(value_id: int) -> bool:
         print(f"Error deleting value: {e}")
         return False
 
-def clear_all_values() -> bool:
+def clear_all_values(source_id: str = None) -> bool:
     """
-    Clear all values from the index.
+    Clear values from the index, optionally filtered by source_id.
     """
     try:
         vector_store = get_vector_store()
-        vector_store.clear_values_collection()
+        vector_store.clear_values_collection(source_id=source_id)
         return True
     except Exception as e:
         print(f"Error clearing values: {e}")
@@ -847,14 +847,14 @@ def ingest_fewshots_from_excel(file_content: bytes, mode: str = "append", progre
             "rows_processed": 0
         }
 
-def clear_all_schemas_data() -> bool:
+def clear_all_schemas_data(source_id: str = None) -> bool:
     """
-    Clear all schemas from the vector store.
+    Clear schemas from the vector store, optionally filtered by source_id.
     """
     try:
         vector_store = get_vector_store()
-        vector_store.clear_schemas_collection()
-        vector_store.clear_schemas_v2_collection()
+        vector_store.clear_schemas_collection(source_id=source_id)
+        vector_store.clear_schemas_v2_collection(source_id=source_id)
         return True
     except Exception as e:
         print(f"Error clearing schemas: {e}")

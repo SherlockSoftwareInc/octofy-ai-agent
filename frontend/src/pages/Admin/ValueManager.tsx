@@ -180,14 +180,19 @@ export const ValueManager: FC<ValueManagerProps> = ({ onUploadStateChange }) => 
   };
 
   const clearAllValues = async () => {
-    if (!confirm('This will delete ALL values from the index. Continue?')) return;
+    if (!selectedSourceId) {
+      alert('Please select a data source first.');
+      return;
+    }
+    if (!confirm('This will delete all values for the selected data source. Continue?')) return;
 
     try {
-      await api.admin.clearAllValues();
-      setValues([]);
+      await api.admin.clearAllValues(selectedSourceId);
+      // Reload to show remaining values from other sources
+      await loadValues();
       setUploadStatus({
         status: 'success',
-        message: 'All values cleared from index',
+        message: 'Values for the selected data source cleared from index',
       });
     } catch (error) {
       console.error('Error clearing values:', error);
@@ -355,11 +360,11 @@ export const ValueManager: FC<ValueManagerProps> = ({ onUploadStateChange }) => 
             </button>
             <button
               onClick={clearAllValues}
-              disabled={values.length === 0}
+              disabled={values.length === 0 || !selectedSourceId}
               className="flex items-center gap-2 px-4 py-2 bg-red-900/20 hover:bg-red-900/30 text-red-400 hover:text-red-300 rounded-lg transition disabled:opacity-50 disabled:cursor-not-allowed"
             >
               <Trash2 className="w-4 h-4" />
-              Clear All Values
+              Clear Source Values
             </button>
           </div>
 

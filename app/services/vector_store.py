@@ -852,7 +852,7 @@ class MilvusVectorStore(VectorStoreBase):
         collection.delete(f'schema_name == "{schema_name}" && table_name == "{table_name}"')
         collection.flush()
 
-    def clear_schemas_collection(self):
+    def clear_schemas_collection(self, source_id: str = None):
         if not self._connected:
             return
         self._ensure_schema_collection()
@@ -864,10 +864,13 @@ class MilvusVectorStore(VectorStoreBase):
             collection.load()
         except Exception:
             pass
-        collection.delete("id >= 0")
+        if source_id:
+            collection.delete(f'source_guid == "{source_id}"')
+        else:
+            collection.delete("id >= 0")
         collection.flush()
 
-    def clear_schemas_v2_collection(self):
+    def clear_schemas_v2_collection(self, source_id: str = None):
         if not self._connected:
             return
         self._ensure_schema_v2_collection()
@@ -878,7 +881,10 @@ class MilvusVectorStore(VectorStoreBase):
             collection.load()
         except Exception:
             pass
-        collection.delete("id >= 0")
+        if source_id:
+            collection.delete(f'source_guid == "{source_id}"')
+        else:
+            collection.delete("id >= 0")
         collection.flush()
 
     # --- Schema V2 (Multi-Source) Methods ---
@@ -1195,7 +1201,7 @@ class MilvusVectorStore(VectorStoreBase):
         collection.delete(f"id == {item_id}")
         collection.flush()
     
-    def clear_values_collection(self):
+    def clear_values_collection(self, source_id: str = None):
         if not self._connected:
             return
         self._ensure_values_collection()
@@ -1207,7 +1213,10 @@ class MilvusVectorStore(VectorStoreBase):
             collection.load()
         except Exception:
             pass
-        collection.delete("id >= 0")
+        if source_id:
+            collection.delete(f'source_guid == "{source_id}"')
+        else:
+            collection.delete("id >= 0")
         collection.flush()
 
     def clear_fewshots_collection(self):

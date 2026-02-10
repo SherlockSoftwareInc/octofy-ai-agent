@@ -213,15 +213,16 @@ def get_schema_template(current_user: User = Depends(get_current_active_admin)):
     )
 
 @router.post("/schema/clear")
-def clear_all_schemas_endpoint(current_user: User = Depends(get_current_active_admin)):
+def clear_all_schemas_endpoint(source_id: str = None, current_user: User = Depends(get_current_active_admin)):
     """
-    Clear all schemas from the vector store.
+    Clear schemas from the vector store. If source_id is provided, only clears schemas for that data source.
     """
     try:
         from app.services.admin_service import clear_all_schemas_data
-        success = clear_all_schemas_data()
+        success = clear_all_schemas_data(source_id=source_id)
         if success:
-            return {"status": "success", "message": "Cleared all schemas from vector store"}
+            msg = f"Cleared schemas for source {source_id}" if source_id else "Cleared all schemas from vector store"
+            return {"status": "success", "message": msg}
         else:
             raise HTTPException(status_code=500, detail="Failed to clear schemas")
     except Exception as e:
@@ -729,14 +730,15 @@ def delete_value(item_id: int, current_user: User = Depends(get_current_active_a
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.post("/values/clear")
-def clear_values(current_user: User = Depends(get_current_active_admin)):
+def clear_values(source_id: str = None, current_user: User = Depends(get_current_active_admin)):
     """
-    Clear all values from the value index.
+    Clear values from the value index. If source_id is provided, only clears values for that data source.
     """
     try:
-        success = clear_all_values()
+        success = clear_all_values(source_id=source_id)
         if success:
-            return {"status": "success", "message": "Cleared all values from index"}
+            msg = f"Cleared values for source {source_id}" if source_id else "Cleared all values from index"
+            return {"status": "success", "message": msg}
         else:
             raise HTTPException(status_code=500, detail="Failed to clear values")
     except Exception as e:

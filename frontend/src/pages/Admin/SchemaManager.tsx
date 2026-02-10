@@ -316,16 +316,20 @@ export const SchemaManager: React.FC<SchemaManagerProps> = ({ onUploadStateChang
     };
 
     const handleClearAllSchemas = async () => {
+        if (!selectedSourceId) {
+            alert('Please select a data source first.');
+            return;
+        }
         const confirmed = window.confirm(
-            'AR YOU SURE? This will delete ALL schemas from the vector store. This action cannot be undone.'
+            'ARE YOU SURE? This will delete all schemas for the selected data source. This action cannot be undone.'
         );
 
         if (!confirmed) return;
 
         try {
-            await api.admin.clearAllSchemas();
+            await api.admin.clearAllSchemas(selectedSourceId);
             await fetchData(false); // Refresh status without DB inspection
-            alert('All schemas have been cleared.');
+            alert('Schemas for the selected data source have been cleared.');
         } catch (error) {
             const errorWithResponse = error as { response?: { data?: { detail?: string } }; message?: string };
             alert(`Failed to clear schemas: ${errorWithResponse.response?.data?.detail || errorWithResponse.message || 'Unknown error'}`);
@@ -517,11 +521,11 @@ export const SchemaManager: React.FC<SchemaManagerProps> = ({ onUploadStateChang
                         </button>
                         <button
                             onClick={handleClearAllSchemas}
-                            disabled={schemas.length === 0}
+                            disabled={schemas.length === 0 || !selectedSourceId}
                             className="flex items-center gap-2 px-4 py-2 bg-red-900/20 hover:bg-red-900/30 text-red-400 hover:text-red-300 rounded-lg transition disabled:opacity-50 disabled:cursor-not-allowed"
                         >
                             <Trash2 className="w-4 h-4" />
-                            Clear All Schemas
+                            Clear Source Schemas
                         </button>
                     </div>
 
