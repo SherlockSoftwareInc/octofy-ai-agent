@@ -161,6 +161,7 @@ class GenerateSQLResponse(BaseModel):
     objects: Optional[List[SearchObject]] = None
     discovery_branch: Optional[str] = None  # "kb_direct", "kb_gap_fill", or "dual_prong"
     source_id: Optional[str] = None  # Data source ID to use when executing this SQL
+    is_code_edit: Optional[bool] = None  # If True, frontend should update the previous code box in place
 
 class AgentStatus(BaseModel):
     step_id: int

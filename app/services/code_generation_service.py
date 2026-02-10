@@ -853,10 +853,58 @@ Entities: {', '.join(entities) if entities else 'None'}
     yield {"type": "done"}
 
 
+def _is_code_edit_request(query: str) -> bool:
+    """Return True if the user message is asking to edit/modify previously generated code."""
+    if not query or not query.strip():
+        return False
+    q = query.strip().lower()
+    edit_phrases = [
+        "change ", "replace ", "update the code", "in the generated code",
+        "in the code", "modify the code", "edit the code", "fix the code",
+        "change the ", "replace the ", "update the ", "change where", "replace where",
+    ]
+    return any(p in q for p in edit_phrases)
+
+
+def _apply_python_code_edit(previous_code: str, user_edit_instruction: str, query_history: Optional[str], llm_service) -> str:
+    """
+    Ask the LLM to apply the user's edit to the previous code and return FULL executable code.
+    Ensures the result is complete code that still answers the original request, not a snippet.
+    """
+    prompt = f"""### ROLE
+You are an expert Python programmer. The user has previously been shown Python code and now wants a specific edit applied.
+
+### CRITICAL RULES
+1. Apply ONLY the change the user asked for. Do not add or remove unrelated logic.
+2. You MUST return the COMPLETE, executable Python script—not a snippet or a diff.
+3. The output must be valid Python that can run as-is (same structure: imports, engine, raw_connection, pd.read_sql, final_result_df, etc.).
+4. Do NOT use markdown code blocks. Do NOT include any text before or after the code. Start with # comments or import.
+5. Preserve the original goal of the script; the edit should only change what the user specified (e.g. a WHERE clause value).
+
+### PREVIOUS PYTHON CODE
+```python
+{_strip_db_connection_injection(previous_code)}
+```
+
+### CONVERSATION CONTEXT (optional)
+{query_history or "(none)"}
+
+### USER'S EDIT REQUEST
+{user_edit_instruction}
+
+### YOUR TASK
+Apply the user's requested change to the code above and output the ENTIRE modified Python script. The code must remain executable and still answer the original analysis question."""
+
+    code = llm_service.chat(prompt, temperature=0.1)
+    return _cleanup_python_code(code)
+
+
 def generate_python_for_request(request: GenerateSQLRequest) -> Generator[Union[AgentStatus, Dict[str, Any]], None, None]:
     """
     Generate Python code based on user request using the same discovery logic as SQL generation.
     It produces native Python code (pandas/sqlalchemy) to retrieve and manipulate data.
+    When previousSQL and queryHistory are provided and the user asks to edit the code, applies the edit
+    and returns full executable code with is_code_edit=True so the UI can update in place.
     
     Args:
         request: Request containing the natural language query
@@ -871,6 +919,31 @@ def generate_python_for_request(request: GenerateSQLRequest) -> Generator[Union[
         yield {"type": "result", "payload": result}
         yield {"type": "done"}
         return
+
+    # Code-edit path: user has previous code and is asking to change something in it
+    if request.previousSQL and request.previousSQL.strip() and _is_code_edit_request(request.query):
+        yield AgentStatus(step_id=1, message="Updating code based on your request...")
+        llm_service = get_llm_service()
+        try:
+            modified_code = _apply_python_code_edit(
+                request.previousSQL,
+                request.query,
+                request.queryHistory,
+                llm_service,
+            )
+            response = GenerateSQLResponse(
+                sql=modified_code,
+                explanation="Code updated based on your request.",
+                query_type="python_code",
+                context_text="",
+                is_code_edit=True,
+            )
+            yield {"type": "result", "payload": response}
+            yield {"type": "done"}
+            return
+        except Exception as e:
+            logger.warning(f"Code edit path failed, falling back to full generation: {e}")
+            # Fall through to full generation below
 
     yield AgentStatus(step_id=1, message="Initializing agent and loading settings...")
     llm_service = get_llm_service()

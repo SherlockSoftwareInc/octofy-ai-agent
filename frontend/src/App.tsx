@@ -799,7 +799,7 @@ function AuthenticatedApp() {
         }, undefined, abortControllerRef.current.signal);
         if (!result.query_type) result.query_type = 'sas_code';
       } else if (queryMode === 'generate-python') {
-        // Use summary as prompt if available
+        // Use summary as prompt if available; pass previous code and history for edit follow-ups
         let queryToSend = currentQuery;
         if (planningSummary && !currentQuery.trim()) {
           queryToSend = planningSummary;
@@ -807,9 +807,14 @@ function AuthenticatedApp() {
           queryToSend = `${planningSummary}\n\nAdditional requirements:\n${currentQuery}`;
         }
 
-        result = await api.generatePythonStream(queryToSend, (status) => {
-          setSteps([status]);
-        }, undefined, abortControllerRef.current.signal);
+        result = await api.generatePythonStream(
+          queryToSend,
+          (status) => setSteps([status]),
+          undefined,
+          abortControllerRef.current.signal,
+          lastGeneratedSQL || undefined,
+          queryHistory || undefined
+        );
         if (!result.query_type) result.query_type = 'python_code';
       } else if (queryMode === 'code-advisor') {
         // Code Advisor mode - pass conversation history for follow-up questions
@@ -859,15 +864,12 @@ function AuthenticatedApp() {
           context = await api.discovery(currentQuery);
         }
 
-        // Store the generated SQL for future reference
+        // Store the generated SQL/code for future reference
         const newSQL = result.sql || lastGeneratedSQL;
-        // Keep query history even after successful SQL generation to support conversational follow-ups
-        // e.g., "find tables with EmployeeID" -> "give me those tables"
-        const newQueryHistory = result.sql 
-          ? currentQuery  // Keep current query for context in next request
+        const newQueryHistory = result.sql
+          ? currentQuery
           : (queryHistory ? `${queryHistory}. ${currentQuery}` : currentQuery);
 
-        // Add AI response to chat history
         const normalizedQueryType: ChatMessage['queryType'] =
           result.query_type === 'r_code' ? 'r_code'
             : result.query_type === 'sas_code' ? 'sas_code'
@@ -875,30 +877,76 @@ function AuthenticatedApp() {
                 : result.query_type === 'database' ? 'database'
                   : 'database';
 
-        const aiMessage: ChatMessage = {
-          id: generateMessageId(),
-          role: 'assistant',
-          type: 'ai',
-          content: result.explanation || (result.query_type === 'database' ?
-            'Here is the query statement you need to use to query the database:' :
-            `Here is the generated ${result.query_type === 'r_code' ? 'R' : result.query_type === 'sas_code' ? 'SAS' : 'Python'} code:`),
-          timestamp: new Date(),
-          discoveryResult: context,
-          sqlResult: result,
-          queryType: normalizedQueryType,
-          sourceQuery: currentQuery
-        };
-
-        const updatedMessages = [...currentMessages, aiMessage];
-        updateConversation(conversationId, {
-          messages: updatedMessages,
-          lastGeneratedSQL: newSQL,
-          queryHistory: newQueryHistory,
-        });
+        // In-place update: when backend signals a code edit, update the previous code box instead of adding a new message
+        let updatedMessagesForTitle: ChatMessage[];
+        if (result.query_type === 'python_code' && result.is_code_edit) {
+          let lastPythonAiIndex = -1;
+          for (let i = currentMessages.length - 1; i >= 0; i--) {
+            const m = currentMessages[i];
+            if (m.type === 'ai' && m.queryType === 'python_code') {
+              lastPythonAiIndex = i;
+              break;
+            }
+          }
+          if (lastPythonAiIndex >= 0) {
+            const updatedMessages = currentMessages.map((msg, i) =>
+              i === lastPythonAiIndex
+                ? { ...msg, sqlResult: result, content: result.explanation || msg.content }
+                : msg
+            );
+            updatedMessagesForTitle = updatedMessages;
+            updateConversation(conversationId, {
+              messages: updatedMessages,
+              lastGeneratedSQL: newSQL,
+              queryHistory: newQueryHistory,
+            });
+            setToast({ message: 'Code has been updated.', type: 'success' });
+          } else {
+            // Fallback: append as new message if no previous code block found
+            const aiMessage: ChatMessage = {
+              id: generateMessageId(),
+              role: 'assistant',
+              type: 'ai',
+              content: result.explanation || 'Here is the generated Python code:',
+              timestamp: new Date(),
+              discoveryResult: context,
+              sqlResult: result,
+              queryType: normalizedQueryType,
+              sourceQuery: currentQuery
+            };
+            updatedMessagesForTitle = [...currentMessages, aiMessage];
+            updateConversation(conversationId, {
+              messages: updatedMessagesForTitle,
+              lastGeneratedSQL: newSQL,
+              queryHistory: newQueryHistory,
+            });
+          }
+        } else {
+          // Normal: add new AI message
+          const aiMessage: ChatMessage = {
+            id: generateMessageId(),
+            role: 'assistant',
+            type: 'ai',
+            content: result.explanation || (result.query_type === 'database' ?
+              'Here is the query statement you need to use to query the database:' :
+              `Here is the generated ${result.query_type === 'r_code' ? 'R' : result.query_type === 'sas_code' ? 'SAS' : 'Python'} code:`),
+            timestamp: new Date(),
+            discoveryResult: context,
+            sqlResult: result,
+            queryType: normalizedQueryType,
+            sourceQuery: currentQuery
+          };
+          updatedMessagesForTitle = [...currentMessages, aiMessage];
+          updateConversation(conversationId, {
+            messages: updatedMessagesForTitle,
+            lastGeneratedSQL: newSQL,
+            queryHistory: newQueryHistory,
+          });
+        }
 
         // Auto-generate better title after a few messages
-        if (updatedMessages.length === 4) { // After 2 exchanges
-          const autoTitle = await generateAutoTitle(updatedMessages, api.generateSQL);
+        if (updatedMessagesForTitle.length === 4) { // After 2 exchanges
+          const autoTitle = await generateAutoTitle(updatedMessagesForTitle, api.generateSQL);
           if (autoTitle) {
             updateConversation(conversationId, { title: autoTitle });
           }

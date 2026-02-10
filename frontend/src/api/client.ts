@@ -102,6 +102,8 @@ export interface GenerateSQLResponse {
     objects?: SearchObject[];
     /** Data source ID to use when executing this SQL */
     source_id?: string;
+    /** If true, frontend should update the previous code box in place instead of adding a new message */
+    is_code_edit?: boolean;
 }
 
 export interface SearchObject {
@@ -450,7 +452,14 @@ export const api = {
         return finalResult;
     },
 
-    generatePythonStream: async (query: string, onStatus: (status: AgentStatus) => void, context?: DiscoveryContext, signal?: AbortSignal): Promise<GenerateSQLResponse> => {
+    generatePythonStream: async (
+        query: string,
+        onStatus: (status: AgentStatus) => void,
+        context?: DiscoveryContext,
+        signal?: AbortSignal,
+        previousSQL?: string,
+        queryHistory?: string
+    ): Promise<GenerateSQLResponse> => {
         const url = `${API_BASE_URL}/generate-python`;
         const apiKey = getApiKey();
         const headers: Record<string, string> = {
@@ -459,7 +468,7 @@ export const api = {
         if (apiKey) {
             headers['X-API-Key'] = apiKey;
         }
-        const body = JSON.stringify({ query, context });
+        const body = JSON.stringify({ query, context, previousSQL, queryHistory });
 
         const response = await fetch(url, {
             method: 'POST',
