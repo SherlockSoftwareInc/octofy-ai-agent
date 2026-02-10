@@ -298,12 +298,12 @@ export const FewShotManager: React.FC<FewShotManagerProps> = ({ onUploadStateCha
                                     </div>
                                 </div>
                             </div>
-                            <div className="w-full bg-slate-800 rounded-full h-3">
-                                <div
-                                    className="bg-gradient-to-r from-emerald-500 to-cyan-500 h-3 rounded-full transition-all"
-                                    style={{ width: `${uploadProgress}%` }}
-                                ></div>
-                            </div>
+                            <progress
+                                className="progress-bar progress-bar--emerald"
+                                value={uploadProgress}
+                                max={100}
+                                aria-label="Upload progress"
+                            />
                             <p className="text-xs text-emerald-300/70">Do not close this page or navigate away until the upload is complete</p>
                         </div>
                     )}
@@ -365,6 +365,7 @@ export const FewShotManager: React.FC<FewShotManagerProps> = ({ onUploadStateCha
                                 className="w-full bg-slate-950 border border-slate-800 rounded p-2 focus:ring-2 focus:ring-emerald-500 outline-none text-sm text-white"
                                 value={newKnowledgeType}
                                 onChange={(e) => setNewKnowledgeType(e.target.value as KnowledgeType)}
+                                title="Knowledge type"
                             >
                                 <option value="general">General Knowledge</option>
                                 <option value="sql_query">SQL Query</option>
@@ -438,6 +439,8 @@ export const FewShotManager: React.FC<FewShotManagerProps> = ({ onUploadStateCha
                                 <button
                                     onClick={() => item.id && handleDelete(item.id)}
                                     className="opacity-0 group-hover:opacity-100 p-2 text-slate-500 hover:text-red-400 transition"
+                                    aria-label="Delete knowledge base example"
+                                    title="Delete knowledge base example"
                                 >
                                     <Trash2 size={16} />
                                 </button>

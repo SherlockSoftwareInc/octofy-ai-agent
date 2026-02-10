@@ -380,12 +380,12 @@ export const ValueManager: FC<ValueManagerProps> = ({ onUploadStateChange }) => 
                   </div>
                 </div>
               </div>
-              <div className="w-full bg-slate-800 rounded-full h-3">
-                <div
-                  className="bg-gradient-to-r from-purple-500 to-pink-500 h-3 rounded-full transition-all"
-                  style={{ width: `${uploadProgress}%` }}
-                ></div>
-              </div>
+              <progress
+                className="progress-bar progress-bar--purple"
+                value={uploadProgress}
+                max={100}
+                aria-label="Upload progress"
+              />
               <p className="text-xs text-purple-300/70">Do not close this page or navigate away until the upload is complete</p>
             </div>
           )}
@@ -489,6 +489,8 @@ export const ValueManager: FC<ValueManagerProps> = ({ onUploadStateChange }) => 
                       <button
                         onClick={() => deleteValue(v.id)}
                         className="text-red-400 hover:text-red-300 transition"
+                        aria-label="Delete value"
+                        title="Delete value"
                       >
                         <Trash2 className="w-4 h-4" />
                       </button>

@@ -64,6 +64,56 @@ body {
   animation: fade-in 0.3s ease-out;
 }
 
+/* Progress bars */
+.progress-bar {
+  width: 100%;
+  height: 0.75rem;
+  border-radius: 9999px;
+  overflow: hidden;
+  appearance: none;
+  border: none;
+  background-color: #1e293b;
+}
+
+.progress-bar::-webkit-progress-bar {
+  background-color: #1e293b;
+  border-radius: 9999px;
+}
+
+.progress-bar::-webkit-progress-value {
+  border-radius: 9999px;
+  transition: width 0.2s ease;
+}
+
+.progress-bar::-moz-progress-bar {
+  border-radius: 9999px;
+  transition: width 0.2s ease;
+}
+
+.progress-bar--indigo::-webkit-progress-value {
+  background: linear-gradient(90deg, #6366f1, #a855f7);
+}
+
+.progress-bar--indigo::-moz-progress-bar {
+  background: linear-gradient(90deg, #6366f1, #a855f7);
+}
+
+.progress-bar--emerald::-webkit-progress-value {
+  background: linear-gradient(90deg, #10b981, #22d3ee);
+}
+
+.progress-bar--emerald::-moz-progress-bar {
+  background: linear-gradient(90deg, #10b981, #22d3ee);
+}
+
+.progress-bar--purple::-webkit-progress-value {
+  background: linear-gradient(90deg, #a855f7, #ec4899);
+}
+
+.progress-bar--purple::-moz-progress-bar {
+  background: linear-gradient(90deg, #a855f7, #ec4899);
+}
+
 /* Markdown Viewer Styles */
 .markdown-viewer {
   line-height: 1.7;

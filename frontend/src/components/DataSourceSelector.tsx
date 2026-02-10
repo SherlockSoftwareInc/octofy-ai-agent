@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useId, useState } from 'react';
 import { api } from '../api/client';
 import type { DataSourceResponse } from '../api/client';
 import { Database, AlertCircle } from 'lucide-react';
@@ -14,6 +14,7 @@ export const DataSourceSelector: React.FC<DataSourceSelectorProps> = ({
     onSourceChange,
     disabled = false
 }) => {
+    const selectId = useId();
     const [dataSources, setDataSources] = useState<DataSourceResponse[]>([]);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
@@ -72,15 +73,20 @@ export const DataSourceSelector: React.FC<DataSourceSelectorProps> = ({
 
     return (
         <div className="flex items-center gap-3">
-            <label className="flex items-center gap-2 text-slate-300 text-sm font-medium whitespace-nowrap">
+            <label
+                htmlFor={selectId}
+                className="flex items-center gap-2 text-slate-300 text-sm font-medium whitespace-nowrap"
+            >
                 <Database size={16} className="text-slate-400" />
                 Data Source:
             </label>
             <select
+                id={selectId}
                 value={selectedSourceId}
                 onChange={(e) => onSourceChange(e.target.value)}
                 disabled={disabled}
                 className="flex-1 bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-indigo-500 transition disabled:opacity-50 disabled:cursor-not-allowed"
+                title="Data source"
             >
                 {dataSources.map((ds) => (
                     <option key={ds.source_id} value={ds.source_id}>

@@ -541,12 +541,12 @@ export const SchemaManager: React.FC<SchemaManagerProps> = ({ onUploadStateChang
                                     </div>
                                 </div>
                             </div>
-                            <div className="w-full bg-slate-800 rounded-full h-3">
-                                <div
-                                    className="bg-gradient-to-r from-indigo-500 to-purple-500 h-3 rounded-full transition-all"
-                                    style={{ width: `${uploadProgress}%` }}
-                                ></div>
-                            </div>
+                            <progress
+                                className="progress-bar progress-bar--indigo"
+                                value={uploadProgress}
+                                max={100}
+                                aria-label="Upload progress"
+                            />
                             <p className="text-xs text-indigo-300/70">Do not close this page or navigate away until the upload is complete</p>
                         </div>
                     )}
