@@ -4,10 +4,10 @@
   "schemas": [
     {
       "schema_name": "dbo",
-      "description": "Contains 23 tables and 16 views",
+      "description": "Contains 22 tables and 16 views",
       "object_index_file": "schemas/dbo/.object-index.json",
-      "total_objects": 39,
-      "tables": 23,
+      "total_objects": 38,
+      "tables": 22,
       "views": 16
     }
   ]

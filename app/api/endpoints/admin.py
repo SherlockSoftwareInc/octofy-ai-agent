@@ -99,7 +99,15 @@ def delete_schema(schema: str, table: str, current_user: User = Depends(get_curr
     try:
         vector_store = get_vector_store()
         vector_store.delete_schema(schema, table)
-        return {"status": "success", "message": f"Deleted {schema}.{table} from vector store"}
+        
+        # Also remove from schema library
+        from app.services.skills_admin_service import delete_schema_from_library
+        lib_deleted = delete_schema_from_library(schema, table)
+        
+        msg = f"Deleted {schema}.{table} from vector store"
+        if lib_deleted:
+            msg += " and schema library"
+        return {"status": "success", "message": msg}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -384,11 +392,19 @@ def sync_data_object(request: SyncObjectRequest, current_user: User = Depends(ge
 
 @router.delete("/object")
 def delete_data_object(source_id: str, schema: str, object_name: str, current_user: User = Depends(get_current_active_admin)):
-    """Delete a data object from vector store."""
+    """Delete a data object from vector store and schema library."""
     try:
         vector_store = get_vector_store()
         vector_store.delete_data_object_v2(source_id, schema, object_name)
-        return {"status": "success", "message": f"Deleted {schema}.{object_name} from vector store"}
+        
+        # Also remove from schema library
+        from app.services.skills_admin_service import delete_schema_from_library
+        lib_deleted = delete_schema_from_library(schema, object_name)
+        
+        msg = f"Deleted {schema}.{object_name} from vector store"
+        if lib_deleted:
+            msg += " and schema library"
+        return {"status": "success", "message": msg}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

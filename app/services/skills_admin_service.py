@@ -616,6 +616,98 @@ def delete_table_schema(file_path: str):
     table_file.unlink()
 
 
+def delete_schema_from_library(schema_name: str, object_name: str) -> bool:
+    """
+    Delete a database object from the schema library by searching all data source folders.
+    Removes the .md file, updates .object-index.json, and updates .schema-index.json counts.
+    
+    Args:
+        schema_name: The schema name (e.g., 'dbo')
+        object_name: The table/view name (e.g., 'Customers')
+        
+    Returns:
+        True if found and deleted, False if not found in any data source
+    """
+    import json as json_module
+    
+    if not SKILLS_BASE_PATH.exists():
+        return False
+    
+    target_filename = f"{schema_name}.{object_name}.md"
+    
+    for ds_dir in SKILLS_BASE_PATH.iterdir():
+        if not ds_dir.is_dir() or ds_dir.name.startswith('_'):
+            continue
+        
+        schema_dir = ds_dir / "schemas" / schema_name
+        if not schema_dir.exists():
+            continue
+        
+        target_file = schema_dir / target_filename
+        if not target_file.exists():
+            continue
+        
+        # 1. Delete the .md file
+        target_file.unlink()
+        
+        # 2. Update .object-index.json
+        object_index_file = schema_dir / ".object-index.json"
+        if object_index_file.exists():
+            try:
+                object_index = json_module.loads(object_index_file.read_text(encoding='utf-8'))
+                objects = object_index.get("objects", [])
+                original_count = len(objects)
+                objects = [
+                    obj for obj in objects
+                    if not (obj.get("object_name") == object_name and obj.get("schema_name") == schema_name)
+                ]
+                object_index["objects"] = objects
+                
+                # Recount tables and views
+                tables_count = sum(1 for o in objects if o.get("object_type", "").lower() == "table")
+                views_count = sum(1 for o in objects if o.get("object_type", "").lower() == "view")
+                object_index["total_objects"] = len(objects)
+                object_index["tables"] = tables_count
+                object_index["views"] = views_count
+                
+                object_index_file.write_text(
+                    json_module.dumps(object_index, indent=2, ensure_ascii=False),
+                    encoding='utf-8'
+                )
+            except Exception as e:
+                print(f"Warning: Failed to update .object-index.json: {e}")
+        
+        # 3. Update .schema-index.json
+        schema_index_file = ds_dir / ".schema-index.json"
+        if schema_index_file.exists():
+            try:
+                schema_index = json_module.loads(schema_index_file.read_text(encoding='utf-8'))
+                schemas = schema_index.get("schemas", [])
+                for s in schemas:
+                    if s.get("schema_name") == schema_name:
+                        # Recount from the updated object index
+                        if object_index_file.exists():
+                            updated_index = json_module.loads(object_index_file.read_text(encoding='utf-8'))
+                            s["total_objects"] = updated_index.get("total_objects", 0)
+                            s["tables"] = updated_index.get("tables", 0)
+                            s["views"] = updated_index.get("views", 0)
+                            s["description"] = f"Contains {s['tables']} tables and {s['views']} views"
+                        break
+                
+                schema_index["total_schemas"] = len(schemas)
+                schema_index_file.write_text(
+                    json_module.dumps(schema_index, indent=2, ensure_ascii=False),
+                    encoding='utf-8'
+                )
+            except Exception as e:
+                print(f"Warning: Failed to update .schema-index.json: {e}")
+        
+        print(f"Deleted {schema_name}.{object_name} from schema library in {ds_dir.name}")
+        return True
+    
+    return False
+
+
 def _update_index_with_data_source(name: str, ds_type: str, status: str, description: str, keywords_str: str, skill_file: str, source_id: str):
     """Add a new data source to _index.md"""
     index_file = SKILLS_BASE_PATH / "_index.md"
