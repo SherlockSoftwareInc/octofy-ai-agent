@@ -359,6 +359,7 @@ export const SQLResultDisplay: React.FC<SQLResultDisplayProps> = ({
     const [copied, setCopied] = useState(false);
     const [toast, setToast] = useState<{ message: string; type: ToastType } | null>(null);
     const [showDialog, setShowDialog] = useState(false);
+    const contributeDialogRef = useRef<HTMLDivElement>(null);
     const [showEditDialog, setShowEditDialog] = useState(false);
     const [editDraft, setEditDraft] = useState('');
     const aiSummaryRef = useRef<HTMLDivElement>(null);
@@ -410,6 +411,15 @@ export const SQLResultDisplay: React.FC<SQLResultDisplayProps> = ({
             }, 600);
         }
     }, [showFullAnalysis, analysisData?.insights, textareaRef]);
+
+    // Bring Contribute Example dialog into view when opened
+    useEffect(() => {
+        if (showDialog && contributeDialogRef.current) {
+            requestAnimationFrame(() => {
+                contributeDialogRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            });
+        }
+    }, [showDialog]);
 
     // Scroll to Data Profile panel and focus textarea after data profile is generated
     useEffect(() => {
@@ -1307,7 +1317,7 @@ export const SQLResultDisplay: React.FC<SQLResultDisplayProps> = ({
 
             {/* Contribute Example Dialog */}
             {showDialog && (
-                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 px-4">
+                <div ref={contributeDialogRef} className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 px-4">
                     <div className="w-full max-w-2xl bg-slate-950 border border-slate-800 rounded-2xl shadow-2xl p-6 space-y-4">
                         <div className="flex items-start justify-between">
                             <div>
