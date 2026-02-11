@@ -579,6 +579,18 @@ function AuthenticatedApp() {
     // Note: AI Summary is now on-demand via UI buttons in SQLResultDisplay component
   };
 
+  const handleCodeEdit = (messageId: string, newCode: string) => {
+    if (!activeConversationId) return;
+    const conv = conversations.find(c => c.id === activeConversationId);
+    if (!conv) return;
+    const updatedMessages = conv.messages.map(msg =>
+      msg.id === messageId && msg.sqlResult
+        ? { ...msg, sqlResult: { ...msg.sqlResult, sql: newCode } }
+        : msg
+    );
+    updateConversation(activeConversationId, { messages: updatedMessages });
+  };
+
   const handleRefinementClick = async (suggestion: string) => {
     if (!activeConversationId) return;
 
@@ -1557,6 +1569,7 @@ function AuthenticatedApp() {
                                       sqlExecutionResult={message.sqlExecutionResult}
                                       onExecutionComplete={(result) => handleExecutionComplete(message.id, result)}
                                       onSQLExecutionComplete={(result) => handleSQLExecutionComplete(message.id, result)}
+                                      onCodeChange={(newCode) => handleCodeEdit(message.id, newCode)}
                                       pythonSummary={message.pythonSummary || ''}
                                       sqlSummary={message.sqlSummary || ''}
                                       textareaRef={textareaRef}

@@ -1,5 +1,6 @@
 import React, { useMemo, useState, useRef, useEffect } from 'react';
-import { Copy, Check, Loader2, Gift, Play, CheckCircle, Sparkles, BarChart3 } from 'lucide-react';
+import { createPortal } from 'react-dom';
+import { Copy, Check, Loader2, Gift, Play, CheckCircle, Sparkles, BarChart3, Pencil } from 'lucide-react';
 import { Toast } from '../Toast';
 import type { ToastType } from '../Toast';
 import { api, type FewShotItem, type ExecutePythonResponse, type ExecuteSQLResponse, type ExecutePythonResult, type StructuredTableData, type ChartRecommendation, type ChartMetadata, type ChartTypeOption } from '../../api/client';
@@ -335,6 +336,8 @@ interface SQLResultDisplayProps {
     sqlSummary?: string;
     /** Reference to the user input textarea for focus management */
     textareaRef?: React.RefObject<HTMLTextAreaElement | null>;
+    /** Called when user edits the code in the Edit dialog and clicks Update */
+    onCodeChange?: (newCode: string) => void;
 }
 
 export const SQLResultDisplay: React.FC<SQLResultDisplayProps> = ({
@@ -350,11 +353,14 @@ export const SQLResultDisplay: React.FC<SQLResultDisplayProps> = ({
     chartOnly = false,
     pythonSummary,
     sqlSummary,
-    textareaRef
+    textareaRef,
+    onCodeChange
 }) => {
     const [copied, setCopied] = useState(false);
     const [toast, setToast] = useState<{ message: string; type: ToastType } | null>(null);
     const [showDialog, setShowDialog] = useState(false);
+    const [showEditDialog, setShowEditDialog] = useState(false);
+    const [editDraft, setEditDraft] = useState('');
     const aiSummaryRef = useRef<HTMLDivElement>(null);
     const datasetAnalysisRef = useRef<HTMLDivElement>(null);
     const dataProfileRef = useRef<HTMLDivElement>(null);
@@ -802,6 +808,19 @@ export const SQLResultDisplay: React.FC<SQLResultDisplayProps> = ({
                         {queryType === 'r_code' ? 'Generated R Code' : queryType === 'sas_code' ? 'Generated SAS Code' : queryType === 'python_code' ? 'Generated Python Code' : 'Generated SQL Query'}
                     </div>
                     <div className="flex items-center gap-2">
+                        {onCodeChange && (
+                            <button
+                                onClick={() => {
+                                    setEditDraft(sql);
+                                    setShowEditDialog(true);
+                                }}
+                                className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg transition-all duration-200 border bg-slate-700 hover:bg-slate-600 text-slate-300 border-slate-600 hover:border-slate-500"
+                                title="Edit code"
+                            >
+                                <Pencil size={12} />
+                                <span>Edit</span>
+                            </button>
+                        )}
                         <button
                             onClick={openContributeDialog}
                             disabled={!sourceQuestion}
@@ -1354,6 +1373,55 @@ export const SQLResultDisplay: React.FC<SQLResultDisplayProps> = ({
                         </div>
                     </div>
                 </div>
+            )}
+
+            {/* Edit Code Dialog - portaled to body so it stays viewport-visible */}
+            {showEditDialog && createPortal(
+                <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/70 px-4 overflow-y-auto py-8">
+                    <div className="w-full max-w-2xl my-auto bg-slate-950 border border-slate-800 rounded-2xl shadow-2xl p-6 space-y-4">
+                        <div className="flex items-start justify-between">
+                            <p className="text-xs uppercase tracking-[0.2em] text-slate-500 mb-1">Edit code</p>
+                            <button
+                                onClick={() => setShowEditDialog(false)}
+                                className="text-slate-400 hover:text-white p-1"
+                                aria-label="Close"
+                            >
+                                ×
+                            </button>
+                        </div>
+                        <div className="space-y-3">
+                            <label className="text-sm text-slate-300">
+                                {queryType === 'r_code' ? 'R Code' : queryType === 'sas_code' ? 'SAS Code' : queryType === 'python_code' ? 'Python Code' : 'SQL Query'}
+                            </label>
+                            <textarea
+                                className="w-full bg-slate-900 border border-slate-700 rounded-lg p-3 text-sm font-mono text-cyan-100 focus:ring-2 focus:ring-cyan-500 outline-none min-h-[200px]"
+                                rows={12}
+                                value={editDraft}
+                                onChange={(e) => setEditDraft(e.target.value)}
+                                placeholder="Edit the code..."
+                            />
+                        </div>
+                        <div className="flex justify-end gap-3 pt-2">
+                            <button
+                                onClick={() => setShowEditDialog(false)}
+                                className="px-4 py-2 text-slate-300 hover:text-white bg-slate-800/80 border border-slate-700 rounded-lg"
+                            >
+                                Cancel
+                            </button>
+                            <button
+                                onClick={() => {
+                                    onCodeChange?.(editDraft);
+                                    setShowEditDialog(false);
+                                }}
+                                className="px-4 py-2 bg-cyan-600 hover:bg-cyan-500 text-white rounded-lg flex items-center gap-2"
+                            >
+                                <Check size={16} />
+                                <span>Update</span>
+                            </button>
+                        </div>
+                    </div>
+                </div>,
+                document.body
             )}
 
             {/* Local Toast for this component interaction */}
