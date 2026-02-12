@@ -301,6 +301,86 @@ def test_function_metadata_extraction():
     print("  Function metadata extraction OK.")
 
 
+def test_function_scoring_boost():
+    """Test that Function objects receive a 1.2x scoring boost"""
+    print("\n" + "=" * 60)
+    print("TEST 10: Function Scoring Boost")
+    print("=" * 60)
+
+    skills_service = get_skills_service()
+
+    # Directly test _calculate_keyword_score with a Function object
+    func_obj = {
+        'object_type': 'Function',
+        'object_name': 'fn_CalculateTax',
+        'description': 'Calculates sales tax based on state code',
+        'keywords': ['tax', 'calculation', 'finance'],
+    }
+    table_obj = {
+        'object_type': 'Table',
+        'object_name': 'TaxRates',
+        'description': 'Calculates sales tax based on state code',
+        'keywords': ['tax', 'calculation', 'finance'],
+    }
+    query_terms = skills_service._normalize_query_terms("calculate tax")
+
+    func_score = skills_service._calculate_keyword_score(func_obj, query_terms)
+    table_score = skills_service._calculate_keyword_score(table_obj, query_terms)
+
+    # Function should score 1.2x higher than an equivalent table
+    assert func_score > table_score, (
+        f"Function score ({func_score}) should be higher than Table score ({table_score})"
+    )
+    expected_ratio = 1.2
+    actual_ratio = func_score / table_score if table_score > 0 else float('inf')
+    assert abs(actual_ratio - expected_ratio) < 0.01, (
+        f"Expected ~1.2x boost, got {actual_ratio:.2f}x"
+    )
+    print(f"  Function score: {func_score:.1f}, Table score: {table_score:.1f} (ratio: {actual_ratio:.2f}x)")
+    print("  Function scoring boost OK.")
+
+
+def test_function_statistics():
+    """Test that get_schema_statistics includes function counts"""
+    print("\n" + "=" * 60)
+    print("TEST 11: Function Statistics")
+    print("=" * 60)
+
+    skills_service = get_skills_service()
+
+    # Get overall statistics
+    stats = skills_service.get_schema_statistics()
+    # total_functions key should exist (may be 0 if no functions indexed yet)
+    assert 'total_functions' in stats, "Statistics should include total_functions key"
+    print(f"  total_functions: {stats['total_functions']}")
+    print("  Function statistics OK.")
+
+
+def test_function_type_filter():
+    """Test that search with object_type=Function only returns functions"""
+    print("\n" + "=" * 60)
+    print("TEST 12: Function Type Filter")
+    print("=" * 60)
+
+    skills_service = get_skills_service()
+
+    # Search with Function filter
+    results = skills_service.search_objects_by_keyword("calculate", object_type="Function", top_k=10)
+    print(f"  Search 'calculate' with object_type=Function: {len(results)} result(s)")
+
+    # All results should be Functions
+    for r in results:
+        assert r['object_type'] == 'Function', f"Expected Function, got {r['object_type']}"
+        print(f"    - {r['schema_name']}.{r['object_name']} (score: {r['score']:.1f})")
+
+    # Search with Table filter should NOT return functions
+    table_results = skills_service.search_objects_by_keyword("calculate", object_type="Table", top_k=10)
+    for r in table_results:
+        assert r['object_type'] == 'Table', f"Table filter returned non-Table: {r['object_type']}"
+
+    print("  Function type filter OK.")
+
+
 def main():
     """Run all tests"""
     print("\n")
@@ -318,6 +398,9 @@ def main():
         test_recommended_schemas()
         test_fallback_global_search()
         test_function_metadata_extraction()
+        test_function_scoring_boost()
+        test_function_statistics()
+        test_function_type_filter()
         
         print("\n" + "=" * 60)
         print("✓ All tests completed successfully!")
