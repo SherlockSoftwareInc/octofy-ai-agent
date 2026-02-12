@@ -28,6 +28,12 @@ logger = logging.getLogger(__name__)
 
 SKILLS_BASE_PATH = Path("skills/data-sources")
 
+# Common stop words excluded from keyword extraction
+KEYWORD_STOP_WORDS = frozenset([
+    'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at',
+    'to', 'for', 'of', 'with', 'by',
+])
+
 # System schemas to skip during scan
 SYSTEM_SCHEMAS = frozenset([
     "information_schema", "sys", "guest", "sysadmin",
@@ -40,6 +46,36 @@ SYSTEM_SCHEMAS = frozenset([
 def _slugify(name: str) -> str:
     """Convert name to filesystem-safe slug"""
     return re.sub(r'[^\w\s-]', '', name.lower()).replace(' ', '-')
+
+
+def _extract_keywords(object_name: str, description: str = "") -> list:
+    """
+    Extract up to 8 unique keywords from an object name and its description.
+
+    Words from the description are filtered by length (>3 chars) and stop words,
+    then combined with CamelCase/snake_case parts of the object name.
+    """
+    keywords: list = []
+    if description:
+        words = re.findall(r'\b\w+\b', description.lower())
+        keywords = [w for w in words if len(w) > 3 and w not in KEYWORD_STOP_WORDS][:5]
+    name_parts = re.findall(r'[A-Z][a-z]+|[a-z]+', object_name)
+    keywords.extend([p.lower() for p in name_parts if len(p) > 2])
+    return list(dict.fromkeys(keywords))[:8]
+
+
+def _build_usage_example(schema_name: str, object_name: str, parameters: list) -> str:
+    """
+    Build a SQL usage example string for a function.
+
+    Note: object_discovery_service.build_function_markdown_description() contains
+    equivalent inline logic for its Markdown output. If the format changes, update
+    both locations.
+    """
+    if parameters:
+        param_list = ", ".join([f"{p['name']} = <value>" for p in parameters])
+        return f"SELECT [{schema_name}].[{object_name}]({param_list})"
+    return f"SELECT [{schema_name}].[{object_name}]()"
 
 
 def _build_engine(server: str, database: str, auth_type: str = "windows",
@@ -113,6 +149,7 @@ def scan_database_objects(
 
     total_tables = 0
     total_views = 0
+    total_functions = 0
     schema_summaries: List[Dict] = []
     all_objects_index: Dict[str, List[Dict]] = {}  # schema -> list of object metadata
 
@@ -120,8 +157,16 @@ def scan_database_objects(
         table_names = inspector.get_table_names(schema=schema_name)
         view_names = inspector.get_view_names(schema=schema_name)
 
-        if not table_names and not view_names:
-            continue  # skip empty schemas
+        # Discover functions for this schema (before the guard so function-only
+        # schemas are not skipped)
+        func_objects = []
+        try:
+            func_objects = discover_functions(engine, schema=schema_name)
+        except Exception as e:
+            logger.warning(f"  Failed to discover functions for schema {schema_name}: {e}")
+
+        if not table_names and not view_names and not func_objects:
+            continue  # skip truly empty schemas
 
         schema_folder = schemas_dir / schema_name
         schema_folder.mkdir(parents=True, exist_ok=True)
@@ -154,76 +199,67 @@ def scan_database_objects(
             except Exception as e:
                 logger.warning(f"  Failed to process {schema_name}.{obj_name}: {e}")
 
-        # Process functions
-        try:
-            functions = discover_functions(engine, schema=schema_name)
-            for func in functions:
-                try:
-                    md_content = build_function_markdown_description(func)
-                    file_name = f"{schema_name}.{func.object_name}.md"
-                    md_file = schema_folder / file_name
-                    md_file.write_text(md_content, encoding="utf-8")
+        # Process functions (already discovered above)
+        for func in func_objects:
+            try:
+                md_content = build_function_markdown_description(func)
+                # Use "fn." prefix to avoid filename collisions with tables/views
+                file_name = f"{schema_name}.fn.{func.object_name}.md"
+                md_file = schema_folder / file_name
+                md_file.write_text(md_content, encoding="utf-8")
 
-                    # Build object metadata for index
-                    func_keywords = []
-                    if func.description:
-                        words = re.findall(r'\b\w+\b', func.description.lower())
-                        stop_words = {'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by'}
-                        func_keywords = [w for w in words if len(w) > 3 and w not in stop_words][:5]
-                    name_parts = re.findall(r'[A-Z][a-z]+|[a-z]+', func.object_name)
-                    func_keywords.extend([p.lower() for p in name_parts if len(p) > 2])
-                    func_keywords = list(dict.fromkeys(func_keywords))[:8]
+                func_keywords = _extract_keywords(func.object_name, func.description or "")
+                usage_example = _build_usage_example(
+                    schema_name, func.object_name, func.parameters or []
+                )
 
-                    # Build usage example
-                    if func.parameters:
-                        param_list = ", ".join([f"{p['name']} = <value>" for p in func.parameters])
-                        usage_example = f"SELECT [{schema_name}].[{func.object_name}]({param_list})"
-                    else:
-                        usage_example = f"SELECT [{schema_name}].[{func.object_name}]()"
+                obj_meta = {
+                    "object_type": "Function",
+                    "schema_name": schema_name,
+                    "object_name": func.object_name,
+                    "description": func.description or "",
+                    "keywords": func_keywords,
+                    "file_name": file_name,
+                    "usage_example": usage_example,
+                }
 
-                    obj_meta = {
-                        "object_type": "Function",
-                        "schema_name": schema_name,
-                        "object_name": func.object_name,
-                        "description": func.description or "",
-                        "keywords": func_keywords,
-                        "file_name": file_name,
-                        "usage_example": usage_example,
-                    }
-
-                    objects_in_schema.append(obj_meta)
-                    logger.debug(f"  Created function {schema_name}.{func.object_name}")
-                except Exception as e:
-                    logger.warning(f"  Failed to process function {schema_name}.{func.object_name}: {e}")
-        except Exception as e:
-            logger.warning(f"  Failed to discover functions for schema {schema_name}: {e}")
+                objects_in_schema.append(obj_meta)
+                total_functions += 1
+                logger.debug(f"  Created function {schema_name}.{func.object_name}")
+            except Exception as e:
+                logger.warning(f"  Failed to process function {schema_name}.{func.object_name}: {e}")
 
         # Write .object-index.json for this schema
-        func_count = sum(1 for o in objects_in_schema if o["object_type"] == "Function")
+        schema_table_count = sum(1 for o in objects_in_schema if o["object_type"] == "Table")
+        schema_view_count = sum(1 for o in objects_in_schema if o["object_type"] == "View")
+        schema_func_count = sum(1 for o in objects_in_schema if o["object_type"] == "Function")
         object_index = {
             "schema": schema_name,
             "total_objects": len(objects_in_schema),
-            "tables": sum(1 for o in objects_in_schema if o["object_type"] == "Table"),
-            "views": sum(1 for o in objects_in_schema if o["object_type"] == "View"),
-            "functions": func_count,
+            "tables": schema_table_count,
+            "views": schema_view_count,
+            "functions": schema_func_count,
             "objects": objects_in_schema,
         }
         idx_file = schema_folder / ".object-index.json"
         idx_file.write_text(json.dumps(object_index, indent=2, ensure_ascii=False), encoding="utf-8")
 
         all_objects_index[schema_name] = objects_in_schema
-        total_funcs = sum(1 for o in objects_in_schema if o["object_type"] == "Function")
-        parts = [f"{len(table_names)} tables", f"{len(view_names)} views"]
-        if total_funcs:
-            parts.append(f"{total_funcs} functions")
+        parts = []
+        if schema_table_count:
+            parts.append(f"{schema_table_count} tables")
+        if schema_view_count:
+            parts.append(f"{schema_view_count} views")
+        if schema_func_count:
+            parts.append(f"{schema_func_count} functions")
         schema_summaries.append({
             "schema_name": schema_name,
-            "description": f"Contains {', '.join(parts)}",
+            "description": f"Contains {', '.join(parts)}" if parts else "Empty schema",
             "object_index_file": f"schemas/{schema_name}/.object-index.json",
             "total_objects": len(objects_in_schema),
-            "tables": len(table_names),
-            "views": len(view_names),
-            "functions": total_funcs,
+            "tables": schema_table_count,
+            "views": schema_view_count,
+            "functions": schema_func_count,
         })
 
     # ---- Write .schema-index.json ----
@@ -244,10 +280,6 @@ def scan_database_objects(
 
     engine.dispose()
 
-    total_functions = sum(
-        sum(1 for o in objs if o["object_type"] == "Function")
-        for objs in all_objects_index.values()
-    )
     summary = {
         "data_source": data_source_name,
         "schemas_scanned": len(schema_summaries),
@@ -265,6 +297,7 @@ def _parse_schema_file_path(file_path: str) -> Tuple[str, str, str]:
     Parse a schema library markdown file path into data_source_slug, schema_name, table_name.
 
     Expected pattern: .../data-sources/{data_source_slug}/schemas/{schema_name}/{schema_name}.{table_name}.md
+    Function files use: {schema_name}.fn.{function_name}.md — the "fn." prefix is stripped.
     or Windows: ...\\data-sources\\{data_source_slug}\\schemas\\{schema_name}\\...
 
     Returns:
@@ -278,10 +311,14 @@ def _parse_schema_file_path(file_path: str) -> Tuple[str, str, str]:
         data_source_slug = parts[idx_ds + 1]
         idx_schemas = next(i for i, p in enumerate(parts) if p == "schemas")
         schema_name = parts[idx_schemas + 1]
-        stem = path.stem  # e.g. "dbo.ADM_Reports"
+        stem = path.stem  # e.g. "dbo.ADM_Reports" or "dbo.fn.GetTotal"
         if "." in stem:
-            # schema.TableName or schema.ViewName
-            table_name = ".".join(stem.split(".")[1:])
+            # schema.TableName, schema.ViewName, or schema.fn.FunctionName
+            remainder = ".".join(stem.split(".")[1:])
+            # Strip "fn." prefix used for function files to get the object name
+            if remainder.startswith("fn."):
+                remainder = remainder[3:]
+            table_name = remainder
         else:
             table_name = stem
         return data_source_slug, schema_name, table_name
@@ -441,8 +478,7 @@ def _build_object_markdown(
 
     # Build metadata for the object index
     db_description = get_table_description(engine, obj_name, schema_name, obj_type) or f"Stores {obj_name} data."
-    kw_words = re.findall(r'[A-Z][a-z]+|[a-z]+', obj_name)
-    keywords = list(dict.fromkeys([w.lower() for w in kw_words if len(w) > 2]))[:8]
+    keywords = _extract_keywords(obj_name, db_description)
     meta = {
         "object_type": type_label,
         "schema_name": schema_name,
@@ -481,7 +517,8 @@ def _generate_data_groups(ds_dir: Path, data_source_name: str, all_objects_index
             s = obj["schema_name"]
             n = obj["object_name"]
             t = obj["object_type"]
-            object_links.append(f"- **[{s}.{n}](../schemas/{s}/{s}.{n}.md)** - {t}")
+            fname = obj.get("file_name", f"{s}.{n}.md")
+            object_links.append(f"- **[{s}.{n}](../schemas/{s}/{fname})** - {t}")
 
         content = f"""# {group_name}
 
