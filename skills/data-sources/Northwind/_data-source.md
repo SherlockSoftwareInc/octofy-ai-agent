@@ -1,19 +1,19 @@
 ---
-source_id: 3a1a5f1b-6d7f-4b0b-9c8d-4c6c2f18a7e2
+source_id: c25b1750-9544-4a42-9b4d-2c26d85a7f36
 ---
 
-# Northwind Database
+# Northwind
 
 **Type:** SQL Server  
 **Server:** localhost
 **Database:** northwind
 
-**Friendly Name:** Northwind Database  
-**Keywords:** sales, customers, orders, products, employees, shipping
+**Friendly Name:** Northwind  
+**Keywords:** 
 
 ## Description
 
-Sales database for imported and exported specialty foods. This database contains comprehensive information about customer orders, product inventory, employee management, and international shipping operations.
+Sales database for imported and exported specialty foods. It includes information about sales, customers, orders, products, employees, and shipping.
 
 ## Data Coverage
 
@@ -37,5 +37,3 @@ Sales database for imported and exported specialty foods. This database contains
 ## Physical Schemas
 
 All table schemas are stored in the `schemas/` directory, organized by database schema:
-
-- **schemas/dbo/** - Dbo schema tables

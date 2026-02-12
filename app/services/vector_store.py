@@ -48,7 +48,7 @@ class VectorStoreBase(ABC):
         pass
 
     @abstractmethod
-    def clear_schemas_collection(self):
+    def clear_schemas_collection(self, source_id: Optional[str] = None):
         pass
 
     @abstractmethod
@@ -64,7 +64,7 @@ class VectorStoreBase(ABC):
         pass
 
     @abstractmethod
-    def clear_fewshots_collection(self):
+    def clear_fewshots_collection(self, source_id: Optional[str] = None):
         pass
     
     # --- Value Index Methods ---
@@ -93,7 +93,7 @@ class VectorStoreBase(ABC):
         pass
     
     @abstractmethod
-    def clear_values_collection(self):
+    def clear_values_collection(self, source_id: Optional[str] = None):
         pass
 
     # --- Contribution Library Methods ---
@@ -1219,7 +1219,7 @@ class MilvusVectorStore(VectorStoreBase):
             collection.delete("id >= 0")
         collection.flush()
 
-    def clear_fewshots_collection(self):
+    def clear_fewshots_collection(self, source_id: str = None):
         if not self._connected:
             return
         self._ensure_fewshot_collection()
@@ -1230,7 +1230,10 @@ class MilvusVectorStore(VectorStoreBase):
             collection.load()
         except Exception:
             pass
-        collection.delete("id >= 0")
+        if source_id:
+            collection.delete(f'source_guid == "{source_id}"')
+        else:
+            collection.delete("id >= 0")
         collection.flush()
 
     # --- Contribution Library Implementation ---
@@ -1492,7 +1495,7 @@ class NullVectorStore(VectorStoreBase):
     def delete_schema(self, schema_name: str, table_name: str):
         return None
 
-    def clear_schemas_collection(self):
+    def clear_schemas_collection(self, source_id: Optional[str] = None):
         return None
 
     def get_all_fewshots(self) -> List[Dict[str, Any]]:
@@ -1504,7 +1507,7 @@ class NullVectorStore(VectorStoreBase):
     def delete_fewshot_item(self, item_id: int):
         return None
 
-    def clear_fewshots_collection(self):
+    def clear_fewshots_collection(self, source_id: Optional[str] = None):
         return None
 
     def get_all_values(self) -> List[Dict[str, Any]]:
@@ -1519,7 +1522,7 @@ class NullVectorStore(VectorStoreBase):
     def delete_value_item(self, item_id: int):
         return None
 
-    def clear_values_collection(self):
+    def clear_values_collection(self, source_id: Optional[str] = None):
         return None
 
     def get_all_contributions(self) -> List[Dict[str, Any]]:

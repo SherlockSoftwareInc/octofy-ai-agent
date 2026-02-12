@@ -55,6 +55,7 @@ secrets.json
 myenv/
 config/agent_settings.json
 skills/
+skills/**
 
 ### --- Docker --- ###
 # Ignore local data persistence for Docker containers
@@ -92,6 +93,7 @@ NUL
 
 ### --- Custom Entries --- ###
 context_logs/
+context_logs/**
 deploy.tar.gz
 temp_files/
 config/agent_settings.json
@@ -100,4 +102,3 @@ config/agent_settings.json
 # Git worktree directories (should never be committed)
 .worktrees/
 worktrees/
-skills/data-sources/jcm/schemas/Ausper/Ausper.DT_DEV.md

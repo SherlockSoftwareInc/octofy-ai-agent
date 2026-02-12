@@ -17,6 +17,8 @@ export const DataSourcesManager: React.FC = () => {
     const [showScanModal, setShowScanModal] = useState(false);
     const [scanModalSourceId, setScanModalSourceId] = useState<string | null>(null);
     const [scanConnInfo, setScanConnInfo] = useState({ server: '', database_name: '', auth_type: 'windows' as string, driver: 'ODBC Driver 17 for SQL Server', trust_server_certificate: true });
+    const [pendingExcludeFile, setPendingExcludeFile] = useState<File | null>(null);
+    const excludeFileInputRef = useRef<HTMLInputElement | null>(null);
 
     // Form state
     const [formData, setFormData] = useState<AddDataSourceRequest>({
@@ -132,7 +134,27 @@ export const DataSourcesManager: React.FC = () => {
             trust_server_certificate: true
         });
         setFormKeywords('');
+        setPendingExcludeFile(null);
         setShowAddModal(true);
+        if (excludeFileInputRef.current) {
+            excludeFileInputRef.current.value = '';
+            excludeFileInputRef.current.click();
+        }
+    };
+
+    const handleExcludeFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+        const file = event.target.files?.[0] || null;
+        if (!file) {
+            setPendingExcludeFile(null);
+            return;
+        }
+        if (!file.name.toLowerCase().endsWith('.txt')) {
+            alert('Please select a .txt file for the exclusion list.');
+            event.target.value = '';
+            setPendingExcludeFile(null);
+            return;
+        }
+        setPendingExcludeFile(file);
     };
 
     const handleEdit = async (sourceId: string) => {
@@ -221,23 +243,52 @@ export const DataSourcesManager: React.FC = () => {
         event.preventDefault();
 
         const keywords = formKeywords.split(',').map(k => k.trim()).filter(k => k.length > 0);
-        const payload = { ...formData, keywords };
+        const payload = { ...formData, keywords, skip_auto_scan: !!pendingExcludeFile };
 
         try {
             if (editingSourceId) {
                 await api.dataSources.update(editingSourceId, payload);
             } else {
                 const result = await api.dataSources.add(payload);
-                // Auto-scan starts on backend if server + database were provided
+                let excludeUploadFailed = false;
+
+                if (pendingExcludeFile && result.source_id) {
+                    try {
+                        await api.dataSources.uploadExcludeObjects(result.source_id, pendingExcludeFile);
+                    } catch (error: unknown) {
+                        excludeUploadFailed = true;
+                        const errorMessage = (error as { response?: { data?: { detail?: string } } })?.response?.data?.detail ||
+                            (error as Error)?.message || 'Failed to upload exclusion list';
+                        alert(errorMessage);
+                    }
+                }
+
                 if (payload.server && payload.database_name && result.source_id) {
-                    setScanStatus(prev => ({
-                        ...prev,
-                        [result.source_id]: { status: 'running', message: 'Auto-scanning database objects...' }
-                    }));
-                    pollScanStatus(result.source_id);
+                    if (pendingExcludeFile && !excludeUploadFailed) {
+                        setScanStatus(prev => ({
+                            ...prev,
+                            [result.source_id]: { status: 'running', message: 'Scanning database objects...' }
+                        }));
+                        await api.dataSources.scanDatabase(result.source_id, {
+                            server: payload.server,
+                            database_name: payload.database_name,
+                            auth_type: payload.auth_type,
+                            driver: payload.driver,
+                            trust_server_certificate: payload.trust_server_certificate
+                        });
+                        pollScanStatus(result.source_id);
+                    } else if (!pendingExcludeFile) {
+                        // Auto-scan starts on backend if server + database were provided
+                        setScanStatus(prev => ({
+                            ...prev,
+                            [result.source_id]: { status: 'running', message: 'Auto-scanning database objects...' }
+                        }));
+                        pollScanStatus(result.source_id);
+                    }
                 }
             }
             setShowAddModal(false);
+            setPendingExcludeFile(null);
             await fetchDataSources();
         } catch (error: unknown) {
             console.error('Failed to save data source:', error);
@@ -268,6 +319,13 @@ export const DataSourcesManager: React.FC = () => {
 
     return (
         <div className="p-6 w-full h-full">
+            <input
+                ref={excludeFileInputRef}
+                type="file"
+                accept=".txt"
+                className="hidden"
+                onChange={handleExcludeFileChange}
+            />
             <div className="flex justify-between items-center mb-6">
                 <h2 className="text-2xl font-bold bg-gradient-to-r from-blue-400 to-indigo-400 bg-clip-text text-transparent">
                     Data Sources
@@ -594,6 +652,27 @@ export const DataSourcesManager: React.FC = () => {
                                 />
                             </div>
 
+                            {!editingSourceId && (
+                                <div>
+                                    <label className="block text-sm text-slate-400 mb-1">Exclude Objects (optional)</label>
+                                    <div className="flex items-center gap-3">
+                                        <button
+                                            type="button"
+                                            onClick={() => excludeFileInputRef.current?.click()}
+                                            className="px-3 py-1 bg-slate-800 text-slate-300 rounded hover:bg-slate-700 text-sm"
+                                        >
+                                            Choose File
+                                        </button>
+                                        <span className="text-xs text-slate-500">
+                                            {pendingExcludeFile ? pendingExcludeFile.name : 'No file selected'}
+                                        </span>
+                                    </div>
+                                    <p className="text-xs text-slate-500 mt-1">
+                                        One object name per line. Lines starting with # are ignored.
+                                    </p>
+                                </div>
+                            )}
+
                             <div className="grid grid-cols-2 gap-4">
                                 <div>
                                     <label className="block text-sm text-slate-400 mb-1">Server</label>
@@ -642,7 +721,7 @@ export const DataSourcesManager: React.FC = () => {
                             <div className="flex justify-end gap-2 pt-4 border-t border-slate-800">
                                 <button
                                     type="button"
-                                    onClick={() => setShowAddModal(false)}
+                                    onClick={() => { setShowAddModal(false); setPendingExcludeFile(null); }}
                                     className="px-4 py-2 text-slate-400 hover:text-white"
                                 >
                                     Cancel

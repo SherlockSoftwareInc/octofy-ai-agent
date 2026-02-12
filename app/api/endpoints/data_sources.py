@@ -123,7 +123,7 @@ def add_data_source(
         source_id = result.get("source_id") or f"skill_{re.sub(r'[^a-zA-Z0-9]', '_', request.friendly_name.lower())}"
 
         # If SQL Server connection info provided, auto-scan in background
-        if request.server and request.database_name:
+        if request.server and request.database_name and not request.skip_auto_scan:
             _scan_status[source_id] = {"status": "running", "message": "Scan queued..."}
             background_tasks.add_task(
                 _run_schema_scan,

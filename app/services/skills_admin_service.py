@@ -8,6 +8,8 @@ import uuid
 from pathlib import Path
 from typing import Dict, Optional, List, Tuple
 from app.models.schemas import DataSource, DataGroup, TableSchema
+from app.services.skills_service import SkillsService
+from app.services.vector_store import get_vector_store
 
 
 SKILLS_BASE_PATH = Path("skills/data-sources")
@@ -290,6 +292,24 @@ def delete_data_source(data_source_name: str):
     
     if not ds_dir.exists():
         raise ValueError(f"Data source '{data_source_name}' not found")
+
+    # Resolve source_id before deleting files so we can clear vector data.
+    source_id = None
+    try:
+        skills_service = SkillsService()
+        for data_source in skills_service.load_data_sources_index():
+            if data_source.name.lower() == data_source_name.lower():
+                source_id = data_source.source_id
+                break
+    except Exception:
+        source_id = None
+
+    if source_id:
+        vector_store = get_vector_store()
+        vector_store.clear_schemas_collection(source_id=source_id)
+        vector_store.clear_schemas_v2_collection(source_id=source_id)
+        vector_store.clear_values_collection(source_id=source_id)
+        vector_store.clear_fewshots_collection(source_id=source_id)
     
     # Delete directory recursively
     import shutil

@@ -1546,6 +1546,7 @@ export interface AddDataSourceRequest {
     auth_type?: string;
     username?: string;
     trust_server_certificate?: boolean;
+    skip_auto_scan?: boolean;
 }
 
 export interface SchemaTreeNode {

@@ -615,6 +615,7 @@ class AddDataSourceRequest(BaseModel):
     connection_string_encrypted: Optional[str] = None
     driver: str = "ODBC Driver 17 for SQL Server"
     trust_server_certificate: bool = False
+    skip_auto_scan: bool = False
 
 class ScanDataSourceRequest(BaseModel):
     """Optional request body for scan endpoint to provide connection info"""
