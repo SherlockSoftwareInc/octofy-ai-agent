@@ -206,11 +206,12 @@ def test_function_metadata_extraction():
     print("TEST 9: Function Metadata Extraction")
     print("=" * 60)
 
-    import tempfile, json
+    import tempfile
     from pathlib import Path
     from scripts.generate_schema_indices import extract_metadata_from_md, generate_object_index
 
     with tempfile.TemporaryDirectory() as tmpdir:
+        # Function with **Schema:** and **Type:** lines (enriched format)
         func_md = Path(tmpdir) / "dbo.fn_CalculateTax.md"
         func_md.write_text(
             '## **Function:** `[dbo].[fn_CalculateTax]`\n'
@@ -231,6 +232,24 @@ def test_function_metadata_extraction():
             encoding='utf-8'
         )
 
+        # Function WITHOUT **Schema:** and **Type:** lines (real output format)
+        func_real_md = Path(tmpdir) / "dbo.fn_GetDiscount.md"
+        func_real_md.write_text(
+            '## **Function:** `[dbo].[fn_GetDiscount]`\n'
+            '**Returns:** `DECIMAL`\n'
+            '> Returns discount percentage for a given customer tier.\n'
+            '---\n'
+            '### **Parameters:**\n'
+            '- `@CustomerTier` (VARCHAR)\n'
+            '\n'
+            '### **Usage:**\n'
+            '```sql\n'
+            "SELECT [dbo].[fn_GetDiscount](@CustomerTier = 'Gold')\n"
+            '```\n'
+            '---\n',
+            encoding='utf-8'
+        )
+
         table_md = Path(tmpdir) / "dbo.Orders.md"
         table_md.write_text(
             '# **Table:** `[dbo].[Orders]`\n'
@@ -240,6 +259,7 @@ def test_function_metadata_extraction():
             encoding='utf-8'
         )
 
+        # Test enriched function (with Schema/Type lines)
         meta = extract_metadata_from_md(func_md)
         assert meta is not None, "Function metadata should be extracted"
         assert meta['object_type'] == 'Function', f"Expected 'Function', got '{meta['object_type']}'"
@@ -247,15 +267,35 @@ def test_function_metadata_extraction():
         assert meta['schema_name'] == 'dbo', f"Expected 'dbo', got '{meta['schema_name']}'"
         assert 'tax' in meta['description'].lower(), f"Description should mention tax: {meta['description']}"
         assert 'usage_example' in meta, "Function metadata should include usage_example"
-        print(f"  ✓ Function metadata: type={meta['object_type']}, name={meta['object_name']}")
+        print(f"  ✓ Function metadata (enriched): type={meta['object_type']}, name={meta['object_name']}")
         print(f"    Description: {meta['description'][:60]}")
         print(f"    Keywords: {meta['keywords']}")
         print(f"    Usage: {meta.get('usage_example', 'N/A')[:60]}")
 
+        # Test real function format (WITHOUT Schema/Type lines)
+        meta_real = extract_metadata_from_md(func_real_md)
+        assert meta_real is not None, "Real function metadata should be extracted"
+        assert meta_real['object_type'] == 'Function', f"Expected 'Function', got '{meta_real['object_type']}'"
+        assert meta_real['object_name'] == 'fn_GetDiscount', f"Expected 'fn_GetDiscount', got '{meta_real['object_name']}'"
+        assert meta_real['schema_name'] == 'dbo', f"Expected 'dbo', got '{meta_real['schema_name']}'"
+        assert 'discount' in meta_real['description'].lower(), f"Description should mention discount: {meta_real['description']}"
+        assert 'usage_example' in meta_real, "Real function metadata should include usage_example"
+        print(f"  ✓ Function metadata (real format): type={meta_real['object_type']}, name={meta_real['object_name']}")
+        print(f"    Description: {meta_real['description'][:60]}")
+        print(f"    Keywords: {meta_real['keywords']}")
+        print(f"    Usage: {meta_real.get('usage_example', 'N/A')[:60]}")
+
+        # Test object index counts
         obj_index = generate_object_index(Path(tmpdir))
-        assert obj_index['functions'] == 1, f"Expected 1 function, got {obj_index.get('functions', 'missing')}"
+        assert obj_index['functions'] == 2, f"Expected 2 functions, got {obj_index.get('functions', 'missing')}"
         assert obj_index['tables'] == 1, f"Expected 1 table, got {obj_index.get('tables', 0)}"
-        assert obj_index['total_objects'] == 2, f"Expected 2 total objects, got {obj_index['total_objects']}"
+        assert obj_index['total_objects'] == 3, f"Expected 3 total objects, got {obj_index['total_objects']}"
+
+        # Verify usage_example propagates to object index entries
+        func_entries = [o for o in obj_index['objects'] if o['object_type'] == 'Function']
+        for entry in func_entries:
+            assert 'usage_example' in entry, f"Object index entry for {entry['object_name']} should include usage_example"
+
         print(f"  ✓ Object index: {obj_index['total_objects']} objects ({obj_index['tables']} tables, {obj_index.get('functions', 0)} functions)")
 
     print("  Function metadata extraction OK.")

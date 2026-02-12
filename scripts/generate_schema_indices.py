@@ -88,9 +88,17 @@ def extract_metadata_from_md(file_path: Path) -> Dict[str, Any]:
         if name_match:
             schema_from_title = name_match.group(1)
             object_name = name_match.group(2)
+            # Use schema from title as fallback when **Schema:** line is missing
+            if schema_name == 'unknown':
+                schema_name = schema_from_title
         else:
-            schema_from_title = schema_name
             object_name = file_path.stem.split('.')[-1] if '.' in file_path.stem else file_path.stem
+        
+        # Infer object type from title heading when **Type:** line is missing
+        if object_type == 'unknown':
+            type_from_title = re.search(r'(?:Table|View|Function)', content[:200])
+            if type_from_title:
+                object_type = type_from_title.group(0)
         
         # Extract description (the part after the title heading)
         desc_match = re.search(r'##?\s+\*\*(?:Table|View|Function):\*\*\s+`\[[^\]]+\]\.\[[^\]]+\]`\s*\n(?:.*\n)*?>\s+([^\n]+)', content)
@@ -150,14 +158,17 @@ def generate_object_index(schema_path: Path) -> Dict[str, Any]:
     for md_file in md_files:
         metadata = extract_metadata_from_md(md_file)
         if metadata:
-            objects.append({
+            obj_entry = {
                 'object_type': metadata['object_type'],
                 'schema_name': metadata['schema_name'],
                 'object_name': metadata['object_name'],
                 'description': metadata['description'],
                 'keywords': metadata['keywords'],
                 'file_name': metadata['file_name']
-            })
+            }
+            if 'usage_example' in metadata:
+                obj_entry['usage_example'] = metadata['usage_example']
+            objects.append(obj_entry)
     
     return {
         'schema': schema_path.name,
@@ -268,9 +279,10 @@ def main():
                     print(f"✓ Created {object_index_file}")
                     print(f"  - {object_index['total_objects']} objects indexed")
                     func_count = object_index.get('functions', 0)
-                    parts = [f"{object_index['tables']} tables", f"{object_index['views']} views"]
-                    if func_count:
-                        parts.append(f"{func_count} functions")
+                    parts = []
+                    if object_index['tables']: parts.append(f"{object_index['tables']} tables")
+                    if object_index['views']: parts.append(f"{object_index['views']} views")
+                    if func_count: parts.append(f"{func_count} functions")
                     print(f"    ({', '.join(parts)})")
     
     print(f"\n{'='*60}")
