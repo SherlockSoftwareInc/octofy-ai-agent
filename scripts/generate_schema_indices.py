@@ -83,8 +83,8 @@ def extract_metadata_from_md(file_path: Path) -> Dict[str, Any]:
         type_match = re.search(r'\*\*Type:\*\*\s+(\w+)', content)
         object_type = type_match.group(1) if type_match else 'unknown'
         
-        # Extract object name from title
-        name_match = re.search(r'#\s+(?:Table|View):\s+\[(\w+)\]\.\[([^\]]+)\]', content)
+        # Extract object name from title (supports Table, View, and Function formats)
+        name_match = re.search(r'##?\s+(?:\*\*)?(?:Table|View|Function):?(?:\*\*)?\s+(?:`)?\.?\[(\w+)\]\.\[([^\]]+)\]', content)
         if name_match:
             schema_from_title = name_match.group(1)
             object_name = name_match.group(2)
@@ -92,9 +92,24 @@ def extract_metadata_from_md(file_path: Path) -> Dict[str, Any]:
             schema_from_title = schema_name
             object_name = file_path.stem.split('.')[-1] if '.' in file_path.stem else file_path.stem
         
-        # Extract description (the part after the "Table:" or "View:" heading)
-        desc_match = re.search(r'#\s+\*\*(?:Table|View):\*\*\s+`\[[^\]]+\]\.\[[^\]]+\]`\s*\n>\s+([^\n]+)', content)
+        # Extract description (the part after the title heading)
+        desc_match = re.search(r'##?\s+\*\*(?:Table|View|Function):\*\*\s+`\[[^\]]+\]\.\[[^\]]+\]`\s*\n(?:.*\n)*?>\s+([^\n]+)', content)
         description = desc_match.group(1).strip() if desc_match else ''
+        
+        # Blockquote fallback for description
+        if not description:
+            bq_match = re.search(r'^>\s+(.+)$', content, re.MULTILINE)
+            description = bq_match.group(1).strip() if bq_match else ''
+        
+        # Extract usage_example for Function objects
+        usage_example = None
+        if object_type == 'Function':
+            usage_match = re.search(
+                r'###\s+\*\*Usage:\*\*\s*\n```sql\n(.+?)\n```',
+                content, re.DOTALL
+            )
+            if usage_match:
+                usage_example = usage_match.group(1).strip()
         
         # Generate keywords from description and object name
         keywords = []
@@ -109,7 +124,7 @@ def extract_metadata_from_md(file_path: Path) -> Dict[str, Any]:
         keywords.extend([p.lower() for p in object_parts if len(p) > 2])
         keywords = list(dict.fromkeys(keywords))[:8]  # Deduplicate and limit
         
-        return {
+        result = {
             'schema_name': schema_name,
             'object_type': object_type,
             'object_name': object_name,
@@ -117,6 +132,9 @@ def extract_metadata_from_md(file_path: Path) -> Dict[str, Any]:
             'keywords': keywords,
             'file_name': file_path.name
         }
+        if usage_example:
+            result['usage_example'] = usage_example
+        return result
     except Exception as e:
         print(f"Error processing {file_path}: {e}")
         return None
@@ -146,6 +164,7 @@ def generate_object_index(schema_path: Path) -> Dict[str, Any]:
         'total_objects': len(objects),
         'tables': len([o for o in objects if o['object_type'] == 'Table']),
         'views': len([o for o in objects if o['object_type'] == 'View']),
+        'functions': len([o for o in objects if o['object_type'] == 'Function']),
         'objects': objects
     }
 
@@ -170,6 +189,7 @@ def generate_schema_index(data_source_path: Path) -> Dict[str, Any]:
         md_files = [f for f in schema_folder.glob('*.md') if f.name != '_schema.md']
         table_count = 0
         view_count = 0
+        function_count = 0
 
         for md_file in md_files:
             metadata = extract_metadata_from_md(md_file)
@@ -178,8 +198,14 @@ def generate_schema_index(data_source_path: Path) -> Dict[str, Any]:
                     table_count += 1
                 elif metadata['object_type'] == 'View':
                     view_count += 1
+                elif metadata['object_type'] == 'Function':
+                    function_count += 1
 
-        fallback_description = f'Contains {table_count} tables and {view_count} views'
+        parts = []
+        if table_count: parts.append(f"{table_count} tables")
+        if view_count: parts.append(f"{view_count} views")
+        if function_count: parts.append(f"{function_count} functions")
+        fallback_description = f"Contains {', '.join(parts)}" if parts else "Empty schema"
         schemas.append({
             'schema_name': schema_folder.name,
             'description': schema_description if schema_description else fallback_description,
@@ -187,7 +213,8 @@ def generate_schema_index(data_source_path: Path) -> Dict[str, Any]:
             'object_index_file': f'schemas/{schema_folder.name}/.object-index.json',
             'total_objects': len(md_files),
             'tables': table_count,
-            'views': view_count
+            'views': view_count,
+            'functions': function_count
         })
     
     return {
@@ -240,7 +267,11 @@ def main():
                         json.dump(object_index, f, indent=2, ensure_ascii=False)
                     print(f"✓ Created {object_index_file}")
                     print(f"  - {object_index['total_objects']} objects indexed")
-                    print(f"    ({object_index['tables']} tables, {object_index['views']} views)")
+                    func_count = object_index.get('functions', 0)
+                    parts = [f"{object_index['tables']} tables", f"{object_index['views']} views"]
+                    if func_count:
+                        parts.append(f"{func_count} functions")
+                    print(f"    ({', '.join(parts)})")
     
     print(f"\n{'='*60}")
     print("✓ All index files generated successfully!")

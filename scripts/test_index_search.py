@@ -200,6 +200,67 @@ def test_fallback_global_search():
     print("  Fallback/global search OK.")
 
 
+def test_function_metadata_extraction():
+    """Test that generate_schema_indices correctly parses Function markdown files"""
+    print("\n" + "=" * 60)
+    print("TEST 9: Function Metadata Extraction")
+    print("=" * 60)
+
+    import tempfile, json
+    from pathlib import Path
+    from scripts.generate_schema_indices import extract_metadata_from_md, generate_object_index
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        func_md = Path(tmpdir) / "dbo.fn_CalculateTax.md"
+        func_md.write_text(
+            '## **Function:** `[dbo].[fn_CalculateTax]`\n'
+            '**Schema:** dbo\n'
+            '**Type:** Function\n'
+            '**Returns:** `INT`\n'
+            '> Calculates sales tax based on state code and amount.\n'
+            '---\n'
+            '### **Parameters:**\n'
+            '- `@StateCode` (VARCHAR)\n'
+            '- `@Amount` (DECIMAL)\n'
+            '\n'
+            '### **Usage:**\n'
+            '```sql\n'
+            "SELECT [dbo].[fn_CalculateTax](@StateCode = 'NY', @Amount = 100.00)\n"
+            '```\n'
+            '---\n',
+            encoding='utf-8'
+        )
+
+        table_md = Path(tmpdir) / "dbo.Orders.md"
+        table_md.write_text(
+            '# **Table:** `[dbo].[Orders]`\n'
+            '**Schema:** dbo\n'
+            '**Type:** Table\n'
+            '> Stores order information.\n',
+            encoding='utf-8'
+        )
+
+        meta = extract_metadata_from_md(func_md)
+        assert meta is not None, "Function metadata should be extracted"
+        assert meta['object_type'] == 'Function', f"Expected 'Function', got '{meta['object_type']}'"
+        assert meta['object_name'] == 'fn_CalculateTax', f"Expected 'fn_CalculateTax', got '{meta['object_name']}'"
+        assert meta['schema_name'] == 'dbo', f"Expected 'dbo', got '{meta['schema_name']}'"
+        assert 'tax' in meta['description'].lower(), f"Description should mention tax: {meta['description']}"
+        assert 'usage_example' in meta, "Function metadata should include usage_example"
+        print(f"  ✓ Function metadata: type={meta['object_type']}, name={meta['object_name']}")
+        print(f"    Description: {meta['description'][:60]}")
+        print(f"    Keywords: {meta['keywords']}")
+        print(f"    Usage: {meta.get('usage_example', 'N/A')[:60]}")
+
+        obj_index = generate_object_index(Path(tmpdir))
+        assert obj_index['functions'] == 1, f"Expected 1 function, got {obj_index.get('functions', 'missing')}"
+        assert obj_index['tables'] == 1, f"Expected 1 table, got {obj_index.get('tables', 0)}"
+        assert obj_index['total_objects'] == 2, f"Expected 2 total objects, got {obj_index['total_objects']}"
+        print(f"  ✓ Object index: {obj_index['total_objects']} objects ({obj_index['tables']} tables, {obj_index.get('functions', 0)} functions)")
+
+    print("  Function metadata extraction OK.")
+
+
 def main():
     """Run all tests"""
     print("\n")
@@ -216,6 +277,7 @@ def main():
         test_schema_prioritization()
         test_recommended_schemas()
         test_fallback_global_search()
+        test_function_metadata_extraction()
         
         print("\n" + "=" * 60)
         print("✓ All tests completed successfully!")
