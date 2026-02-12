@@ -78,27 +78,72 @@ def _build_usage_example(schema_name: str, object_name: str, parameters: list) -
     return f"SELECT [{schema_name}].[{object_name}]()"
 
 
-def _load_exclude_list(ds_dir: Path) -> frozenset:
+def _normalize_exclude_name(raw_name: str) -> Tuple[Optional[str], str]:
+    """
+    Normalize an exclusion name to (schema, object) or (None, object).
+
+    Supports names like:
+    - dbo.TableName
+    - [dbo].[TableName]
+    - TableName
+    """
+    cleaned = raw_name.strip().replace("[", "").replace("]", "")
+    cleaned = cleaned.replace('"', "").replace("'", "").strip()
+    if not cleaned:
+        return None, ""
+
+    parts = [p for p in cleaned.split(".") if p]
+    if len(parts) >= 2:
+        schema_name = parts[-2].lower()
+        object_name = parts[-1].lower()
+        return schema_name, object_name
+    return None, parts[0].lower()
+
+
+def _load_exclude_list(ds_dir: Path) -> Tuple[frozenset, frozenset]:
     """
     Load the exclude_objects.txt file from a data source directory.
 
     The file lists database object names to skip during scanning, one per line.
     Blank lines and lines starting with '#' are ignored.
-    Matching is case-insensitive (all names are lowercased).
+    Matching is case-insensitive.
 
     Returns:
-        A frozenset of lowercased object names to exclude.
+        (qualified, unqualified) exclusion sets.
+        - qualified: "schema.object" names (lowercased)
+        - unqualified: "object" names (lowercased)
     """
     exclude_file = ds_dir / "exclude_objects.txt"
     if not exclude_file.exists():
-        return frozenset()
+        return frozenset(), frozenset()
 
-    names = set()
+    qualified = set()
+    unqualified = set()
     for line in exclude_file.read_text(encoding="utf-8").splitlines():
         stripped = line.strip()
         if stripped and not stripped.startswith("#"):
-            names.add(stripped.lower())
-    return frozenset(names)
+            schema_name, object_name = _normalize_exclude_name(stripped)
+            if not object_name:
+                continue
+            if schema_name:
+                qualified.add(f"{schema_name}.{object_name}")
+            else:
+                unqualified.add(object_name)
+    return frozenset(qualified), frozenset(unqualified)
+
+
+def _is_excluded(
+    schema_name: str,
+    object_name: str,
+    exclude_qualified: frozenset,
+    exclude_unqualified: frozenset,
+) -> bool:
+    """Check whether an object should be excluded by name."""
+    obj_lower = object_name.lower()
+    if obj_lower in exclude_unqualified:
+        return True
+    qualified = f"{schema_name.lower()}.{obj_lower}"
+    return qualified in exclude_qualified
 
 
 def _build_engine(server: str, database: str, auth_type: str = "windows",
@@ -146,9 +191,10 @@ def scan_database_objects(
         raise ValueError(f"Data source directory not found: {ds_dir}")
 
     # ---- Load exclude list ----
-    exclude_set = _load_exclude_list(ds_dir)
-    if exclude_set:
-        logger.info(f"Loaded {len(exclude_set)} object(s) to exclude from scan")
+    exclude_qualified, exclude_unqualified = _load_exclude_list(ds_dir)
+    exclude_count = len(exclude_qualified) + len(exclude_unqualified)
+    if exclude_count:
+        logger.info(f"Loaded {exclude_count} object(s) to exclude from scan")
 
     # ---- Connect ----
     engine = _build_engine(
@@ -195,15 +241,35 @@ def scan_database_objects(
             logger.warning(f"  Failed to discover functions for schema {schema_name}: {e}")
 
         # Apply exclusion list
-        if exclude_set:
+        if exclude_count:
             pre_count = len(table_names) + len(view_names) + len(func_objects)
-            table_names = [n for n in table_names if n.lower() not in exclude_set]
-            view_names = [n for n in view_names if n.lower() not in exclude_set]
-            func_objects = [f for f in func_objects if f.object_name.lower() not in exclude_set]
-            excluded = pre_count - (len(table_names) + len(view_names) + len(func_objects))
+
+            excluded_tables = [n for n in table_names if _is_excluded(schema_name, n, exclude_qualified, exclude_unqualified)]
+            excluded_views = [n for n in view_names if _is_excluded(schema_name, n, exclude_qualified, exclude_unqualified)]
+            excluded_funcs = [
+                f for f in func_objects
+                if _is_excluded(schema_name, f.object_name, exclude_qualified, exclude_unqualified)
+            ]
+
+            table_names = [n for n in table_names if n not in excluded_tables]
+            view_names = [n for n in view_names if n not in excluded_views]
+            func_objects = [f for f in func_objects if f not in excluded_funcs]
+
+            excluded = len(excluded_tables) + len(excluded_views) + len(excluded_funcs)
             if excluded:
                 objects_excluded += excluded
                 logger.info(f"  Excluded {excluded} object(s) in schema {schema_name}")
+
+                schema_folder = schemas_dir / schema_name
+                if schema_folder.exists():
+                    for obj_name in excluded_tables + excluded_views:
+                        excluded_file = schema_folder / f"{schema_name}.{obj_name}.md"
+                        if excluded_file.exists():
+                            excluded_file.unlink()
+                    for func in excluded_funcs:
+                        excluded_file = schema_folder / f"{schema_name}.fn.{func.object_name}.md"
+                        if excluded_file.exists():
+                            excluded_file.unlink()
 
         if not table_names and not view_names and not func_objects:
             continue  # skip truly empty schemas

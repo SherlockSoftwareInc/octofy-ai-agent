@@ -1,6 +1,8 @@
 
 import json
-from typing import List, Dict, Any, Optional
+import re
+from pathlib import Path
+from typing import List, Dict, Any, Optional, Tuple
 from sqlalchemy import text, inspect
 from pymilvus import connections, FieldSchema, CollectionSchema, DataType, Collection, utility
 from openai import OpenAI
@@ -28,6 +30,97 @@ def _resolve_source_guid_from_skills() -> str:
     except Exception:
         pass
     return "legacy"
+
+
+def _normalize_exclude_name(raw_name: str) -> Tuple[Optional[str], str]:
+    """
+    Normalize an exclusion name to (schema, object) or (None, object).
+
+    Supports names like:
+    - dbo.TableName
+    - [dbo].[TableName]
+    - TableName
+    """
+    cleaned = raw_name.strip().replace("[", "").replace("]", "")
+    cleaned = cleaned.replace('"', "").replace("'", "").strip()
+    if not cleaned:
+        return None, ""
+
+    parts = [p for p in cleaned.split(".") if p]
+    if len(parts) >= 2:
+        schema_name = parts[-2].lower()
+        object_name = parts[-1].lower()
+        return schema_name, object_name
+    return None, parts[0].lower()
+
+
+def _resolve_exclude_dir(source_id: Optional[str]) -> Optional[Path]:
+    """Resolve skills data source directory for exclusion list lookup."""
+    try:
+        from app.services.skills_service import get_skills_service
+        skills_service = get_skills_service()
+
+        if source_id:
+            sources = skills_service.load_data_sources_index()
+            target = None
+            for source in sources:
+                if source.source_id == source_id:
+                    target = source
+                    break
+            if not target:
+                for source in sources:
+                    if (source.name or "").lower() == source_id.lower():
+                        target = source
+                        break
+        else:
+            target = skills_service.load_primary_data_source()
+
+        if not target or not getattr(target, "name", None):
+            return None
+
+        slug = re.sub(r"[^\w\s-]", "", target.name.lower()).replace(" ", "-")
+        return Path("skills/data-sources") / slug
+    except Exception:
+        return None
+
+
+def _load_exclude_list(source_id: Optional[str]) -> Tuple[frozenset, frozenset]:
+    """Load exclusion list for the given source_id (if present)."""
+    ds_dir = _resolve_exclude_dir(source_id)
+    if not ds_dir:
+        return frozenset(), frozenset()
+
+    exclude_file = ds_dir / "exclude_objects.txt"
+    if not exclude_file.exists():
+        return frozenset(), frozenset()
+
+    qualified = set()
+    unqualified = set()
+    for line in exclude_file.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if stripped and not stripped.startswith("#"):
+            schema_name, object_name = _normalize_exclude_name(stripped)
+            if not object_name:
+                continue
+            if schema_name:
+                qualified.add(f"{schema_name}.{object_name}")
+            else:
+                unqualified.add(object_name)
+    return frozenset(qualified), frozenset(unqualified)
+
+
+def _is_excluded(
+    schema_name: str,
+    object_name: str,
+    exclude_qualified: frozenset,
+    exclude_unqualified: frozenset,
+) -> bool:
+    """Check whether an object should be excluded by name."""
+    obj_lower = object_name.lower()
+    if obj_lower in exclude_unqualified:
+        return True
+    qualified = f"{schema_name.lower()}.{obj_lower}"
+    return qualified in exclude_qualified
 
 # --- Configuration ---
 EMBEDDING_DIM = 1536 # text-embedding-3-small
@@ -346,6 +439,11 @@ def ingest_metadata(source_id: Optional[str] = None):
     source_guid = source_id or _resolve_source_guid_from_skills()
     
     data_rows = []
+
+    exclude_qualified, exclude_unqualified = _load_exclude_list(source_id)
+    exclude_count = len(exclude_qualified) + len(exclude_unqualified)
+    if exclude_count:
+        print(f"Loaded {exclude_count} excluded object(s) from exclude_objects.txt")
     
     print("Extracting metadata...")
     
@@ -386,6 +484,20 @@ def ingest_metadata(source_id: Optional[str] = None):
         objects_to_process = [(name, 'table') for name in table_names] + [(name, 'view') for name in view_names]
         
         for obj_name, obj_type in objects_to_process:
+            if _is_excluded(schema, obj_name, exclude_qualified, exclude_unqualified):
+                if (schema, obj_name) in existing_items and search_collection:
+                    try:
+                        expr = (
+                            f'source_guid == "{source_guid}" and '
+                            f'schema_name == "{schema}" and table_name == "{obj_name}"'
+                        )
+                        search_collection.delete(expr)
+                        print(f"Deleted excluded {schema}.{obj_name} from vector store")
+                    except Exception as del_e:
+                        print(f"Error deleting excluded {schema}.{obj_name}: {del_e}")
+                else:
+                    print(f"Skipping excluded {schema}.{obj_name}")
+                continue
             # Check if already exists
             if (schema, obj_name) in existing_items:
                 print(f"Item {schema}.{obj_name} exists. Deleting to replace...")

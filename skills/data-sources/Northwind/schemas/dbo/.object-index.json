@@ -1,7 +1,7 @@
 {
   "schema": "dbo",
-  "total_objects": 42,
-  "tables": 23,
+  "total_objects": 41,
+  "tables": 22,
   "views": 16,
   "functions": 3,
   "objects": [
@@ -233,21 +233,6 @@
         "employee"
       ],
       "file_name": "dbo.EmployeeTerritories.md"
-    },
-    {
-      "object_type": "Table",
-      "schema_name": "dbo",
-      "object_name": "MSSQL_TemporalHistoryFor_130099504",
-      "description": "Stores MSSQL_TemporalHistoryFor_130099504 data.",
-      "keywords": [
-        "stores",
-        "mssql_temporalhistoryfor_130099504",
-        "data",
-        "temporal",
-        "history",
-        "for"
-      ],
-      "file_name": "dbo.MSSQL_TemporalHistoryFor_130099504.md"
     },
     {
       "object_type": "Table",
