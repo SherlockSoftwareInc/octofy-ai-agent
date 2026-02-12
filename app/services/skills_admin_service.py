@@ -663,12 +663,14 @@ def delete_schema_from_library(schema_name: str, object_name: str) -> bool:
                 ]
                 object_index["objects"] = objects
                 
-                # Recount tables and views
+                # Recount tables, views, and functions
                 tables_count = sum(1 for o in objects if o.get("object_type", "").lower() == "table")
                 views_count = sum(1 for o in objects if o.get("object_type", "").lower() == "view")
+                functions_count = sum(1 for o in objects if o.get("object_type", "").lower() == "function")
                 object_index["total_objects"] = len(objects)
                 object_index["tables"] = tables_count
                 object_index["views"] = views_count
+                object_index["functions"] = functions_count
                 
                 object_index_file.write_text(
                     json_module.dumps(object_index, indent=2, ensure_ascii=False),
@@ -691,7 +693,12 @@ def delete_schema_from_library(schema_name: str, object_name: str) -> bool:
                             s["total_objects"] = updated_index.get("total_objects", 0)
                             s["tables"] = updated_index.get("tables", 0)
                             s["views"] = updated_index.get("views", 0)
-                            s["description"] = f"Contains {s['tables']} tables and {s['views']} views"
+                            s["functions"] = updated_index.get("functions", 0)
+                            parts = []
+                            if s["tables"]: parts.append(f"{s['tables']} tables")
+                            if s["views"]: parts.append(f"{s['views']} views")
+                            if s.get("functions"): parts.append(f"{s['functions']} functions")
+                            s["description"] = f"Contains {', '.join(parts)}" if parts else "Empty schema"
                         break
                 
                 schema_index["total_schemas"] = len(schemas)

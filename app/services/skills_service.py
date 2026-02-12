@@ -410,7 +410,7 @@ class SkillsService:
         # Remove common stop words
         stop_words = {'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 
                      'of', 'with', 'by', 'from', 'up', 'about', 'into', 'through', 'during',
-                     'show', 'me', 'get', 'find', 'list', 'all', 'what', 'which', 'who', 'where',
+                     'show', 'me', 'find', 'list', 'all', 'what', 'which', 'who', 'where',
                      'when', 'how', 'is', 'are', 'was', 'were', 'be', 'been', 'being', 'have',
                      'has', 'had', 'do', 'does', 'did', 'will', 'would', 'could', 'should',
                      'i', 'want', 'need', 'data', 'information', 'records'}
@@ -827,7 +827,7 @@ class SkillsService:
         stop_words = {
             'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for',
             'of', 'with', 'by', 'from', 'up', 'about', 'into', 'through', 'during',
-            'show', 'me', 'get', 'find', 'list', 'all', 'what', 'which', 'who', 'where',
+            'show', 'me', 'find', 'list', 'all', 'what', 'which', 'who', 'where',
             'when', 'how', 'is', 'are', 'was', 'were', 'be', 'been', 'being', 'have',
             'has', 'had', 'do', 'does', 'did', 'will', 'would', 'could', 'should',
             'i', 'want', 'need', 'information', 'records', 'data',
@@ -992,6 +992,11 @@ class SkillsService:
             if term in description:
                 score += 1.0
         
+        # Function boost: functions are often the "missing link" for complex queries.
+        # Apply 1.2x multiplier to improve discoverability of utility functions.
+        if obj.get('object_type') == 'Function' and score > 0:
+            score *= 1.2
+
         return score
     
     def list_all_objects(self, data_source: Optional[str] = None, 
@@ -1113,6 +1118,7 @@ class SkillsService:
             total_objects = 0
             total_tables = 0
             total_views = 0
+            total_functions = 0
             sources = []
             for ds_name, index_data in schema_indices.items():
                 total_schemas += index_data.get('total_schemas', 0)
@@ -1120,6 +1126,7 @@ class SkillsService:
                     total_objects += schema.get('total_objects', 0)
                     total_tables += schema.get('tables', 0)
                     total_views += schema.get('views', 0)
+                    total_functions += schema.get('functions', 0)
                 sources.append({
                     'name': ds_name,
                     'schemas': index_data.get('total_schemas', 0),
@@ -1130,6 +1137,7 @@ class SkillsService:
                 'total_objects': total_objects,
                 'total_tables': total_tables,
                 'total_views': total_views,
+                'total_functions': total_functions,
                 'data_sources': sources,
             }
 

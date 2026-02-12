@@ -16,7 +16,7 @@ A script scans schema markdown files and creates two JSON index files:
 Metadata extraction rules:
 
 - **Schema-level (per schema folder):** If `_schema.md` exists in the schema folder, the script reads it for purpose/domain and keywords. Use a `## Purpose` or `## Domain` section for the schema's functional area (e.g. "HR and Payroll", "Sales and orders"). Use a `## Keywords` section or a `**Keywords:**` line with comma-separated terms. If `_schema.md` is absent, the schema `description` defaults to "Contains N tables and M views" and `keywords` to `[]`.
-- **Object-level (per table/view .md):** Schema name from **Schema:**, object type from **Type:** (Table or View), object name from the title line (fallback: filename), description from the first blockquote under the title, keywords derived from description and object name.
+- **Object-level (per table/view .md):** Schema name from **Schema:**, object type from **Type:** (Table, View, or Function), object name from the title line (fallback: filename), description from the first blockquote under the title, keywords derived from description and object name. For Functions, a `usage_example` field is also extracted from the `### Usage:` section.
 
 These indexes are written to disk and are the only inputs the search uses.
 
@@ -51,7 +51,7 @@ If the object's schema is in **S**, its score is multiplied by a **schema match 
 Filters applied before/during search:
 
 - `data_source` (optional)
-- `object_type` (optional: Table or View)
+- `object_type` (optional: Table, View, or Function)
 - `domain` (optional: restrict to schemas matching this functional area)
 
 Results are sorted by score (descending) and truncated to `top_k`.
@@ -83,7 +83,8 @@ Located in each data source folder. Schema-level `description` and `keywords` co
       "object_index_file": "schemas/dbo/.object-index.json",
       "total_objects": 38,
       "tables": 22,
-      "views": 16
+      "views": 16,
+      "functions": 5
     }
   ]
 }
@@ -99,6 +100,7 @@ Located in each schema folder:
   "total_objects": 38,
   "tables": 22,
   "views": 16,
+  "functions": 5,
   "objects": [
     {
       "object_type": "Table",
@@ -107,6 +109,15 @@ Located in each schema folder:
       "description": "Stores information about product categories...",
       "keywords": ["stores", "information", "product", "categories"],
       "file_name": "dbo.Categories.md"
+    },
+    {
+      "object_type": "Function",
+      "schema_name": "dbo",
+      "object_name": "fn_CalculateTax",
+      "description": "Calculates sales tax based on state code and amount.",
+      "keywords": ["tax", "calculation", "finance"],
+      "file_name": "dbo.fn.fn_CalculateTax.md",
+      "usage_example": "SELECT [dbo].[fn_CalculateTax](@StateCode = 'NY', @Amount = 100.00)"
     }
   ]
 }
@@ -126,7 +137,7 @@ Query parameters:
 
 - `query` (required)
 - `data_source` (optional)
-- `object_type` (optional: Table/View)
+- `object_type` (optional: Table/View/Function)
 - `top_k` (optional, default 10)
 - `domain` (optional): restrict to schemas whose description or keywords match this functional area (e.g. "Sales", "HR")
 
@@ -212,7 +223,8 @@ Response (when `data_source` is provided):
       "object_index_file": "schemas/dbo/.object-index.json",
       "total_objects": 38,
       "tables": 22,
-      "views": 16
+      "views": 16,
+      "functions": 5
     }
   ]
 }
@@ -227,6 +239,7 @@ Response (when `data_source` is omitted):
   "total_objects": 38,
   "total_tables": 22,
   "total_views": 16,
+  "total_functions": 5,
   "data_sources": [...]
 }
 ```
@@ -293,6 +306,18 @@ python scripts\test_index_search.py
 ```
 
 Covers loading, scoring, listing, lookup, stats, schema-first prioritization (e.g. "sales" preferring Northwind dbo), recommended_schemas when statistics are called with a query, and fallback to global search when no schema passes the threshold.
+
+## Best Practices for `_schema.md`
+
+When authoring `_schema.md` files, explicitly mention available utility functions in the `## Purpose` or `## Domain` section. This helps the LLM discover functions during schema-level scoring.
+
+Example:
+> This schema contains HR data, including employee records, department assignments, and payroll history. It also provides utility functions for calculating employee tenure and retirement eligibility.
+
+## Scoring Notes
+
+- **Function boost**: Objects with `object_type: "Function"` receive a 1.2x scoring multiplier to improve discoverability, since users often search for actions (e.g., "calculate", "convert", "format").
+- **Stop words**: Common verbs like "get" are preserved during query normalization (not stripped as stop words) to support matching function names like `fn_GetEmployeeSeniority`.
 
 ## Future Enhancements
 

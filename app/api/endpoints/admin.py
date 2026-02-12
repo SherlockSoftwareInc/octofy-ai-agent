@@ -1182,7 +1182,7 @@ def search_schemas(
     Args:
         query: Search keywords
         data_source: Optional filter by data source name
-        object_type: Optional filter by object type (Table/View)
+        object_type: Optional filter by object type (Table/View/Function)
         top_k: Maximum number of results (default: 10)
         domain: Optional domain filter (e.g. Sales, HR) to restrict to schemas matching this domain
     """
