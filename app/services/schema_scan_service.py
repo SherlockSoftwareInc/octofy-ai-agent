@@ -19,6 +19,10 @@ from app.services.ingest_service import (
     get_table_description,
     build_table_markdown_description,
 )
+from app.services.object_discovery_service import (
+    discover_functions,
+    build_function_markdown_description,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -150,25 +154,76 @@ def scan_database_objects(
             except Exception as e:
                 logger.warning(f"  Failed to process {schema_name}.{obj_name}: {e}")
 
+        # Process functions
+        try:
+            functions = discover_functions(engine, schema=schema_name)
+            for func in functions:
+                try:
+                    md_content = build_function_markdown_description(func)
+                    file_name = f"{schema_name}.{func.object_name}.md"
+                    md_file = schema_folder / file_name
+                    md_file.write_text(md_content, encoding="utf-8")
+
+                    # Build object metadata for index
+                    func_keywords = []
+                    if func.description:
+                        words = re.findall(r'\b\w+\b', func.description.lower())
+                        stop_words = {'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by'}
+                        func_keywords = [w for w in words if len(w) > 3 and w not in stop_words][:5]
+                    name_parts = re.findall(r'[A-Z][a-z]+|[a-z]+', func.object_name)
+                    func_keywords.extend([p.lower() for p in name_parts if len(p) > 2])
+                    func_keywords = list(dict.fromkeys(func_keywords))[:8]
+
+                    # Build usage example
+                    if func.parameters:
+                        param_list = ", ".join([f"{p['name']} = <value>" for p in func.parameters])
+                        usage_example = f"SELECT [{schema_name}].[{func.object_name}]({param_list})"
+                    else:
+                        usage_example = f"SELECT [{schema_name}].[{func.object_name}]()"
+
+                    obj_meta = {
+                        "object_type": "Function",
+                        "schema_name": schema_name,
+                        "object_name": func.object_name,
+                        "description": func.description or "",
+                        "keywords": func_keywords,
+                        "file_name": file_name,
+                        "usage_example": usage_example,
+                    }
+
+                    objects_in_schema.append(obj_meta)
+                    logger.debug(f"  Created function {schema_name}.{func.object_name}")
+                except Exception as e:
+                    logger.warning(f"  Failed to process function {schema_name}.{func.object_name}: {e}")
+        except Exception as e:
+            logger.warning(f"  Failed to discover functions for schema {schema_name}: {e}")
+
         # Write .object-index.json for this schema
+        func_count = sum(1 for o in objects_in_schema if o["object_type"] == "Function")
         object_index = {
             "schema": schema_name,
             "total_objects": len(objects_in_schema),
             "tables": sum(1 for o in objects_in_schema if o["object_type"] == "Table"),
             "views": sum(1 for o in objects_in_schema if o["object_type"] == "View"),
+            "functions": func_count,
             "objects": objects_in_schema,
         }
         idx_file = schema_folder / ".object-index.json"
         idx_file.write_text(json.dumps(object_index, indent=2, ensure_ascii=False), encoding="utf-8")
 
         all_objects_index[schema_name] = objects_in_schema
+        total_funcs = sum(1 for o in objects_in_schema if o["object_type"] == "Function")
+        parts = [f"{len(table_names)} tables", f"{len(view_names)} views"]
+        if total_funcs:
+            parts.append(f"{total_funcs} functions")
         schema_summaries.append({
             "schema_name": schema_name,
-            "description": f"Contains {len(table_names)} tables and {len(view_names)} views",
+            "description": f"Contains {', '.join(parts)}",
             "object_index_file": f"schemas/{schema_name}/.object-index.json",
             "total_objects": len(objects_in_schema),
             "tables": len(table_names),
             "views": len(view_names),
+            "functions": total_funcs,
         })
 
     # ---- Write .schema-index.json ----
@@ -189,12 +244,17 @@ def scan_database_objects(
 
     engine.dispose()
 
+    total_functions = sum(
+        sum(1 for o in objs if o["object_type"] == "Function")
+        for objs in all_objects_index.values()
+    )
     summary = {
         "data_source": data_source_name,
         "schemas_scanned": len(schema_summaries),
         "tables_created": total_tables,
         "views_created": total_views,
-        "total_objects": total_tables + total_views,
+        "functions_created": total_functions,
+        "total_objects": total_tables + total_views + total_functions,
     }
     logger.info(f"Scan complete: {summary}")
     return summary
