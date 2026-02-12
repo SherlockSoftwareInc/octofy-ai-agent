@@ -1140,6 +1140,22 @@ export const api = {
         getScanStatus: async (sourceId: string): Promise<{ status: string; message: string; result?: Record<string, unknown> }> => {
             const response = await axios.get(`${API_BASE_URL}/admin/data-sources/${encodeURIComponent(sourceId)}/scan-status`);
             return response.data;
+        },
+        uploadExcludeObjects: async (sourceId: string, file: File): Promise<{ status: string; message: string; objects: string[]; count: number }> => {
+            const formData = new FormData();
+            formData.append('file', file);
+            const response = await axios.post(`${API_BASE_URL}/admin/data-sources/${encodeURIComponent(sourceId)}/exclude-objects`, formData, {
+                headers: { 'Content-Type': 'multipart/form-data' },
+            });
+            return response.data;
+        },
+        getExcludeObjects: async (sourceId: string): Promise<{ objects: string[]; count: number }> => {
+            const response = await axios.get(`${API_BASE_URL}/admin/data-sources/${encodeURIComponent(sourceId)}/exclude-objects`);
+            return response.data;
+        },
+        deleteExcludeObjects: async (sourceId: string): Promise<{ status: string; message: string }> => {
+            const response = await axios.delete(`${API_BASE_URL}/admin/data-sources/${encodeURIComponent(sourceId)}/exclude-objects`);
+            return response.data;
         }
     },
 

@@ -1,9 +1,10 @@
-﻿"""
+"""
 Data source management endpoints for multi-source schema tree.
 """
-from fastapi import APIRouter, HTTPException, Depends, BackgroundTasks
+from fastapi import APIRouter, HTTPException, Depends, BackgroundTasks, UploadFile, File
 from typing import List, Dict
 from datetime import datetime
+from pathlib import Path
 import re
 import logging
 
@@ -482,6 +483,112 @@ def toggle_data_source(source_id: str, enabled: bool = True, current_user: User 
 def set_primary_data_source(source_id: str, current_user: User = Depends(get_current_active_admin)):
     """Set a data source as the primary (default) source for queries."""
     return {"status": "success", "message": f"Primary data source updated to {source_id}"}
+
+
+# --- Exclude Objects ---
+
+def _resolve_ds_dir(source_id: str) -> Path:
+    """
+    Resolve source_id to the data source directory on disk.
+
+    Raises HTTPException(404) if the source is not found.
+    """
+    skills_service = SkillsService()
+    skills_service._data_sources_cache = None
+    for s in skills_service.load_data_sources_index():
+        sid = s.source_id or f"skill_{re.sub(r'[^a-zA-Z0-9]', '_', s.name.lower())}"
+        if sid == source_id:
+            slug = re.sub(r'[^\w\s-]', '', s.name.lower()).replace(' ', '-')
+            return Path("skills/data-sources") / slug
+    raise HTTPException(status_code=404, detail=f"Data source {source_id} not found")
+
+
+@router.post("/data-sources/{source_id}/exclude-objects")
+async def upload_exclude_objects(
+    source_id: str,
+    file: UploadFile = File(...),
+    current_user: User = Depends(get_current_active_admin),
+):
+    """
+    Upload an exclude_objects.txt file for a data source.
+
+    The file should contain one database object name per line.
+    Blank lines and lines starting with '#' are treated as comments.
+    Objects listed here will be skipped during the next schema scan.
+    """
+    if not file.filename or not file.filename.endswith(".txt"):
+        raise HTTPException(status_code=400, detail="File must be a .txt file")
+
+    ds_dir = _resolve_ds_dir(source_id)
+    if not ds_dir.exists():
+        raise HTTPException(status_code=404, detail=f"Data source directory not found: {ds_dir}")
+
+    contents = await file.read()
+    text = contents.decode("utf-8")
+
+    # Parse and count valid entries
+    names = [
+        line.strip()
+        for line in text.splitlines()
+        if line.strip() and not line.strip().startswith("#")
+    ]
+
+    exclude_file = ds_dir / "exclude_objects.txt"
+    exclude_file.write_text(text, encoding="utf-8")
+
+    logger.info(f"Uploaded exclude_objects.txt for {source_id} with {len(names)} object(s)")
+    return {
+        "status": "success",
+        "message": f"Uploaded exclusion list with {len(names)} object(s)",
+        "objects": names,
+        "count": len(names),
+    }
+
+
+@router.get("/data-sources/{source_id}/exclude-objects")
+def get_exclude_objects(
+    source_id: str,
+    current_user: User = Depends(get_current_active_admin),
+):
+    """
+    Get the current exclusion list for a data source.
+
+    Returns the list of object names and count. If no exclude_objects.txt
+    file exists, returns an empty list.
+    """
+    ds_dir = _resolve_ds_dir(source_id)
+    exclude_file = ds_dir / "exclude_objects.txt"
+
+    if not exclude_file.exists():
+        return {"objects": [], "count": 0}
+
+    names = [
+        line.strip()
+        for line in exclude_file.read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.strip().startswith("#")
+    ]
+    return {"objects": names, "count": len(names)}
+
+
+@router.delete("/data-sources/{source_id}/exclude-objects")
+def delete_exclude_objects(
+    source_id: str,
+    current_user: User = Depends(get_current_active_admin),
+):
+    """
+    Delete the exclude_objects.txt file for a data source.
+
+    After deletion, the next schema scan will include all discovered objects.
+    """
+    ds_dir = _resolve_ds_dir(source_id)
+    exclude_file = ds_dir / "exclude_objects.txt"
+
+    if not exclude_file.exists():
+        return {"status": "success", "message": "No exclusion list to delete"}
+
+    exclude_file.unlink()
+    logger.info(f"Deleted exclude_objects.txt for {source_id}")
+    return {"status": "success", "message": "Exclusion list deleted"}
 
 
 # --- Helper Functions ---

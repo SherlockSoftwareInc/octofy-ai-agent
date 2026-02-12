@@ -78,6 +78,29 @@ def _build_usage_example(schema_name: str, object_name: str, parameters: list) -
     return f"SELECT [{schema_name}].[{object_name}]()"
 
 
+def _load_exclude_list(ds_dir: Path) -> frozenset:
+    """
+    Load the exclude_objects.txt file from a data source directory.
+
+    The file lists database object names to skip during scanning, one per line.
+    Blank lines and lines starting with '#' are ignored.
+    Matching is case-insensitive (all names are lowercased).
+
+    Returns:
+        A frozenset of lowercased object names to exclude.
+    """
+    exclude_file = ds_dir / "exclude_objects.txt"
+    if not exclude_file.exists():
+        return frozenset()
+
+    names = set()
+    for line in exclude_file.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if stripped and not stripped.startswith("#"):
+            names.add(stripped.lower())
+    return frozenset(names)
+
+
 def _build_engine(server: str, database: str, auth_type: str = "windows",
                   driver: str = "ODBC Driver 17 for SQL Server",
                   username: str = None, password: str = None,
@@ -122,6 +145,11 @@ def scan_database_objects(
     if not ds_dir.exists():
         raise ValueError(f"Data source directory not found: {ds_dir}")
 
+    # ---- Load exclude list ----
+    exclude_set = _load_exclude_list(ds_dir)
+    if exclude_set:
+        logger.info(f"Loaded {len(exclude_set)} object(s) to exclude from scan")
+
     # ---- Connect ----
     engine = _build_engine(
         server=server,
@@ -150,6 +178,7 @@ def scan_database_objects(
     total_tables = 0
     total_views = 0
     total_functions = 0
+    objects_excluded = 0
     schema_summaries: List[Dict] = []
     all_objects_index: Dict[str, List[Dict]] = {}  # schema -> list of object metadata
 
@@ -164,6 +193,17 @@ def scan_database_objects(
             func_objects = discover_functions(engine, schema=schema_name)
         except Exception as e:
             logger.warning(f"  Failed to discover functions for schema {schema_name}: {e}")
+
+        # Apply exclusion list
+        if exclude_set:
+            pre_count = len(table_names) + len(view_names) + len(func_objects)
+            table_names = [n for n in table_names if n.lower() not in exclude_set]
+            view_names = [n for n in view_names if n.lower() not in exclude_set]
+            func_objects = [f for f in func_objects if f.object_name.lower() not in exclude_set]
+            excluded = pre_count - (len(table_names) + len(view_names) + len(func_objects))
+            if excluded:
+                objects_excluded += excluded
+                logger.info(f"  Excluded {excluded} object(s) in schema {schema_name}")
 
         if not table_names and not view_names and not func_objects:
             continue  # skip truly empty schemas
@@ -286,6 +326,7 @@ def scan_database_objects(
         "tables_created": total_tables,
         "views_created": total_views,
         "functions_created": total_functions,
+        "objects_excluded": objects_excluded,
         "total_objects": total_tables + total_views + total_functions,
     }
     logger.info(f"Scan complete: {summary}")
