@@ -5,6 +5,7 @@ from fastapi import APIRouter, HTTPException, Depends, BackgroundTasks, UploadFi
 from typing import List, Dict
 from datetime import datetime
 from pathlib import Path
+from sqlalchemy.orm import Session
 import re
 import logging
 
@@ -18,6 +19,8 @@ from app.services.skills_service import SkillsService
 from app.core.auth import get_current_active_admin
 from app.models.user_models import User
 from app.core.database import test_connection
+from app.core.user_database import get_user_db
+from app.services.data_source_registry_service import DataSourceRegistryService
 import uuid
 
 logger = logging.getLogger(__name__)
@@ -589,6 +592,40 @@ def delete_exclude_objects(
     exclude_file.unlink()
     logger.info(f"Deleted exclude_objects.txt for {source_id}")
     return {"status": "success", "message": "Exclusion list deleted"}
+
+
+@router.get("/data-sources/registry")
+def list_data_source_registry(
+    include_deleted: bool = False,
+    current_user: User = Depends(get_current_active_admin),
+    db: Session = Depends(get_user_db)
+):
+    """
+    View all data sources ever created in the PostgreSQL registry (admin only).
+    
+    This endpoint shows the persistent ID registry that enables ID reuse when
+    data sources are deleted and recreated. Useful for troubleshooting conversations
+    that reference old source IDs.
+    
+    Args:
+        include_deleted: If True, includes soft-deleted data sources
+        
+    Returns:
+        List of data source registry entries with ID, name, status, timestamps
+    """
+    try:
+        registry = DataSourceRegistryService(db)
+        entries = registry.list_all(include_deleted=include_deleted)
+        
+        return {
+            "status": "success",
+            "count": len(entries),
+            "include_deleted": include_deleted,
+            "entries": entries
+        }
+    except Exception as e:
+        logger.error(f"Error listing data source registry: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # --- Helper Functions ---

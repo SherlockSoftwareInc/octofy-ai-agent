@@ -533,14 +533,12 @@
       "object_type": "View",
       "schema_name": "dbo",
       "object_name": "Sales by Category",
-      "description": "Aggregates total sales revenue for each product, grouped by product category. Provides a summary view of sales performance across different food categories.",
+      "description": "Stores Sales by Category data.",
       "keywords": [
-        "aggregates",
-        "total",
+        "stores",
         "sales",
-        "revenue",
-        "each",
-        "category"
+        "category",
+        "data"
       ],
       "file_name": "dbo.Sales by Category.md"
     },

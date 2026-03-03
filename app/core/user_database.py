@@ -56,7 +56,7 @@ def init_user_db():
     
     Should be called during application startup.
     """
-    from app.models.user_models import User, Conversation  # Import here to avoid circular imports
+    from app.models.user_models import User, Conversation, DataSourceRegistry  # Import here to avoid circular imports
     Base.metadata.create_all(bind=engine)
     
     # Run lightweight migrations for existing databases
@@ -75,3 +75,29 @@ def _run_migrations():
             with engine.begin() as conn:
                 conn.execute(text("ALTER TABLE conversations ADD COLUMN extra_data JSON DEFAULT NULL"))
             logger.info("Migration complete: 'extra_data' column added")
+
+
+def get_user_db_session():
+    """
+    Context manager for getting database session outside of FastAPI.
+    
+    Usage:
+        with get_user_db_session() as db:
+            user = db.query(User).first()
+            # ... do work ...
+            db.commit()
+    
+    Returns:
+        Context manager that yields database session
+    """
+    from contextlib import contextmanager
+    
+    @contextmanager
+    def session_context():
+        db = SessionLocal()
+        try:
+            yield db
+        finally:
+            db.close()
+    
+    return session_context()

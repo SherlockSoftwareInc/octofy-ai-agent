@@ -90,3 +90,37 @@ class Conversation(Base):
     
     def __repr__(self):
         return f"<Conversation(id={self.id}, user_id={self.user_id}, title='{self.title}')>"
+
+
+class DataSourceRegistry(Base):
+    """
+    Data Source Registry model.
+    
+    Persistent registry of all data sources ever created, enabling ID reuse
+    when data sources are deleted and recreated. Uses connection details
+    as the natural key for identity matching.
+    """
+    __tablename__ = "data_source_registry"
+    
+    # Primary key - the source_id that gets reused
+    source_id = Column(String(36), primary_key=True)
+    
+    # Natural key components for identity matching
+    name = Column(String(255), nullable=False, index=True)
+    type = Column(String(50), nullable=False)  # "SQL Server", "Excel", etc.
+    identity_hash = Column(String(64), nullable=False, unique=True, index=True)
+    
+    # Connection metadata stored as JSON
+    connection_info = Column(JSON, nullable=True)
+    
+    # Lifecycle tracking
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    deleted_at = Column(DateTime(timezone=True), nullable=True)  # Soft delete
+    last_seen_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    
+    # Filesystem path tracking
+    file_path = Column(String(500), nullable=True)
+    
+    def __repr__(self):
+        status = "deleted" if self.deleted_at else "active"
+        return f"<DataSourceRegistry(source_id='{self.source_id}', name='{self.name}', status='{status}')>"

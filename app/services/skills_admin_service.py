@@ -10,6 +10,8 @@ from typing import Dict, Optional, List, Tuple
 from app.models.schemas import DataSource, DataGroup, TableSchema
 from app.services.skills_service import SkillsService
 from app.services.vector_store import get_vector_store
+from app.services.data_source_registry_service import DataSourceRegistryService
+from app.core.user_database import get_user_db_session
 
 
 SKILLS_BASE_PATH = Path("skills/data-sources")
@@ -153,7 +155,22 @@ def create_data_source(data: Dict) -> Dict:
     # Create _data-source.md
     ds_file = ds_dir / "_data-source.md"
     keywords_str = ', '.join(keywords) if isinstance(keywords, list) else keywords
-    source_id = str(uuid.uuid4())
+    
+    # Get or create source_id from registry (reuses ID if this data source existed before)
+    connection_info = {}
+    if server:
+        connection_info['server'] = server
+    if database:
+        connection_info['database'] = database
+    
+    with get_user_db_session() as db_session:
+        registry = DataSourceRegistryService(db_session)
+        source_id = registry.get_or_create_source_id(
+            name=name,
+            ds_type=ds_type,
+            connection_info=connection_info if connection_info else None,
+            file_path=str(ds_file)
+        )
     
     # Build connection fields if provided
     connection_lines = ""
@@ -310,6 +327,11 @@ def delete_data_source(data_source_name: str):
         vector_store.clear_schemas_v2_collection(source_id=source_id)
         vector_store.clear_values_collection(source_id=source_id)
         vector_store.clear_fewshots_collection(source_id=source_id)
+        
+        # Mark as deleted in PostgreSQL registry (soft delete)
+        with get_user_db_session() as db_session:
+            registry = DataSourceRegistryService(db_session)
+            registry.mark_deleted(source_id)
     
     # Delete directory recursively
     import shutil

@@ -4,7 +4,12 @@ from typing import Dict, Optional
 from app.core.config import settings
 from app.services.settings_service import load_settings, decrypt_string
 from app.models.schemas import ConnectionTestRequest, ConnectionTestResponse
+from app.services.data_source_registry_service import DataSourceRegistryService
+from app.core.user_database import get_user_db_session
 import urllib.parse
+import logging
+
+logger = logging.getLogger(__name__)
 
 # Cache of database engines by source_id
 _engines: Dict[str, Engine] = {}
@@ -38,6 +43,24 @@ def get_database_engine(source_id: Optional[str] = None) -> Engine:
     cache_key = source_id or "primary"
     if cache_key in _engines:
         return _engines[cache_key]
+    
+    # Resolve source_id through registry if provided (handles deleted/recreated sources)
+    if source_id:
+        with get_user_db_session() as db_session:
+            registry = DataSourceRegistryService(db_session)
+            resolved_id = registry.resolve_source_id(source_id)
+            
+            if resolved_id and resolved_id != source_id:
+                logger.info(f"Resolved source_id '{source_id}' to '{resolved_id}'")
+                source_id = resolved_id
+                cache_key = resolved_id
+                
+                # Check cache again with resolved ID
+                if cache_key in _engines:
+                    return _engines[cache_key]
+            elif not resolved_id:
+                # Could not resolve - log warning but continue (might still find by name)
+                logger.warning(f"Could not resolve source_id '{source_id}' through registry")
     
     # Build connection string from _data-source.md
     from app.services.skills_service import get_skills_service

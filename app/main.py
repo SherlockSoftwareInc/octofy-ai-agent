@@ -91,6 +91,19 @@ async def startup_event():
     except Exception as e:
         logger.warning(f"User database initialization skipped: {e}")
     
+    # Migrate existing data sources to PostgreSQL registry (one-time)
+    try:
+        from scripts.migrate_data_sources_to_postgres import migration_needed, run_migration
+        
+        if migration_needed():
+            logger.info("Running data source migration to PostgreSQL registry...")
+            run_migration()
+            logger.info("✅ Data source migration completed")
+        else:
+            logger.info("Data source registry already populated")
+    except Exception as e:
+        logger.warning(f"Data source migration skipped: {e}")
+    
     if not settings.VECTOR_DB_ENABLED:
         logger.info("Vector DB disabled. Skipping startup ingestion.")
         return
