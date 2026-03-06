@@ -251,6 +251,91 @@ All routes below are prefixed with `/api/v1/admin`.
 | `/data-sources/{source_id}/exclude-objects` | GET | Get exclusion list |
 | `/data-sources/{source_id}/exclude-objects` | DELETE | Delete exclusion list |
 
+#### Data Source Resolution
+
+| Endpoint | Method | Purpose |
+|----------|--------|---------|
+| `/data-sources/resolve` | GET | Resolve connection details to source_id |
+
+**Query Parameters:**
+
+For SQL Server sources:
+- `server`: Server name (required with database)
+- `database`: Database name (required with server)
+
+For Excel/File sources:
+- `file_path`: Full path to file
+
+**Example Request (SQL Server):**
+```bash
+GET /api/v1/data-sources/resolve?server=SQLSERVER01&database=Northwind
+```
+
+**Example Response:**
+```json
+{
+  "source_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+  "name": "Northwind Production",
+  "type": "SQL Server",
+  "server": "SQLSERVER01",
+  "database": "Northwind",
+  "file_path": null,
+  "status": "active",
+  "object_count": 245
+}
+```
+
+**Example Request (Excel):**
+```bash
+GET /api/v1/data-sources/resolve?file_path=/data/sales.xlsx
+```
+
+**Example Response:**
+```json
+{
+  "source_id": "e5f6a7b8-c9d0-1234-abcd-ef1234567890",
+  "name": "Sales Data",
+  "type": "Excel",
+  "server": null,
+  "database": null,
+  "file_path": "/data/sales.xlsx",
+  "status": "active",
+  "object_count": 12
+}
+```
+
+**Error Responses:**
+- `400`: Invalid parameter combination
+  - Only `server` provided (missing `database`)
+  - Only `database` provided (missing `server`)
+  - Mixed SQL Server and file parameters
+  - No parameters provided
+- `404`: Data source not found
+
+**Usage Pattern:**
+```bash
+# Step 1: Resolve SQL Server data source to ID
+RESOLVED=$(curl -s "http://localhost:8000/api/v1/data-sources/resolve?server=MyServer&database=MyDB" \
+  -H "X-API-Key: admin-key" | jq -r '.source_id')
+
+# Step 2: Use source_id in discovery
+curl -X POST http://localhost:8000/api/v1/discovery \
+  -H "X-API-Key: user-key" \
+  -d "{\"query\": \"show customers\", \"source_id\": \"$RESOLVED\"}"
+
+# Step 3: Use source_id in generate-sql
+curl -X POST http://localhost:8000/api/v1/generate-sql \
+  -H "X-API-Key: user-key" \
+  -d "{\"query\": \"show top 10 customers\", \"source_id\": \"$RESOLVED\"}"
+```
+
+**Notes:**
+- Server and database matching is case-insensitive
+- File path matching is case-sensitive (filesystem dependent)
+- Only active (non-deleted) data sources are returned
+- Requires admin authentication
+- Object count reflects number of tables/views/procedures indexed in vector store
+
 ### Schema Tree Navigation
 
 | Endpoint | Method | Purpose |

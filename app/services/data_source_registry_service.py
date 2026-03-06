@@ -220,6 +220,69 @@ class DataSourceRegistryService:
             )
         ).first()
     
+    def find_by_connection_info(
+        self,
+        server: Optional[str] = None,
+        database: Optional[str] = None,
+        file_path: Optional[str] = None
+    ) -> Optional[DataSourceRegistry]:
+        """
+        Find data source by connection details.
+        
+        Supports two lookup patterns:
+        - SQL Server: server + database (case-insensitive)
+        - Excel/File: file_path (case-sensitive)
+        
+        Args:
+            server: Server name (SQL Server)
+            database: Database name (SQL Server)
+            file_path: File path (Excel/file-based sources)
+            
+        Returns:
+            DataSourceRegistry entry or None if not found
+        """
+        from sqlalchemy import func
+        
+        # SQL Server lookup
+        if server and database:
+            logger.info(f"Looking up SQL Server data source: {server}\\{database}")
+            
+            entry = self.db.query(DataSourceRegistry).filter(
+                and_(
+                    func.lower(DataSourceRegistry.connection_info['server'].astext) == server.lower(),
+                    func.lower(DataSourceRegistry.connection_info['database'].astext) == database.lower(),
+                    DataSourceRegistry.deleted_at.is_(None)
+                )
+            ).first()
+            
+            if entry:
+                logger.info(f"Found data source '{entry.name}' (ID: {entry.source_id})")
+            else:
+                logger.warning(f"No active data source found for {server}\\{database}")
+            
+            return entry
+        
+        # Excel/File lookup
+        if file_path:
+            logger.info(f"Looking up file-based data source: {file_path}")
+            
+            entry = self.db.query(DataSourceRegistry).filter(
+                and_(
+                    DataSourceRegistry.connection_info['file_path'].astext == file_path,
+                    DataSourceRegistry.deleted_at.is_(None)
+                )
+            ).first()
+            
+            if entry:
+                logger.info(f"Found data source '{entry.name}' (ID: {entry.source_id})")
+            else:
+                logger.warning(f"No active data source found for file: {file_path}")
+            
+            return entry
+        
+        logger.warning("No valid lookup parameters provided")
+        return None
+    
     def resolve_source_id(self, source_id: str) -> Optional[str]:
         """
         Resolve source_id, attempting to find active replacement if deleted.

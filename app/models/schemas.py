@@ -647,6 +647,19 @@ class DataSourceListResponse(BaseModel):
     primary_source_id: Optional[str] = None
     total_objects: int = 0
 
+
+class ResolveDataSourceResponse(BaseModel):
+    """Response schema for data source resolution."""
+    source_id: str = Field(..., description="Resolved data source GUID")
+    name: str = Field(..., description="Friendly name of the data source")
+    type: str = Field(..., description="Data source type: SQL Server, Excel, etc.")
+    server: Optional[str] = Field(None, description="Server name (for SQL Server)")
+    database: Optional[str] = Field(None, description="Database name (for SQL Server)")
+    file_path: Optional[str] = Field(None, description="File path (for Excel)")
+    status: str = Field(default="active", description="Data source status")
+    object_count: int = Field(default=0, description="Number of indexed objects")
+
+
 class SchemaTreeNode(BaseModel):
     """Hierarchical tree node for schema browser"""
     node_id: str  # Format: "source_id" or "source_id:schema" or "source_id:schema:object"
