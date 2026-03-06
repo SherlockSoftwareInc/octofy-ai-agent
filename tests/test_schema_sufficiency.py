@@ -197,10 +197,10 @@ class TestLLMServiceSchemaSufficiency:
     
     def test_mock_mode_returns_sufficient(self, sample_schemas):
         """When client is None (mock mode), should return sufficient"""
-        from app.services.llm_service import OpenAILLMService
+        from app.services.llm_service import OpenAICompatibleLLMService
         
-        with patch.object(OpenAILLMService, '__init__', lambda self: None):
-            llm = OpenAILLMService()
+        with patch.object(OpenAICompatibleLLMService, '__init__', lambda self: None):
+            llm = OpenAICompatibleLLMService()
             llm.client = None  # Mock mode
             llm.model = "gpt-4o"
             
@@ -216,7 +216,7 @@ class TestLLMServiceSchemaSufficiency:
     @patch("app.services.llm_service.OpenAI")
     def test_sufficient_schema_returns_success(self, mock_openai_class, sample_schemas):
         """When all required columns exist, status should be 'sufficient'"""
-        from app.services.llm_service import OpenAILLMService
+        from app.services.llm_service import OpenAICompatibleLLMService
         
         # Setup mock
         mock_client = MagicMock()
@@ -236,8 +236,8 @@ class TestLLMServiceSchemaSufficiency:
         })
         mock_client.chat.completions.create.return_value = mock_response
         
-        with patch.object(OpenAILLMService, '__init__', lambda self: None):
-            llm = OpenAILLMService()
+        with patch.object(OpenAICompatibleLLMService, '__init__', lambda self: None):
+            llm = OpenAICompatibleLLMService()
             llm.client = mock_client
             llm.model = "gpt-4o"
             
@@ -253,7 +253,7 @@ class TestLLMServiceSchemaSufficiency:
     @patch("app.services.llm_service.OpenAI")
     def test_insufficient_schema_returns_missing_points(self, mock_openai_class, sample_schemas):
         """When required columns are missing, status should be 'insufficient_data'"""
-        from app.services.llm_service import OpenAILLMService
+        from app.services.llm_service import OpenAICompatibleLLMService
         
         mock_client = MagicMock()
         mock_openai_class.return_value = mock_client
@@ -274,8 +274,8 @@ class TestLLMServiceSchemaSufficiency:
         })
         mock_client.chat.completions.create.return_value = mock_response
         
-        with patch.object(OpenAILLMService, '__init__', lambda self: None):
-            llm = OpenAILLMService()
+        with patch.object(OpenAICompatibleLLMService, '__init__', lambda self: None):
+            llm = OpenAICompatibleLLMService()
             llm.client = mock_client
             llm.model = "gpt-4o"
             
@@ -292,7 +292,7 @@ class TestLLMServiceSchemaSufficiency:
     @patch("app.services.llm_service.OpenAI")
     def test_json_parse_error_returns_sufficient(self, mock_openai_class, sample_schemas):
         """On JSON parse error, should return sufficient to avoid blocking"""
-        from app.services.llm_service import OpenAILLMService
+        from app.services.llm_service import OpenAICompatibleLLMService
         
         mock_client = MagicMock()
         mock_openai_class.return_value = mock_client
@@ -302,8 +302,8 @@ class TestLLMServiceSchemaSufficiency:
         mock_response.choices[0].message.content = "Invalid JSON response"
         mock_client.chat.completions.create.return_value = mock_response
         
-        with patch.object(OpenAILLMService, '__init__', lambda self: None):
-            llm = OpenAILLMService()
+        with patch.object(OpenAICompatibleLLMService, '__init__', lambda self: None):
+            llm = OpenAICompatibleLLMService()
             llm.client = mock_client
             llm.model = "gpt-4o"
             
@@ -351,7 +351,7 @@ class TestLLMServiceSchemaSufficiency:
         This tests the key fix: "Find top selling products" should NOT fail just 
         because there's no explicit 'sales_amount' column.
         """
-        from app.services.llm_service import OpenAILLMService
+        from app.services.llm_service import OpenAICompatibleLLMService
         
         mock_client = MagicMock()
         mock_openai_class.return_value = mock_client
@@ -387,8 +387,8 @@ class TestLLMServiceSchemaSufficiency:
         })
         mock_client.chat.completions.create.return_value = mock_response
         
-        with patch.object(OpenAILLMService, '__init__', lambda self: None):
-            llm = OpenAILLMService()
+        with patch.object(OpenAICompatibleLLMService, '__init__', lambda self: None):
+            llm = OpenAICompatibleLLMService()
             llm.client = mock_client
             llm.model = "gpt-4o"
             
@@ -415,7 +415,7 @@ class TestLLMServiceSchemaSufficiency:
         This tests that: "Find top selling products" with Python should be sufficient
         because pandas can do df.groupby().agg(), df.nlargest(), etc.
         """
-        from app.services.llm_service import OpenAILLMService
+        from app.services.llm_service import OpenAICompatibleLLMService
         
         mock_client = MagicMock()
         mock_openai_class.return_value = mock_client
@@ -451,8 +451,8 @@ class TestLLMServiceSchemaSufficiency:
         })
         mock_client.chat.completions.create.return_value = mock_response
         
-        with patch.object(OpenAILLMService, '__init__', lambda self: None):
-            llm = OpenAILLMService()
+        with patch.object(OpenAICompatibleLLMService, '__init__', lambda self: None):
+            llm = OpenAICompatibleLLMService()
             llm.client = mock_client
             llm.model = "gpt-4o"
             
@@ -519,7 +519,7 @@ class TestLLMServiceSchemaSufficiency:
         This is the key fix for Python code generation failing when get_all_schemas()
         returns schemas without populated columns arrays.
         """
-        from app.services.llm_service import OpenAILLMService
+        from app.services.llm_service import OpenAICompatibleLLMService
         
         mock_client = MagicMock()
         mock_openai_class.return_value = mock_client
@@ -549,8 +549,8 @@ class TestLLMServiceSchemaSufficiency:
         })
         mock_client.chat.completions.create.return_value = mock_response
         
-        with patch.object(OpenAILLMService, '__init__', lambda self: None):
-            llm = OpenAILLMService()
+        with patch.object(OpenAICompatibleLLMService, '__init__', lambda self: None):
+            llm = OpenAICompatibleLLMService()
             llm.client = mock_client
             llm.model = "gpt-4o"
             

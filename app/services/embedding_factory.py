@@ -23,47 +23,55 @@ class EmbeddingFactory:
     def create_client(config: EmbeddingConfig) -> EmbeddingClient:
         """
         Create an embedding client based on the configuration.
+        Supports: openai, azure, openai_compatible, huggingface
         """
         provider = config.provider.lower()
         
         if provider == "openai":
-            return EmbeddingFactory._create_openai_client(config)
+            return EmbeddingFactory._create_openai_compatible_client(config)
         elif provider == "azure":
-             # Placeholder: Azure logic is similar to OpenAI but needs api_version and azure_endpoint
-             # For now, mapping to standard OpenAI client configured for Azure if base_url provided
-             return EmbeddingFactory._create_openai_client(config)
+             # Azure uses OpenAI-compatible client with azure_endpoint
+             return EmbeddingFactory._create_openai_compatible_client(config)
         elif provider == "openai_compatible":
-            return EmbeddingFactory._create_openai_client(config)
+            return EmbeddingFactory._create_openai_compatible_client(config)
         elif provider == "huggingface":
             return EmbeddingFactory._create_local_hf_client(config)
         else:
-            # Default fallback to OpenAI if unknown
-            return EmbeddingFactory._create_openai_client(config)
+            # For unknown providers, try OpenAI-compatible as last resort
+            # This allows custom providers that follow OpenAI's API spec
+            return EmbeddingFactory._create_openai_compatible_client(config)
 
     @staticmethod
-    def _create_openai_client(config: EmbeddingConfig) -> EmbeddingClient:
+    def _create_openai_compatible_client(config: EmbeddingConfig) -> EmbeddingClient:
+        """
+        Create a client for OpenAI or any OpenAI-compatible embedding API.
+        Works with OpenAI, DeepSeek, local models, or any API following OpenAI's spec.
+        """
         # Resolve API Key
         api_key = config.api_key
         if not api_key:
             # Fallback to env var if not in config
-            if config.provider == "openai":
-                api_key = settings.EMBEDDING_API_KEY or settings.LLM_API_KEY
+            # Try embedding-specific key first, then LLM key as fallback
+            api_key = settings.EMBEDDING_API_KEY or settings.LLM_API_KEY
                 
         # Resolve Base URL
         base_url = config.base_url
-        if not base_url and config.provider == "openai":
-             # Default OpenAI URL is handled by the generic client, but we can be explicit
-             base_url = "https://api.openai.com/v1"
-             # If using env var override (e.g. for proxy)
+        if not base_url:
+             # Use configured base_url from settings if available
+             # Don't default to OpenAI - let the client use its own defaults based on API key
              if settings.EMBEDDING_BASE_URL:
                  base_url = settings.EMBEDDING_BASE_URL
-             elif settings.LLM_EMBEDDING_ENDPOINT:
-                 base_url = settings.LLM_EMBEDDING_ENDPOINT
 
-        # If still no key and no local base_url, we might have an issue
-        # But for local providers (openai_compatible), key might be dummy
+        # If still no key, allow dummy key for local/custom endpoints
+        # Local providers (Ollama, etc.) might not require authentication
         if not api_key:
-            api_key = "dummy-key"
+            if base_url:  # Custom endpoint - might not need real key
+                api_key = "dummy-key"
+            else:
+                raise ValueError(
+                    f"No API key configured for embedding provider '{config.provider}'. "
+                    "Set EMBEDDING_API_KEY or LLM_API_KEY, or provide base_url for local endpoints."
+                )
 
         client = OpenAI(api_key=api_key, base_url=base_url)
         

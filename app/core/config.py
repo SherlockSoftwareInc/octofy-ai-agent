@@ -21,23 +21,20 @@ class Settings(BaseSettings):
     MILVUS_COLLECTION_CONTRIBUTIONS: str = "contribution_library"  # Staging area for user contributions
     MILVUS_COLLECTION_VALUES: str = "value_index"
     
-    # LLM (OpenAI compatible)
-    LLM_EMBEDDING_ENDPOINT: Optional[str] = Field(
-        default=None,
-        validation_alias=AliasChoices(
-            "LLM_EMBEDDING_ENDPOINT",
-            "LLM_EMBEDDING",
-            "llm_embedding",
-        ),
-    )
+    # LLM Configuration (Provider Agnostic)
+    # Supports any OpenAI-compatible API: OpenAI, DeepSeek, Ollama, Azure, etc.
+    # Uses LiteLLM for maximum provider compatibility
     LLM_API_KEY: Optional[str] = None
     LLM_MODEL: Optional[str] = None
-    LLM_ENDPOINT: Optional[str] = None
+    LLM_ENDPOINT: Optional[str] = None  # Base URL for OpenAI-compatible endpoints
     LLM_TEMPERATURE: float = 0.0
 
+    # Embedding Configuration (Provider Agnostic)
+    # Supports: openai, azure, openai_compatible, huggingface
+    # Works with any OpenAI-compatible embedding API
     EMBEDDING_PROVIDER: str = "openai"
-    EMBEDDING_BASE_URL: Optional[str] = None
-    EMBEDDING_API_KEY: Optional[str] = None
+    EMBEDDING_BASE_URL: Optional[str] = None  # Custom endpoint URL (optional)
+    EMBEDDING_API_KEY: Optional[str] = None  # Falls back to LLM_API_KEY if not set
     EMBEDDING_MODEL: str = "text-embedding-3-small"
     EMBEDDING_DIMENSIONS: int = 1536
 

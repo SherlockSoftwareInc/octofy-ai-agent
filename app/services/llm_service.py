@@ -47,7 +47,14 @@ class LLMServiceBase(ABC):
         """Evaluate if knowledge base examples can answer the user's query."""
         pass
 
-class OpenAILLMService(LLMServiceBase):
+class OpenAICompatibleLLMService(LLMServiceBase):
+    """
+    LLM service using OpenAI Python client library.
+    Works with OpenAI, DeepSeek, Ollama, or any OpenAI-compatible API.
+    
+    Note: For production use, prefer LiteLLMService which supports more providers
+    and handles provider-specific quirks automatically.
+    """
     def __init__(self):
         from app.services.settings_service import load_settings
         
@@ -805,7 +812,28 @@ schema.Table1, schema.Table2
             
         return [val.strip() for val in item_str.split(",") if val.strip()]
 
+
+# Backward compatibility alias
+OpenAILLMService = OpenAICompatibleLLMService
+
+
 class LiteLLMService(LLMServiceBase):
+    """
+    Multi-provider LLM service using LiteLLM library.
+    
+    Supports 100+ LLM providers including:
+    - OpenAI (GPT-3.5, GPT-4, etc.)
+    - Anthropic (Claude)
+    - Azure OpenAI
+    - Cohere
+    - DeepSeek
+    - Ollama (local models)
+    - HuggingFace
+    - And many more...
+    
+    This is the recommended service for production use as it handles
+    provider-specific quirks and provides unified error handling.
+    """
     def __init__(self):
         from app.services.settings_service import load_settings
         
