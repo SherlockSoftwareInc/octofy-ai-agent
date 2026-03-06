@@ -26,6 +26,6 @@ jobs:
         uses: anomalyco/opencode/github@latest
         env:
           # Replace with your preferred provider key
-          OPENAI_API_KEY: ${{ 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 }}
+          LLM_API_KEY: ${{ sk-...... }}
         with:
           model: openai/gpt-5.1-codex

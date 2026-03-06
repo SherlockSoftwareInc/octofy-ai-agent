@@ -115,8 +115,8 @@ python -m pytest tests/  # Key test: test_generation_service_discovery.py valida
 
 ## Environment Variables (.env)
 ```env
-OPENAI_API_KEY=sk-...
-OPENAI_MODEL=gpt-4o  # Default model for SQL generation
+LLM_API_KEY=sk-...
+LLM_MODEL=gpt-4o  # Default model for SQL generation
 SQL_SERVER_CONNECTION_STRING=DRIVER={ODBC Driver 17 for SQL Server};SERVER=...;DATABASE=Northwind;...
 MILVUS_HOST=localhost  # Use "standalone" in docker-compose for backend container
 MILVUS_PORT=19530

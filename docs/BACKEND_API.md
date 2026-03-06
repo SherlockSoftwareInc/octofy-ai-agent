@@ -1,19 +1,19 @@
 # Backend API Documentation
 
-FastAPI backend for the Octofy AI Agent, focused on natural language to SQL generation with RAG-based discovery and validation.
+FastAPI backend for the Octofy AI Agent, focused on natural language to SQL generation, code generation/execution, schema discovery, and admin governance workflows.
 
 ---
 
 ## Backend Feature Summary
 
-- Query classification for database vs general vs uncertain intent, with explicit clarification support.
-- Semantic discovery of schemas, examples, and values via Milvus-backed embeddings.
-- Reasoning-first SQL generation with mandatory table aliasing and deterministic output settings.
-- Iterative SQL validation against SQL Server parsing rules with targeted recovery.
-- Streaming generation via SSE with step-by-step status events.
-- Admin workflows for schema indexing, knowledge base curation, and value index management.
-- Optional Python execution with profiling, visualization guidance, and result summarization.
-- Contribution review pipeline for user-submitted examples.
+- Query discovery and context synthesis from vector store metadata.
+- Streaming generation for SQL, Python, R, SAS, and code-advisor responses (SSE).
+- SQL and Python execution endpoints with auto-fix retry loops.
+- Admin schema, few-shot, value-index, and vector-store backup operations.
+- Multi-source data-source and schema-tree management APIs.
+- Contribution submission + admin approval workflow.
+- User authentication, user management, user activity analytics.
+- Conversation persistence APIs for chat history.
 
 ---
 
@@ -23,40 +23,45 @@ FastAPI backend for the Octofy AI Agent, focused on natural language to SQL gene
 |------------|---------|
 | FastAPI | Web framework |
 | SQLAlchemy + pyodbc | SQL Server connectivity |
-| Milvus | Vector search |
-| OpenAI | Embeddings and LLM |
-| LiteLLM | Multi-provider LLM support |
-| Pydantic | Data validation |
+| Milvus | Vector search / indexing |
+| OpenAI + LiteLLM | LLM + embeddings |
+| Pydantic | Validation and response schemas |
 
 ---
 
-## Base URL and Authentication
+## Base URL, OpenAPI, and Health
 
 | Item | Value |
 |------|-------|
 | Base URL | `/api/v1` |
-| Health Check | `GET /` -> `{"message":"Octofy AI Agent API is running"}` |
+| Health Check | `GET /` -> `{"message":"Database AI Agent API is running"}` |
 | OpenAPI Spec | `GET /api/v1/openapi.json` |
 | Swagger UI | `http://localhost:8000/docs` |
 
-All endpoints require API key authentication (unless noted):
+---
+
+## Authentication Model
+
+This API uses API-key based authentication in `X-API-Key`.
 
 ```http
-X-API-Key: <your-api-key>
+X-API-Key: <user-or-admin-api-key>
 ```
 
-Configure in `.env` or `app/core/config.py`:
+### Auth Rules
 
-```env
-API_KEY=your-secure-api-key
-```
+- `POST /api/v1/auth/login` is public (username/password login).
+- Most user endpoints require a valid user API key.
+- Admin endpoints require an active admin API key.
+- `GET /api/v1/admin/ingest-progress` is currently open (no auth dependency in route).
 
-### Error Responses
+### Common Error Responses
 
 | Status | Response |
 |--------|----------|
-| 400 | `{"detail": "Bad request message"}` |
+| 400 | `{"detail": "Bad request"}` |
 | 401 | `{"detail": "Invalid or missing API key"}` |
+| 403 | `{"detail": "Insufficient permissions"}` |
 | 404 | `{"detail": "Resource not found"}` |
 | 500 | `{"detail": "Internal server error"}` |
 
@@ -66,600 +71,264 @@ API_KEY=your-secure-api-key
 
 ### Discovery
 
-Find relevant tables, similar queries, and glossary terms for a natural language question.
-
-```http
-POST /api/v1/discovery
-```
-
-**Request Body:**
-
-```json
-{
-  "query": "Show me top customers by revenue",
-  "top_k": 5
-}
-```
-
-**Response:**
-
-```json
-{
-  "query": "Show me top customers by revenue",
-  "reasoning": "Identified 3 relevant tables and 2 similar queries.",
-  "context": {
-    "relevant_tables": [
-      {
-        "schema_name": "dbo",
-        "table_name": "Customers",
-        "table_type": "table",
-        "description": "# Table: [dbo].[Customers]...",
-        "columns": [
-          {"name": "CustomerID", "data_type": "NCHAR(5)", "description": "Primary key"}
-        ]
-      }
-    ],
-    "similar_queries": [
-      {"question": "Top 10 customers", "sql": "SELECT TOP 10..."}
-    ],
-    "glossary_terms": {}
-  }
-}
-```
+| Endpoint | Method | Notes |
+|----------|--------|-------|
+| `/api/v1/discovery` | POST | Semantic discovery (tables, similar queries, glossary terms) |
+| `/api/v1/test` | POST | Simple authenticated test endpoint |
 
 ---
 
-### SQL or Code Generation (Streaming SSE)
+### Generation (Streaming SSE)
 
-Generate SQL or code with status updates streamed via Server-Sent Events.
+All endpoints stream progress/status/result as `text/event-stream`.
 
-| Endpoint | Purpose |
-|----------|---------|
-| `POST /api/v1/generate-sql` | T-SQL generation |
-| `POST /api/v1/generate-r` | R code generation |
-| `POST /api/v1/generate-sas` | SAS code generation |
-| `POST /api/v1/generate-python` | Python code generation |
+| Endpoint | Method | Purpose |
+|----------|--------|---------|
+| `/api/v1/generate-sql` | POST | Generate T-SQL |
+| `/api/v1/generate-python` | POST | Generate Python code |
+| `/api/v1/generate-r` | POST | Generate R code |
+| `/api/v1/generate-sas` | POST | Generate SAS code |
+| `/api/v1/code-advisor` | POST | Streaming code advisor (rate-limited) |
 
-**Request Body (GenerateSQLRequest):**
+Typical SSE events:
+- `status` (step updates)
+- `result` (final payload)
+- `done` (stream completion)
+- `error` (error payload)
 
-```json
-{
-  "query": "Top 10 customers by revenue",
-  "context": null,
-  "previousSQL": null,
-  "queryHistory": null,
-  "forceGeneral": false,
-  "queryMode": "generate",
-  "table_override": ["dbo.Customers", "dbo.Orders"],
-  "chart_type_override": "column"
-}
-```
+---
 
-| Field | Type | Description |
-|-------|------|-------------|
-| query | string | Natural language question (required) |
-| context | DiscoveryContext | Pre-computed context (optional) |
-| previousSQL | string | Previous SQL for refinement (optional) |
-| queryHistory | string | Conversation history (optional) |
-| forceGeneral | boolean | Skip classification, use general LLM (default: false) |
-| queryMode | string | `"generate"` or `"search"` (default: generate) |
-| table_override | string[] | Lock context to specific tables (optional) |
-| chart_type_override | string | Requested chart type (optional) |
+### Execution and Summarization
 
-**SSE Events:**
+| Endpoint | Method | Purpose |
+|----------|--------|---------|
+| `/api/v1/execute-sql` | POST | Execute SQL with retry/auto-fix support |
+| `/api/v1/execute-python` | POST | Execute Python with retry/auto-fix support |
+| `/api/v1/planning-summary` | POST | Generate planning context summary |
+| `/api/v1/summarize-results` | POST | Natural-language summary of result preview |
 
-```
-data: {"step_id":1,"message":"Analyzing query...","type":"status","timestamp":1234567890.0}
-
-data: {"step_id":2,"message":"Discovering relevant schemas...","type":"status","timestamp":1234567891.0}
-
-data: {"type":"result","payload":{"sql":"SELECT TOP 10...","explanation":"...","query_type":"database"}}
-```
-
-| Event Type | Description |
-|------------|-------------|
-| status | Progress update with step info |
-| result | Final generated SQL or code |
-| error | Error message |
-
-**Example cURL:**
-
-```bash
-curl -N -H "X-API-Key: your-key" \
-  -H "Content-Type: application/json" \
-  -d '{"query":"Top 10 customers by revenue"}' \
-  http://localhost:8000/api/v1/generate-sql
-```
+Execution endpoints support richer responses including profiling, insights, recommendations, `auto_fixed`, and retry metadata.
 
 ---
 
 ### Schema Lookup
 
-Get schema details for a specific table.
-
-```http
-GET /api/v1/schema/{object_name}
-```
-
-**Parameters:**
-
-- `object_name`: Format `schema.table` (brackets stripped automatically)
-
-**Response (TableSchema):**
-
-```json
-{
-  "schema_name": "dbo",
-  "table_name": "Customers",
-  "table_type": "table",
-  "description": "# Table: [dbo].[Customers]...",
-  "columns": [
-    {"name": "CustomerID", "data_type": "NCHAR(5)", "description": "Primary key"}
-  ]
-}
-```
+| Endpoint | Method | Purpose |
+|----------|--------|---------|
+| `/api/v1/schema/{object_name}` | GET | Returns schema details for a specific object |
 
 ---
 
-### Python Execution
+## User and Conversation APIs
 
-Execute generated Python code and get results with visualization recommendations.
+### Authentication and Profile
 
-```http
-POST /api/v1/execute-python
-```
+| Endpoint | Method | Purpose |
+|----------|--------|---------|
+| `/api/v1/auth/login` | POST | Login with username/password, returns API key as `access_token` |
+| `/api/v1/auth/me` | GET | Current user details |
+| `/api/v1/users/me` | PUT | Update current user profile |
+| `/api/v1/users/me/regenerate-api-key` | POST | Regenerate current user API key |
 
-**Request Body:**
+### Admin User Management
 
-```json
-{
-  "code": "import pandas as pd\ndf = pd.read_sql(...)",
-  "context": {"user_query": "Top customers"},
-  "chart_type_override": "column"
-}
-```
+| Endpoint | Method | Purpose |
+|----------|--------|---------|
+| `/api/v1/admin/users` | GET | List users |
+| `/api/v1/admin/users/{user_id}` | GET | User details |
+| `/api/v1/admin/users` | POST | Create user |
+| `/api/v1/admin/users/{user_id}` | PUT | Update user |
+| `/api/v1/admin/users/{user_id}` | DELETE | Delete user |
+| `/api/v1/admin/users/{user_id}/regenerate-api-key` | POST | Regenerate user API key |
+| `/api/v1/admin/users/{user_id}/stats` | GET | User statistics |
+| `/api/v1/admin/users/{user_id}/activities` | GET | User activity log |
+| `/api/v1/admin/users/overview` | GET | System-wide user overview |
 
-**Response (ExecutePythonResponse):**
+### Conversations
 
-```json
-{
-  "success": true,
-  "output": null,
-  "error": null,
-  "results": [
-    {
-      "name": "df",
-      "type": "dataframe",
-      "data": {"columns": ["Name", "Revenue"], "data": [...]},
-      "rows": 10,
-      "columns": ["Name", "Revenue"],
-      "viz_config": {
-        "category": "2d_data",
-        "allowed_charts": ["column", "pie"],
-        "message": "Recommended for categorical comparison"
-      }
-    }
-  ],
-  "recommendation": {
-    "chart_type": "column",
-    "x_axis": "Name",
-    "y_axis": ["Revenue"],
-    "title": "Top Customers by Revenue"
-  },
-  "execution_time": 0.45,
-  "data_profile": {...},
-  "insights": [...],
-  "auto_fixed": false,
-  "fix_attempt": 1
-}
-```
+| Endpoint | Method | Purpose |
+|----------|--------|---------|
+| `/api/v1/conversations` | GET | List current user conversations |
+| `/api/v1/conversations/{conversation_id}` | GET | Get conversation |
+| `/api/v1/conversations` | POST | Create conversation |
+| `/api/v1/conversations/{conversation_id}` | PUT | Update conversation |
+| `/api/v1/conversations/{conversation_id}` | DELETE | Delete conversation |
 
 ---
 
-### Result Summarization
+## Contributions
 
-Generate a natural language summary of query results.
-
-```http
-POST /api/v1/summarize-results
-```
-
-**Request Body:**
-
-```json
-{
-  "user_request": "Top customers by revenue",
-  "data_preview": [{"Name": "Customer A", "Revenue": 50000}],
-  "chart_type": "column"
-}
-```
-
-**Response:**
-
-```json
-{
-  "summary": "The top customer is Customer A with $50,000 in revenue..."
-}
-```
+| Endpoint | Method | Purpose |
+|----------|--------|---------|
+| `/api/v1/contributions` | POST | Submit contribution |
+| `/api/v1/admin/contributions` | GET | List pending contributions (admin) |
+| `/api/v1/admin/contributions/approve` | POST | Approve contribution (admin) |
+| `/api/v1/admin/contributions/{contribution_id}` | DELETE | Reject contribution (admin) |
 
 ---
 
-## Admin Endpoints
+## Admin APIs
 
-All admin endpoints are prefixed with `/api/v1/admin/` and require authentication.
+All routes below are prefixed with `/api/v1/admin`.
 
 ### Schema Management
 
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/admin/schema/status` | GET | List all schemas with sync status |
-| `/admin/schema/sync` | POST | Sync single table (`?schema=dbo&table=Customers`) |
-| `/admin/schema/sync-full` | POST | Sync all schemas from database |
-| `/admin/schema/batch-sync` | POST | Sync multiple tables |
-| `/admin/schema/description` | PUT | Update table description |
-| `/admin/schema` | DELETE | Delete schema from index |
-| `/admin/schema/export` | GET | Export schemas to Excel |
-| `/admin/schema/template` | GET | Download Excel template |
-| `/admin/schema/clear` | POST | Clear all schemas |
-| `/admin/ingest-schemas` | POST | Import schemas from Excel |
+| Endpoint | Method | Purpose |
+|----------|--------|---------|
+| `/schema/status` | GET | Indexed schema status |
+| `/schema/sync` | POST | Sync one table |
+| `/schema/sync-full` | POST | Full schema sync |
+| `/schema/batch-sync` | POST | Batch table sync |
+| `/schema/description` | PUT | Update description |
+| `/schema` | DELETE | Delete schema |
+| `/schema/export` | GET | Export schema index |
+| `/schema/template` | GET | Download schema template |
+| `/schema/clear` | POST | Clear schema index |
+| `/ingest-schemas` | POST | Ingest schema Excel |
 
-**Batch Sync Request:**
+### Object-Level Schema Library
 
-```json
-{
-  "table_names": ["dbo.Customers", "Orders", "Products"]
-}
-```
+| Endpoint | Method | Purpose |
+|----------|--------|---------|
+| `/object` | POST | Add object metadata |
+| `/object/sync` | POST | Sync specific object |
+| `/object` | DELETE | Delete object metadata |
+| `/object/discover` | POST | Discover objects |
+| `/enhance-schema` | POST | AI-assisted schema enhancement |
 
-**Batch Sync Response:**
+### Few-Shot (Knowledge Base)
 
-```json
-{
-  "total": 3,
-  "successful": 3,
-  "failed": 0,
-  "results": [
-    {"table_name": "Customers", "schema_name": "dbo", "success": true, "message": "Synced"}
-  ]
-}
-```
-
----
-
-### Knowledge Base (Few-Shot Examples)
-
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/admin/fewshots` | GET | List all examples |
-| `/admin/fewshots` | POST | Add new example |
-| `/admin/fewshots/{id}` | DELETE | Delete example |
-| `/admin/fewshots/export` | GET | Export to Excel |
-| `/admin/ingest-fewshots` | POST | Import from Excel |
-
-**FewShotItem:**
-
-```json
-{
-  "id": "12345",
-  "question": "Top 10 customers by revenue",
-  "sql_query": "SELECT TOP 10 c.CustomerName, SUM(o.Total) AS Revenue...",
-  "knowledge_type": "sql_query",
-  "verified": true
-}
-```
-
-**Knowledge Types:** `sql_query`, `r_code`, `sas_code`, `general`
-
----
+| Endpoint | Method | Purpose |
+|----------|--------|---------|
+| `/fewshots` | GET | List few-shots |
+| `/fewshots` | POST | Add few-shot |
+| `/fewshots/{item_id}` | DELETE | Delete few-shot |
+| `/fewshots/export` | GET | Export few-shots |
+| `/ingest-fewshots` | POST | Ingest few-shots from file |
 
 ### Value Index
 
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/admin/values` | GET | List all indexed values |
-| `/admin/values/search` | GET | Search values (`?query=Canada&top_k=50`) |
-| `/admin/values/{id}` | DELETE | Delete value |
-| `/admin/values/clear` | POST | Clear all values |
-| `/admin/values/export` | GET | Export to Excel |
-| `/admin/values/template` | GET | Download Excel template |
-| `/admin/ingest-values` | POST | Import from Excel or CSV |
+| Endpoint | Method | Purpose |
+|----------|--------|---------|
+| `/values` | GET | List value-index items |
+| `/values/search` | GET | Search values |
+| `/values/{item_id}` | DELETE | Delete value item |
+| `/values/clear` | POST | Clear values |
+| `/values/template` | GET | Download values template |
+| `/values/export` | GET | Export values |
+| `/ingest-values` | POST | Ingest values file (Excel/CSV) |
+| `/ingest-progress` | GET | SSE ingest progress |
 
-**Value Index Item:**
+### Settings and Connectivity
 
-```json
-{
-  "id": "67890",
-  "value": "Canada",
-  "schema_name": "dbo",
-  "table_name": "Customers",
-  "column_name": "Country"
-}
-```
+| Endpoint | Method | Purpose |
+|----------|--------|---------|
+| `/settings` | GET | Get settings |
+| `/settings` | PUT | Update settings |
+| `/api-key` | GET | Read env API key |
+| `/api-key` | POST | Set env API key |
+| `/test-connection` | POST | Test DB connection |
+| `/verify-settings` | POST | Verify DB/LLM/Milvus |
+| `/models` | GET | List available models |
+| `/fetch-models` | POST | Fetch models from endpoint |
+| `/build-connection-string` | POST | Build DB connection string |
 
----
+### Multi-Source Management
 
-### Contributions
+| Endpoint | Method | Purpose |
+|----------|--------|---------|
+| `/data-sources` | GET | List data sources |
+| `/data-sources` | POST | Add data source |
+| `/data-sources/{source_id}` | GET | Get data source |
+| `/data-sources/{source_id}` | PUT | Update data source |
+| `/data-sources/{source_id}` | DELETE | Delete data source |
+| `/data-sources/{source_id}/scan` | POST | Trigger source scan |
+| `/data-sources/{source_id}/scan-status` | GET | Scan status |
+| `/data-sources/{source_id}/test` | POST | Connection test wrapper |
+| `/data-sources/{source_id}/enable` | POST | Enable/disable source |
+| `/data-sources/{source_id}/set-primary` | POST | Set primary source |
+| `/data-sources/{source_id}/exclude-objects` | POST | Upload exclusion list |
+| `/data-sources/{source_id}/exclude-objects` | GET | Get exclusion list |
+| `/data-sources/{source_id}/exclude-objects` | DELETE | Delete exclusion list |
 
-Public endpoint for user submissions, plus admin review.
+### Schema Tree Navigation
 
-**Submit Contribution:**
-```http
-POST /api/v1/contributions
-```
+| Endpoint | Method | Purpose |
+|----------|--------|---------|
+| `/schema-tree` | GET | Full tree across sources |
+| `/schema-tree/{source_id}` | GET | Tree for one source |
+| `/schema-tree/{source_id}/schemas` | GET | List source schemas |
+| `/schema-tree/{source_id}/objects` | GET | List objects with filters |
+| `/schema-tree/{source_id}/discover` | POST | DB introspection discovery |
 
-```json
-{
-  "question": "How many orders per country?",
-  "sql_query": "SELECT Country, COUNT(*) FROM Orders GROUP BY Country",
-  "knowledge_type": "sql_query",
-  "user_id": "user123"
-}
-```
+### Skills Admin Utilities
 
-**Response:**
-```json
-{
-  "success": true,
-  "message": "Contribution submitted for review",
-  "contribution_id": "98765",
-  "similarity_warning": true,
-  "similarity_score": 0.85
-}
-```
+| Endpoint | Method | Purpose |
+|----------|--------|---------|
+| `/skills/data-sources` | GET/POST | List or create skill data sources |
+| `/skills/data-sources/{data_source_name}` | PUT/DELETE | Update/delete skill data source |
+| `/skills/data-groups` | GET/POST/PUT/DELETE | Manage data groups |
+| `/skills/tables` | GET/POST/PUT/DELETE | Manage tables |
+| `/skills/tables/by-path` | GET | Fetch table by path |
+| `/skills/raw-markdown` | GET/PUT | Read/update raw markdown |
+| `/skills/sync-schema-markdown` | POST | Sync schema markdown |
+| `/skills/folder-tree` | GET | Skills folder tree |
+| `/skills/search` | GET | Skills search |
+| `/skills/objects` | GET | List skill objects |
+| `/skills/objects/by-name` | GET | Get object by name |
+| `/skills/statistics` | GET | Skills statistics |
+| `/skills/regenerate-indices` | POST | Rebuild skill indexes |
 
-**Admin Endpoints:**
+### Backup
 
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/admin/contributions` | GET | List pending contributions |
-| `/admin/contributions/approve` | POST | Approve and move to knowledge base |
-| `/admin/contributions/{id}` | DELETE | Reject contribution |
-
----
-
-### Settings & Connectivity
-
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/admin/settings` | GET | Get current settings (secrets masked) |
-| `/admin/settings` | PUT | Update settings |
-| `/admin/test-connection` | POST | Test database connection |
-| `/admin/verify-settings` | POST | Verify all connections |
-| `/admin/models` | GET | List available LLM models |
-| `/admin/fetch-models` | POST | Fetch models from endpoint |
-| `/admin/build-connection-string` | POST | Build connection string |
-
-**Connection Test Request:**
-```json
-{
-  "driver": "ODBC Driver 17 for SQL Server",
-  "server": "localhost",
-  "database": "Northwind",
-  "auth_type": "sql",
-  "username": "sa",
-  "password": "password123",
-  "trust_server_certificate": true
-}
-```
-
-**Verify Settings Response:**
-```json
-{
-  "db_connected": true,
-  "db_message": "Connected to Northwind",
-  "llm_connected": true,
-  "llm_message": "GPT-4o available",
-  "milvus_connected": true,
-  "milvus_message": "Connected to Milvus at localhost:19530"
-}
-```
+| Endpoint | Method | Purpose |
+|----------|--------|---------|
+| `/vector-store/backup` | GET | Download vector-store backup JSON |
 
 ---
 
-### Vector Store Backup
+## Notes on Request Models
 
-```http
-GET /api/v1/admin/vector-store/backup
-```
+### `GenerateSQLRequest`
+Common fields used by generation endpoints:
+- `query` (required)
+- `context`, `previousSQL`, `queryHistory`
+- `forceGeneral`, `queryMode`
+- `table_override`, `chart_type_override`
 
-Downloads a JSON backup of all vector store collections.
+### `ExecuteSQLRequest`
+Supports execution controls like:
+- `sql`
+- `context`
+- `timeout_seconds`, `max_rows`
+- `enable_profiling`
+- `chart_type_override`, axis preservation fields
+- `source_id` (multi-source execution)
 
----
-
-### Ingest Progress (SSE)
-
-Monitor bulk import progress in real-time:
-
-```http
-GET /api/v1/admin/ingest-progress
-```
-
-**No authentication required.**
-
-**SSE Events:**
-```
-data: {"current":0,"total":100,"percentage":0,"status":"processing"}
-data: {"current":50,"total":100,"percentage":50,"status":"processing"}
-data: {"current":100,"total":100,"percentage":100,"status":"complete"}
-```
+### `ExecutePythonRequest`
+Supports:
+- `code`
+- optional execution context
+- profiling and chart override controls
 
 ---
 
-## Data Models
-
-### TableSchema
-```json
-{
-  "schema_name": "string",
-  "table_name": "string",
-  "table_type": "table | view",
-  "description": "string (Markdown)",
-  "columns": [ColumnInfo]
-}
-```
-
-### ColumnInfo
-```json
-{
-  "name": "string",
-  "data_type": "string",
-  "description": "string | null"
-}
-```
-
-### GenerateSQLResponse
-```json
-{
-  "sql": "string",
-  "explanation": "string | null",
-  "query_type": "database | general | uncertain | search",
-  "context_text": "string | null",
-  "context_history": ["string"],
-  "objects": [SearchObject]
-}
-```
-
-### AgentSettings
-```json
-{
-  "llm_config": {
-    "llm_model": "gpt-4o",
-    "temperature": 0.0,
-    "llm_endpoint": "https://api.openai.com/v1",
-    "llm_api_key": "sk-..."
-  },
-  "embedding_config": {
-    "provider": "openai",
-    "base_url": "https://api.openai.com/v1",
-    "api_key": "sk-...",
-    "model": "text-embedding-3-small",
-    "dimensions": 1536
-  },
-  "vector_config": {
-    "provider": "milvus",
-    "host": "localhost",
-    "port": "19530"
-  },
-  "app_meta": {
-    "app_name": "Octofy AI Agent",
-    "version": "1.0.0",
-    "project_name": "Octofy AI Agent"
-  }
-}
-```
-
-**Note**: Database connection info is NOT in settings. Data sources are defined in `skills/data-sources/*/data-source.md` files.
-
----
-
-## Services Architecture
-
-### Generation Flow
-
-```
-User Query
-    │
-    ▼
-┌─────────────────────────────────────┐
-│         generation_service.py       │
-│  1. Query Analysis & Intent         │
-│  2. Multi-Source Discovery          │
-│  3. Context Expansion               │
-│  4. Schema Validation               │
-│  5. Iterative SQL Generation (5x)   │
-└──────────────┬──────────────────────┘
-               │
-    ┌──────────┼──────────┐
-    ▼          ▼          ▼
-┌────────┐ ┌────────┐ ┌────────┐
-│ LLM    │ │ Milvus │ │ SQL    │
-│ Service│ │ Vector │ │ Server │
-│        │ │ Store  │ │        │
-└────────┘ └────────┘ └────────┘
-```
-
-### Key Services
-
-| Service | Purpose |
-|---------|---------|
-| `generation_service.py` | Main SQL generation orchestration |
-| `discovery_service.py` | Schema and context discovery |
-| `llm_service.py` | LLM interactions (OpenAI/LiteLLM) |
-| `validation_service.py` | SQL syntax validation via DB |
-| `vector_store.py` | Milvus CRUD operations |
-| `execution_service.py` | Python code execution |
-| `visualization_service.py` | Chart recommendations |
-| `profiling_service.py` | Data profiling |
-| `insight_service.py` | AI insight generation |
-
----
-
-## Configuration
-
-### Environment Variables
-
-```env
-# Required
-OPENAI_API_KEY=sk-...
-SQL_SERVER_CONNECTION_STRING=DRIVER={ODBC Driver 17 for SQL Server};SERVER=...;DATABASE=Northwind;...
-
-# Optional
-MILVUS_HOST=localhost
-MILVUS_PORT=19530
-OPENAI_MODEL=gpt-4o
-API_KEY=your-secure-key
-VECTOR_DB_ENABLED=true
-```
-
-### Runtime Configuration
-
-Settings are loaded from `.env` file and can be modified via:
-- Admin UI Settings page
-- `PUT /api/v1/admin/settings` API (updates `.env` file)
-
-**Note**: Database connections are defined in `skills/data-sources/*/` directories, not in settings.
-
----
-
-## Running the Backend
-
-### Development
+## Development / Testing Quick Commands
 
 ```bash
-# Activate virtual environment
-.\myenv\Scripts\activate  # Windows
-source myenv/bin/activate  # Linux/Mac
-
-# Run with auto-reload
+# Run backend
 uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
-```
 
-### Production
-
-```bash
-uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 4
-```
-
-### Docker
-
-```bash
-docker-compose up -d
+# Run tests
+python -m pytest tests/
 ```
 
 ---
 
-## Testing
+## Change Log (Doc Sync)
 
-```bash
-# Install test dependencies
-pip install -r requirements-dev.txt
-
-# Run all tests
-python -m pytest
-
-# Run specific test file
-python -m pytest tests/test_generation_service_discovery.py -v
-```
-
-
-
+This document has been updated to reflect currently implemented routes, including:
+- User/auth and conversation APIs.
+- Multi-source data-source and schema-tree APIs.
+- `execute-sql`, `planning-summary`, and `code-advisor` generation additions.
+- Updated health-check message and authentication behavior notes.

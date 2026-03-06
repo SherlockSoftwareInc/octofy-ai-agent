@@ -143,7 +143,7 @@ def _resolve_embedding_config() -> tuple[OpenAI, str]:
 
     # Fallback to env var if no key configured and provider is openai (or default)
     if not api_key:
-        api_key = settings.EMBEDDING_API_KEY or settings.LLM_API_KEY or settings.OPENAI_API_KEY
+        api_key = settings.EMBEDDING_API_KEY or settings.LLM_API_KEY
 
     # If still no key, and LLM is OpenAI-compatible, maybe we share? 
     # But dangerous if LLM is DeepSeek and Embed is OpenAI. 
@@ -159,7 +159,7 @@ def _resolve_embedding_config() -> tuple[OpenAI, str]:
         else:
              raise RuntimeError(
                 "Embedding API key is not configured. Set it in Settings > Embedding Configuration "
-                "or provide EMBEDDING_API_KEY/OPENAI_API_KEY in the environment."
+                "or provide EMBEDDING_API_KEY/LLM_API_KEY in the environment."
             )
 
     return OpenAI(api_key=api_key, base_url=base_url), embedding_model

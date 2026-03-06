@@ -22,14 +22,12 @@ class Settings(BaseSettings):
     MILVUS_COLLECTION_VALUES: str = "value_index"
     
     # LLM (OpenAI compatible)
-    OPENAI_API_KEY: str = "sk-..." 
-    OPENAI_MODEL: str = "gpt-4o"
-    OPENAI_EMBEDDING_ENDPOINT: Optional[str] = Field(
+    LLM_EMBEDDING_ENDPOINT: Optional[str] = Field(
         default=None,
         validation_alias=AliasChoices(
-            "OPENAI_EMBEDDING_ENDPOINT",
-            "OPENAI_EMBEDDING",
-            "openai_embedding",
+            "LLM_EMBEDDING_ENDPOINT",
+            "LLM_EMBEDDING",
+            "llm_embedding",
         ),
     )
     LLM_API_KEY: Optional[str] = None

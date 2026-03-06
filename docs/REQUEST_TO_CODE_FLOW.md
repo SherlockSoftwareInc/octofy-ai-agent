@@ -922,8 +922,8 @@ if (result.query_type === 'uncertain') {
    VECTOR_DB_ENABLED: bool = True
    MILVUS_HOST: str = "localhost"
    MILVUS_PORT: int = 19530
-   OPENAI_MODEL: str = "gpt-4o"
-   OPENAI_API_KEY: str = "sk-..."
+   LLM_MODEL: str = "gpt-4o"
+   LLM_API_KEY: str = "sk-..."
    SQL_SERVER_CONNECTION_STRING: str = "DRIVER=...;SERVER=...;DATABASE=Northwind"
    ```
 
