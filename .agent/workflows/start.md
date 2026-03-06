@@ -10,7 +10,7 @@ This workflow will start the OctofyAgent application with all required services.
 
 1. Ensure Docker is running (required for OctofyAgent Milvus vector database)
 2. Ensure you have a `.env` file with required configuration:
-   - `OPENAI_API_KEY`
+   - `LLM_API_KEY`
    - `SQL_SERVER_CONNECTION_STRING`
    - `API_KEY`
 

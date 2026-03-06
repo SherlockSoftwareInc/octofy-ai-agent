@@ -53,7 +53,7 @@
 6. **Configure environment**
    Create a `.env` file:
    ```env
-   OPENAI_API_KEY=your_openai_api_key
+   LLM_API_KEY=your_llm_api_key
    SQL_SERVER_CONNECTION_STRING=your_db_connection_string
    ```
 

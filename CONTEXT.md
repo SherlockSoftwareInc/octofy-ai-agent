@@ -38,7 +38,7 @@
                          │
                          ▼
                   ┌─────────────────┐
-                  │   OpenAI/LLM    │
+                  │   LLM    │
                   │   API           │
                   └─────────────────┘
 ```
@@ -72,7 +72,7 @@
 - **Complexity Scoring**: Determines if query requires joins, aggregations, or CTEs
 
 ### Stage 2: Discovery & Context Synthesis
-- **Semantic Search**: Embeds query with OpenAI `text-embedding-3-small` (1536 dim)
+- **Semantic Search**: Embeds query with llm `text-embedding-3-small` (1536 dim)
 - **Vector Search**: Searches Milvus for relevant tables (top 5) and similar queries (top 3)
 - **Value Lookup**: Includes categorical column values and data types
 - **Path Finding**: LLM suggests intermediate tables for multi-table joins
@@ -145,7 +145,7 @@ docker-compose up -d
 
 # Configure environment
 cat > .env << EOF
-OPENAI_API_KEY=your_openai_api_key
+LLM_API_KEY=your_llm_api_key
 SQL_SERVER_CONNECTION_STRING=your_db_connection_string
 JWT_SECRET_KEY=your-super-secret-jwt-key
 POSTGRES_HOST=localhost
@@ -201,8 +201,8 @@ POSTGRES_HOST=localhost
 POSTGRES_PORT=5432
 POSTGRES_DB=octofy_users
 
-# Required - OpenAI
-OPENAI_API_KEY=your_openai_api_key
+# Required - LLM
+LLM_API_KEY=your_llm_api_key
 
 # Optional - Milvus
 MILVUS_HOST=localhost

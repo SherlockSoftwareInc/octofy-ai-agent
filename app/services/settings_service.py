@@ -146,46 +146,126 @@ def _resolve_secret(value: Optional[str], existing: Optional[str]) -> Optional[s
     return _resolve_value(value, existing)
 
 
+def _get_runtime_env() -> dict:
+    """Load current environment values from .env at call time."""
+    env_path = _get_env_path()
+    if not os.path.exists(env_path):
+        return {}
+    return {k: (str(v) if v is not None else None) for k, v in dotenv_values(env_path).items()}
+
+
+def _get_runtime_value(runtime_env: dict, key: str, fallback: Optional[Union[str, int, float, bool]] = None) -> Optional[str]:
+    """Get key from runtime env with fallback to app defaults."""
+    value = runtime_env.get(key)
+    if value is None or value == "":
+        return None if fallback is None else str(fallback)
+    return str(value)
+
+
+def _to_int(value: Optional[str], fallback: int) -> int:
+    try:
+        return int(value) if value is not None and str(value).strip() != "" else fallback
+    except (TypeError, ValueError):
+        return fallback
+
+
+def _to_float(value: Optional[str], fallback: float) -> float:
+    try:
+        return float(value) if value is not None and str(value).strip() != "" else fallback
+    except (TypeError, ValueError):
+        return fallback
+
+
 def get_default_settings() -> AgentSettings:
     """Return settings derived from environment variables (.env)."""
-    llm_api_key = app_settings.LLM_API_KEY or app_settings.OPENAI_API_KEY
-    llm_model = app_settings.LLM_MODEL or app_settings.OPENAI_MODEL
-    llm_endpoint = app_settings.LLM_ENDPOINT
+    runtime_env = _get_runtime_env()
+
+    llm_api_key = (
+        _get_runtime_value(runtime_env, "LLM_API_KEY")
+        or app_settings.LLM_API_KEY
+    )
+    llm_model = (
+        _get_runtime_value(runtime_env, "LLM_MODEL")
+        or app_settings.LLM_MODEL
+    )
+    llm_endpoint = (
+        _get_runtime_value(runtime_env, "LLM_ENDPOINT")
+        or app_settings.LLM_ENDPOINT
+    )
     if not llm_endpoint and llm_api_key and str(llm_api_key).startswith("sk-"):
         llm_endpoint = "https://api.openai.com/v1"
 
-    embedding_api_key = app_settings.EMBEDDING_API_KEY or app_settings.OPENAI_API_KEY
-    embedding_base_url = app_settings.EMBEDDING_BASE_URL or app_settings.OPENAI_EMBEDDING_ENDPOINT
-    embedding_model = app_settings.EMBEDDING_MODEL or "text-embedding-3-small"
-    embedding_dimensions = app_settings.EMBEDDING_DIMENSIONS or 1536
+    embedding_api_key = (
+        _get_runtime_value(runtime_env, "EMBEDDING_API_KEY")
+        or app_settings.EMBEDDING_API_KEY
+    )
+    embedding_base_url = (
+        _get_runtime_value(runtime_env, "EMBEDDING_BASE_URL")
+        or app_settings.EMBEDDING_BASE_URL
+    )
+    embedding_model = (
+        _get_runtime_value(runtime_env, "EMBEDDING_MODEL")
+        or app_settings.EMBEDDING_MODEL
+        or "text-embedding-3-small"
+    )
+    embedding_dimensions = _to_int(
+        _get_runtime_value(runtime_env, "EMBEDDING_DIMENSIONS"),
+        app_settings.EMBEDDING_DIMENSIONS or 1536
+    )
 
-    vector_host = app_settings.VECTOR_HOST or app_settings.MILVUS_HOST
-    vector_port = app_settings.VECTOR_PORT or app_settings.MILVUS_PORT
+    vector_host = (
+        _get_runtime_value(runtime_env, "VECTOR_HOST")
+        or _get_runtime_value(runtime_env, "MILVUS_HOST")
+        or app_settings.VECTOR_HOST
+        or app_settings.MILVUS_HOST
+    )
+    vector_port = (
+        _get_runtime_value(runtime_env, "VECTOR_PORT")
+        or _get_runtime_value(runtime_env, "MILVUS_PORT")
+        or app_settings.VECTOR_PORT
+        or app_settings.MILVUS_PORT
+    )
+
+    llm_temperature = _to_float(
+        _get_runtime_value(runtime_env, "LLM_TEMPERATURE"),
+        app_settings.LLM_TEMPERATURE
+    )
+    embedding_provider = (
+        _get_runtime_value(runtime_env, "EMBEDDING_PROVIDER")
+        or app_settings.EMBEDDING_PROVIDER
+    )
+    vector_provider = (
+        _get_runtime_value(runtime_env, "VECTOR_PROVIDER")
+        or app_settings.VECTOR_PROVIDER
+    )
+    app_name = _get_runtime_value(runtime_env, "APP_NAME", app_settings.APP_NAME)
+    app_version = _get_runtime_value(runtime_env, "APP_VERSION", app_settings.APP_VERSION)
+    project_name = _get_runtime_value(runtime_env, "PROJECT_NAME", app_settings.PROJECT_NAME)
 
     # Note: target_db removed - connection info now comes from _data-source.md
     return AgentSettings(
         llm_config=LLMConfig(
             llm_model=llm_model,
-            temperature=app_settings.LLM_TEMPERATURE,
+            temperature=llm_temperature,
             llm_endpoint=llm_endpoint,
             llm_api_key=llm_api_key
         ),
         embedding_config=EmbeddingConfig(
-            provider=app_settings.EMBEDDING_PROVIDER,
+            provider=embedding_provider,
             model=embedding_model,
             dimensions=embedding_dimensions,
             api_key=embedding_api_key,
             base_url=embedding_base_url
         ),
         vector_config=VectorConfig(
-            provider=app_settings.VECTOR_PROVIDER,
+            provider=vector_provider,
             host=vector_host,
             port=vector_port
         ),
         app_meta=AppMeta(
-            app_name=app_settings.APP_NAME,
-            version=app_settings.APP_VERSION,
-            project_name=app_settings.PROJECT_NAME
+            app_name=app_name,
+            version=app_version,
+            project_name=project_name
         )
     )
 
@@ -349,15 +429,15 @@ def save_settings(agent_settings: AgentSettings) -> bool:
         existing_env = dotenv_values(env_path) if os.path.exists(env_path) else {}
         lines = _read_env_lines()
 
-        llm_api_key = _resolve_secret(agent_settings.llm_config.llm_api_key, existing_env.get("LLM_API_KEY") or existing_env.get("OPENAI_API_KEY"))
-        embedding_api_key = _resolve_secret(agent_settings.embedding_config.api_key, existing_env.get("EMBEDDING_API_KEY") or existing_env.get("OPENAI_API_KEY"))
+        llm_api_key = _resolve_secret(agent_settings.llm_config.llm_api_key, existing_env.get("LLM_API_KEY") )
+        embedding_api_key = _resolve_secret(agent_settings.embedding_config.api_key, existing_env.get("EMBEDDING_API_KEY") )
 
         llm_endpoint = _resolve_value(agent_settings.llm_config.llm_endpoint, existing_env.get("LLM_ENDPOINT"))
-        llm_model = _resolve_value(agent_settings.llm_config.llm_model, existing_env.get("LLM_MODEL") or existing_env.get("OPENAI_MODEL"))
+        llm_model = _resolve_value(agent_settings.llm_config.llm_model, existing_env.get("LLM_MODEL") )
         llm_temperature = _resolve_value(str(agent_settings.llm_config.temperature), existing_env.get("LLM_TEMPERATURE"))
 
         embedding_provider = _resolve_value(agent_settings.embedding_config.provider, existing_env.get("EMBEDDING_PROVIDER"))
-        embedding_base_url = _resolve_value(agent_settings.embedding_config.base_url, existing_env.get("EMBEDDING_BASE_URL") or existing_env.get("OPENAI_EMBEDDING_ENDPOINT"))
+        embedding_base_url = _resolve_value(agent_settings.embedding_config.base_url, existing_env.get("EMBEDDING_BASE_URL") )
         embedding_model = _resolve_value(agent_settings.embedding_config.model, existing_env.get("EMBEDDING_MODEL"))
         embedding_dimensions = _resolve_value(str(agent_settings.embedding_config.dimensions), existing_env.get("EMBEDDING_DIMENSIONS"))
 
@@ -387,10 +467,6 @@ def save_settings(agent_settings: AgentSettings) -> bool:
             "PROJECT_NAME": project_name
         }
 
-        openai_api_key = llm_api_key or embedding_api_key or existing_env.get("OPENAI_API_KEY")
-        updates["OPENAI_API_KEY"] = openai_api_key
-        updates["OPENAI_MODEL"] = llm_model or existing_env.get("OPENAI_MODEL")
-        updates["OPENAI_EMBEDDING_ENDPOINT"] = embedding_base_url or existing_env.get("OPENAI_EMBEDDING_ENDPOINT")
         updates["MILVUS_HOST"] = vector_host or existing_env.get("MILVUS_HOST")
         updates["MILVUS_PORT"] = vector_port or existing_env.get("MILVUS_PORT")
 

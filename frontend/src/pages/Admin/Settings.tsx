@@ -244,7 +244,7 @@ export const Settings = () => {
                 className="w-full px-4 py-2 bg-slate-900 border border-slate-700 rounded-lg text-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500"
                 placeholder="sk-..."
               />
-              <p className="text-xs text-slate-500 mt-1">Leave empty to use OPENAI_API_KEY from environment</p>
+              <p className="text-xs text-slate-500 mt-1">Leave empty to use LLM_API_KEY from environment</p>
             </div>
           </div>
 

@@ -1,10 +1,10 @@
 import React, { useState } from 'react';
 import { useAuth } from '../contexts/AuthContext';
-import { User, Mail, LogOut, Lock, Eye, EyeOff, Check } from 'lucide-react';
+import { User, Mail, LogOut, Lock, Eye, EyeOff, Check, Copy } from 'lucide-react';
 import { api } from '../api/client';
 
 export const UserProfile: React.FC<{ onClose: () => void }> = ({ onClose }) => {
-  const { user, logout } = useAuth();
+  const { user, apiKey, logout } = useAuth();
   const [showChangePassword, setShowChangePassword] = useState(false);
   const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
@@ -13,8 +13,31 @@ export const UserProfile: React.FC<{ onClose: () => void }> = ({ onClose }) => {
   const [isChangingPassword, setIsChangingPassword] = useState(false);
   const [passwordError, setPasswordError] = useState('');
   const [passwordSuccess, setPasswordSuccess] = useState(false);
+  const [apiKeyCopyStatus, setApiKeyCopyStatus] = useState<'idle' | 'success' | 'error'>('idle');
 
   if (!user) return null;
+
+  const keyToDisplay = apiKey || user.api_key || '';
+  const maskedApiKey = keyToDisplay
+    ? `****${keyToDisplay.slice(-4)}`
+    : 'Not available';
+
+  const handleCopyApiKey = async () => {
+    if (!keyToDisplay) {
+      setApiKeyCopyStatus('error');
+      setTimeout(() => setApiKeyCopyStatus('idle'), 2000);
+      return;
+    }
+
+    try {
+      await navigator.clipboard.writeText(keyToDisplay);
+      setApiKeyCopyStatus('success');
+      setTimeout(() => setApiKeyCopyStatus('idle'), 2000);
+    } catch {
+      setApiKeyCopyStatus('error');
+      setTimeout(() => setApiKeyCopyStatus('idle'), 2000);
+    }
+  };
 
   const handleChangePassword = async () => {
     setPasswordError('');
@@ -72,6 +95,27 @@ export const UserProfile: React.FC<{ onClose: () => void }> = ({ onClose }) => {
               <p className="text-xs text-gray-500 uppercase font-medium">Email</p>
               <p className="text-sm font-medium text-gray-900">{user.email}</p>
             </div>
+          </div>
+
+          <div className="flex items-center space-x-3 p-3 bg-gray-50 rounded-lg">
+            <Lock className="w-5 h-5 text-gray-400" />
+            <div className="flex-1 min-w-0">
+              <p className="text-xs text-gray-500 uppercase font-medium">API key</p>
+              <p className="text-sm font-medium text-gray-900 font-mono">{maskedApiKey}</p>
+              {apiKeyCopyStatus === 'success' && (
+                <p className="text-xs text-green-600">Copied to clipboard</p>
+              )}
+              {apiKeyCopyStatus === 'error' && (
+                <p className="text-xs text-red-600">Failed to copy API key</p>
+              )}
+            </div>
+            <button
+              onClick={handleCopyApiKey}
+              className="p-2 bg-gray-200 hover:bg-gray-300 text-gray-700 rounded-lg transition-colors"
+              title="Copy API key"
+            >
+              <Copy className="w-4 h-4" />
+            </button>
           </div>
 
           {/* Change Password */}
