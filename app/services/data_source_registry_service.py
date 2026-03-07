@@ -8,8 +8,10 @@ identity matching.
 
 import hashlib
 import os
+import re
 import uuid
 from datetime import datetime
+from pathlib import Path
 from typing import Dict, Optional, List, Any
 from sqlalchemy.orm import Session
 from sqlalchemy import and_
@@ -230,11 +232,11 @@ class DataSourceRegistryService:
         Find data source by connection details.
         
         Supports two lookup patterns:
-        - SQL Server: server + database (case-insensitive)
+        - SQL Server: database name (case-insensitive)
         - Excel/File: file_path (case-sensitive)
         
         Args:
-            server: Server name (SQL Server)
+            server: Server name (SQL Server, accepted but ignored for matching)
             database: Database name (SQL Server)
             file_path: File path (Excel/file-based sources)
             
@@ -243,24 +245,56 @@ class DataSourceRegistryService:
         """
         from sqlalchemy import func
         
-        # SQL Server lookup
-        if server and database:
-            logger.info(f"Looking up SQL Server data source: {server}\\{database}")
+        # SQL Server lookup (database-only match)
+        if database:
+            logger.info(
+                f"Looking up SQL Server data source by database name: {database} "
+                f"(server parameter ignored for match: {server})"
+            )
             
             entry = self.db.query(DataSourceRegistry).filter(
                 and_(
-                    func.lower(DataSourceRegistry.connection_info['server'].astext) == server.lower(),
-                    func.lower(DataSourceRegistry.connection_info['database'].astext) == database.lower(),
+                    func.lower(DataSourceRegistry.connection_info['database'].as_string()) == database.lower(),
                     DataSourceRegistry.deleted_at.is_(None)
                 )
             ).first()
             
             if entry:
                 logger.info(f"Found data source '{entry.name}' (ID: {entry.source_id})")
-            else:
-                logger.warning(f"No active data source found for {server}\\{database}")
+                return entry
+
+            # Fallback for legacy rows that have null/empty connection_info.
+            # Try matching by markdown database metadata or by exact name.
+            logger.info(
+                f"No direct connection_info match for database '{database}'. "
+                "Trying legacy metadata fallback."
+            )
+            candidates = self.db.query(DataSourceRegistry).filter(
+                and_(
+                    DataSourceRegistry.deleted_at.is_(None),
+                    DataSourceRegistry.type.ilike("SQL Server")
+                )
+            ).all()
+            target_db = database.lower().strip()
+            for candidate in candidates:
+                if (candidate.name or "").lower().strip() == target_db:
+                    logger.info(
+                        f"Matched legacy data source by name '{candidate.name}' "
+                        f"(ID: {candidate.source_id})"
+                    )
+                    return candidate
+
+                md_database = self._read_database_from_data_source_md(candidate.file_path)
+                if md_database and md_database.lower().strip() == target_db:
+                    logger.info(
+                        f"Matched legacy data source by markdown database '{md_database}' "
+                        f"(ID: {candidate.source_id})"
+                    )
+                    return candidate
+
+            logger.warning(f"No active data source found for database: {database}")
             
-            return entry
+            return None
         
         # Excel/File lookup
         if file_path:
@@ -268,7 +302,7 @@ class DataSourceRegistryService:
             
             entry = self.db.query(DataSourceRegistry).filter(
                 and_(
-                    DataSourceRegistry.connection_info['file_path'].astext == file_path,
+                    DataSourceRegistry.connection_info['file_path'].as_string() == file_path,
                     DataSourceRegistry.deleted_at.is_(None)
                 )
             ).first()
@@ -281,6 +315,30 @@ class DataSourceRegistryService:
             return entry
         
         logger.warning("No valid lookup parameters provided")
+        return None
+
+    def _read_database_from_data_source_md(self, file_path: Optional[str]) -> Optional[str]:
+        """Read **Database:** field from a data-source markdown file, if available."""
+        if not file_path:
+            return None
+
+        path = Path(file_path)
+        candidate_paths = [path]
+        if not path.is_absolute():
+            repo_root = Path(__file__).resolve().parents[2]
+            candidate_paths.append(repo_root / path)
+
+        for candidate in candidate_paths:
+            try:
+                if not candidate.exists():
+                    continue
+                content = candidate.read_text(encoding="utf-8")
+                match = re.search(r"\*\*Database:\*\*\s*([^\n]+)", content)
+                if match:
+                    return match.group(1).strip()
+            except Exception as exc:
+                logger.debug(f"Could not read markdown metadata from {candidate}: {exc}")
+
         return None
     
     def resolve_source_id(self, source_id: str) -> Optional[str]:

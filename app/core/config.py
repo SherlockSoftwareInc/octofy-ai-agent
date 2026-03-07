@@ -33,7 +33,16 @@ class Settings(BaseSettings):
     # Supports: openai, azure, openai_compatible, huggingface
     # Works with any OpenAI-compatible embedding API
     EMBEDDING_PROVIDER: str = "openai"
-    EMBEDDING_BASE_URL: Optional[str] = None  # Custom endpoint URL (optional)
+    EMBEDDING_BASE_URL: Optional[str] = Field(
+        default=None,
+        validation_alias=AliasChoices(
+            "EMBEDDING_BASE_URL",
+            "embedding_base_url",
+            "LLM_EMBEDDING_ENDPOINT",
+            "llm_embedding_endpoint",
+        ),
+    )  # Supports legacy LLM_EMBEDDING_ENDPOINT for backward compatibility
+    LLM_EMBEDDING_ENDPOINT: Optional[str] = None  # Deprecated; kept for backward compatibility
     EMBEDDING_API_KEY: Optional[str] = None  # Falls back to LLM_API_KEY if not set
     EMBEDDING_MODEL: str = "text-embedding-3-small"
     EMBEDDING_DIMENSIONS: int = 1536

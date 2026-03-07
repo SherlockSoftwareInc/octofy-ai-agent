@@ -347,6 +347,85 @@ def _load_data_source_md(name: str):
     return None
 
 
+@router.get("/data-sources/resolve", response_model=ResolveDataSourceResponse)
+def resolve_data_source(
+    server: Optional[str] = Query(None, description="Server name (for SQL Server)"),
+    database: Optional[str] = Query(None, description="Database name (for SQL Server)"),
+    file_path: Optional[str] = Query(None, description="File path (for Excel/file-based sources)"),
+    db: Session = Depends(get_user_db),
+    current_user: User = Depends(get_current_active_admin)
+):
+    """
+    Resolve data source connection details to source_id.
+
+    Supports two patterns:
+    - **SQL Server**: Provide both `server` AND `database` parameters
+    - **Excel/File**: Provide `file_path` parameter
+    """
+    # Validate parameter combinations
+    has_sql_params = bool(server or database)
+    has_file_params = bool(file_path)
+
+    if has_sql_params and has_file_params:
+        raise HTTPException(
+            status_code=400,
+            detail="Cannot mix SQL Server and file-based parameters. Use either (server + database) or file_path."
+        )
+
+    if not has_sql_params and not has_file_params:
+        raise HTTPException(
+            status_code=400,
+            detail="Must provide either (server + database) or file_path"
+        )
+
+    if has_sql_params and (not server or not database):
+        raise HTTPException(
+            status_code=400,
+            detail="Both server and database are required for SQL Server lookup"
+        )
+
+    # Perform lookup
+    registry_service = DataSourceRegistryService(db)
+    entry = registry_service.find_by_connection_info(
+        server=server,
+        database=database,
+        file_path=file_path
+    )
+
+    if not entry:
+        if has_sql_params:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Data source not found: {server}\\{database}"
+            )
+        raise HTTPException(
+            status_code=404,
+            detail=f"Data source not found: {file_path}"
+        )
+
+    # Prefer registry connection_info, then fallback to markdown metadata.
+    conn_info = entry.connection_info or {}
+    md_conn = _read_connection_from_md(entry.name)
+    resolved_server = conn_info.get('server') or md_conn.get('server')
+    resolved_database = conn_info.get('database') or md_conn.get('database')
+    resolved_file_path = conn_info.get('file_path') or entry.file_path
+
+    # Get object count
+    object_count = _get_object_count_by_name(entry.name)
+
+    # Build response
+    return ResolveDataSourceResponse(
+        source_id=entry.source_id,
+        name=entry.name,
+        type=entry.type,
+        server=resolved_server,
+        database=resolved_database,
+        file_path=resolved_file_path,
+        status="active" if not entry.deleted_at else "deleted",
+        object_count=object_count
+    )
+
+
 @router.get("/data-sources/{source_id}", response_model=DataSourceResponse)
 def get_data_source(source_id: str, current_user: User = Depends(get_current_active_admin)):
     """Get details of a specific data source."""
@@ -486,100 +565,6 @@ def toggle_data_source(source_id: str, enabled: bool = True, current_user: User 
 def set_primary_data_source(source_id: str, current_user: User = Depends(get_current_active_admin)):
     """Set a data source as the primary (default) source for queries."""
     return {"status": "success", "message": f"Primary data source updated to {source_id}"}
-
-
-@router.get("/data-sources/resolve", response_model=ResolveDataSourceResponse)
-def resolve_data_source(
-    server: Optional[str] = Query(None, description="Server name (for SQL Server)"),
-    database: Optional[str] = Query(None, description="Database name (for SQL Server)"),
-    file_path: Optional[str] = Query(None, description="File path (for Excel/file-based sources)"),
-    db: Session = Depends(get_user_db),
-    current_user: User = Depends(get_current_active_admin)
-):
-    """
-    Resolve data source connection details to source_id.
-    
-    Supports two patterns:
-    - **SQL Server**: Provide both `server` AND `database` parameters
-    - **Excel/File**: Provide `file_path` parameter
-    
-    **Examples:**
-    
-    SQL Server:
-    ```
-    GET /api/v1/data-sources/resolve?server=SQLSERVER01&database=Northwind
-    ```
-    
-    Excel:
-    ```
-    GET /api/v1/data-sources/resolve?file_path=/data/sales.xlsx
-    ```
-    
-    **Error Responses:**
-    - 400: Invalid parameter combination
-    - 404: Data source not found
-    
-    **Returns:**
-    - source_id: GUID for use in discovery/generation endpoints
-    - Connection details for verification
-    - Object count showing indexed content
-    """
-    # Validate parameter combinations
-    has_sql_params = bool(server or database)
-    has_file_params = bool(file_path)
-    
-    if has_sql_params and has_file_params:
-        raise HTTPException(
-            status_code=400,
-            detail="Cannot mix SQL Server and file-based parameters. Use either (server + database) or file_path."
-        )
-    
-    if not has_sql_params and not has_file_params:
-        raise HTTPException(
-            status_code=400,
-            detail="Must provide either (server + database) or file_path"
-        )
-    
-    if has_sql_params and (not server or not database):
-        raise HTTPException(
-            status_code=400,
-            detail="Both server and database are required for SQL Server lookup"
-        )
-    
-    # Perform lookup
-    registry_service = DataSourceRegistryService(db)
-    entry = registry_service.find_by_connection_info(
-        server=server,
-        database=database,
-        file_path=file_path
-    )
-    
-    if not entry:
-        if has_sql_params:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Data source not found: {server}\\{database}"
-            )
-        else:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Data source not found: {file_path}"
-            )
-    
-    # Get object count
-    object_count = _get_object_count_by_name(entry.name)
-    
-    # Build response
-    return ResolveDataSourceResponse(
-        source_id=entry.source_id,
-        name=entry.name,
-        type=entry.type,
-        server=entry.connection_info.get('server') if entry.connection_info else None,
-        database=entry.connection_info.get('database') if entry.connection_info else None,
-        file_path=entry.connection_info.get('file_path') if entry.connection_info else None,
-        status="active" if not entry.deleted_at else "deleted",
-        object_count=object_count
-    )
 
 
 # --- Exclude Objects ---
