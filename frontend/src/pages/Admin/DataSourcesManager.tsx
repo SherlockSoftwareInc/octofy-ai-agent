@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useRef, useCallback } from 'react';
 import { api } from '../../api/client';
 import type { DataSourceResponse, AddDataSourceRequest, ConnectionTestResponse } from '../../api/client';
-import { Database, Plus, RefreshCw, Edit, Trash2, Loader2, Settings, AlertCircle, CheckCircle, Search } from 'lucide-react';
+import { Database, Plus, RefreshCw, Edit, Trash2, Loader2, Settings, AlertCircle, CheckCircle, Search, Copy, Check } from 'lucide-react';
 
 export const DataSourcesManager: React.FC = () => {
     const [dataSources, setDataSources] = useState<DataSourceResponse[]>([]);
@@ -19,6 +19,8 @@ export const DataSourcesManager: React.FC = () => {
     const [scanConnInfo, setScanConnInfo] = useState({ server: '', database_name: '', auth_type: 'windows' as string, driver: 'ODBC Driver 17 for SQL Server', trust_server_certificate: true });
     const [pendingExcludeFile, setPendingExcludeFile] = useState<File | null>(null);
     const excludeFileInputRef = useRef<HTMLInputElement | null>(null);
+    const [copiedSourceId, setCopiedSourceId] = useState<string | null>(null);
+    const copyResetTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
     // Form state
     const [formData, setFormData] = useState<AddDataSourceRequest>({
@@ -59,8 +61,30 @@ export const DataSourcesManager: React.FC = () => {
         fetchDataSources();
         return () => {
             if (scanPollRef.current) clearInterval(scanPollRef.current);
+            if (copyResetTimerRef.current) clearTimeout(copyResetTimerRef.current);
         };
     }, []);
+
+    const handleCopySourceId = async (sourceId: string) => {
+        try {
+            await navigator.clipboard.writeText(sourceId);
+        } catch {
+            // Fallback for environments where Clipboard API is unavailable.
+            const textArea = document.createElement('textarea');
+            textArea.value = sourceId;
+            textArea.style.position = 'fixed';
+            textArea.style.opacity = '0';
+            document.body.appendChild(textArea);
+            textArea.focus();
+            textArea.select();
+            document.execCommand('copy');
+            document.body.removeChild(textArea);
+        }
+
+        setCopiedSourceId(sourceId);
+        if (copyResetTimerRef.current) clearTimeout(copyResetTimerRef.current);
+        copyResetTimerRef.current = setTimeout(() => setCopiedSourceId(null), 1800);
+    };
 
     const pollScanStatus = useCallback((sourceId: string) => {
         if (scanPollRef.current) clearInterval(scanPollRef.current);
@@ -523,6 +547,20 @@ export const DataSourcesManager: React.FC = () => {
                         )}
 
                         <div className="grid grid-cols-2 gap-4 text-sm mb-3">
+                            <div className="col-span-2 flex items-center gap-2 min-w-0">
+                                <span className="text-slate-500">Source ID:</span>
+                                <span className="text-slate-300 font-mono truncate">{source.source_id}</span>
+                                <button
+                                    onClick={() => handleCopySourceId(source.source_id)}
+                                    className="p-1.5 bg-indigo-500/10 text-indigo-400 rounded hover:bg-indigo-500/20 transition-colors"
+                                    title={copiedSourceId === source.source_id ? 'Copied' : 'Copy Source ID'}
+                                >
+                                    {copiedSourceId === source.source_id ? <Check size={14} /> : <Copy size={14} />}
+                                </button>
+                                {copiedSourceId === source.source_id && (
+                                    <span className="text-xs text-emerald-300">Copied</span>
+                                )}
+                            </div>
                             <div>
                                 <span className="text-slate-500">Server:</span>
                                 <span className="text-slate-300 ml-2 font-mono">{source.server}</span>
