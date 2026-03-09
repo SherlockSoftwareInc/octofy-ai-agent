@@ -16,7 +16,7 @@ from app.models.schemas import (
 )
 from app.services.vector_store import get_vector_store
 from app.services.skills_service import SkillsService
-from app.core.auth import get_current_active_admin
+from app.core.auth import get_current_active_admin, get_current_user
 from app.models.user_models import User
 from app.core.database import test_connection
 from app.core.user_database import get_user_db
@@ -32,10 +32,11 @@ router = APIRouter()
 
 
 @router.get("/data-sources", response_model=DataSourceListResponse)
-def list_data_sources(current_user: User = Depends(get_current_active_admin)):
+def list_data_sources(current_user: User = Depends(get_current_user)):
     """
     List all configured data sources.
-    
+
+    Requires a valid user API key in the X-API-Key header.
     Returns data sources from skills/data-sources/_index.md.
     All data sources are managed via the skills directory (.md files).
     """

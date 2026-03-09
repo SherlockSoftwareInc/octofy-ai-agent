@@ -251,6 +251,10 @@ All routes below are prefixed with `/api/v1/admin`.
 | `/data-sources/{source_id}/exclude-objects` | GET | Get exclusion list |
 | `/data-sources/{source_id}/exclude-objects` | DELETE | Delete exclusion list |
 
+Notes:
+- `GET /api/v1/admin/data-sources` accepts any valid user `X-API-Key`.
+- Use `data_sources[*].source_id` as the data source id and `data_sources[*].friendly_name` as the data source name.
+
 #### Data Source Resolution
 
 | Endpoint | Method | Purpose |
