@@ -275,13 +275,23 @@ async def execute_python_endpoint(
             # Retry: regenerate code using error feedback
             logger.info(f"Retrying code generation (attempt {attempt + 1}/{MAX_RETRY_ATTEMPTS})")
             try:
-                current_code = regenerate_python_with_error_feedback(
-                    original_request=user_query,
-                    failed_code=current_code,
+                regen_request = GenerateSQLRequest(
+                    query=user_query or "Fix the Python code",
+                    existing_code=current_code,
                     error_message=result["error"],
-                    schema_context=schema_context,
-                    attempt_number=attempt + 1
+                    database_objects=exec_context.get("database_objects") if exec_context else None,
+                    is_user_code=exec_context.get("is_user_code", False) if exec_context else False
                 )
+                regen_items = list(generate_python_for_request(regen_request))
+                current_code = None
+                for item in regen_items:
+                    if isinstance(item, dict) and item.get("type") == "result":
+                        payload = item.get("payload")
+                        if payload:
+                            current_code = payload.sql
+                            break
+                if not current_code:
+                    raise RuntimeError("Failed to regenerate Python code from error feedback")
                 
                 # Re-inject DB_CONNECTION_STRING for next execution
                 if decrypted_conn_str:
@@ -450,13 +460,23 @@ async def execute_sql_endpoint(
             # Retry: regenerate SQL
             logger.info(f"Retrying SQL generation (attempt {attempt + 1}/{MAX_RETRY_ATTEMPTS})")
             try:
-                current_sql = regenerate_sql_with_error_feedback(
-                    original_request=user_query,
-                    failed_sql=current_sql,
+                regen_request = GenerateSQLRequest(
+                    query=user_query or "Fix the SQL query",
+                    existing_code=current_sql,
                     error_message=result["error"],
-                    schema_context=schema_context,
-                    attempt_number=attempt + 1
+                    database_objects=request.context.get("database_objects") if request.context else None,
+                    is_user_code=request.context.get("is_user_code", False) if request.context else False
                 )
+                regen_items = list(generate_sql_for_request(regen_request))
+                current_sql = None
+                for item in regen_items:
+                    if isinstance(item, dict) and item.get("type") == "result":
+                        payload = item.get("payload")
+                        if payload:
+                            current_sql = payload.sql
+                            break
+                if not current_sql:
+                    raise RuntimeError("Failed to regenerate SQL from error feedback")
             except Exception as regen_error:
                 logger.error(f"Error during SQL regeneration: {regen_error}")
                 break

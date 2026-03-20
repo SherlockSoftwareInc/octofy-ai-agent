@@ -382,8 +382,21 @@ curl -X POST http://localhost:8000/api/v1/generate-sql \
 Common fields used by generation endpoints:
 - `query` (required)
 - `context`, `previousSQL`, `queryHistory`
+- `database_objects` (optional prioritized list of tables/views/columns)
+- `existing_code` (optional base code for optimization/expansion)
+- `error_message` (optional error/stack trace for debugging)
+- `is_user_code` (optional, default false)
 - `forceGeneral`, `queryMode`
 - `table_override`, `chart_type_override`
+
+#### Unified Generation Scenarios
+
+Generation endpoints route behavior based on these fields:
+- **Debugging**: `error_message` present → fixes `existing_code` using error feedback.
+- **Optimization**: `existing_code` present with no error → improves/extends code.
+- **Fresh Start**: neither present → standard NL-to-code generation.
+
+`database_objects` are treated as high-priority context and are boosted ahead of general discovery.
 
 ### `ExecuteSQLRequest`
 Supports execution controls like:

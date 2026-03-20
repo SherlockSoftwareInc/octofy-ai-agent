@@ -921,12 +921,13 @@ def generate_python_for_request(request: GenerateSQLRequest) -> Generator[Union[
         return
 
     # Code-edit path: user has previous code and is asking to change something in it
-    if request.previousSQL and request.previousSQL.strip() and _is_code_edit_request(request.query):
+    existing_code = request.existing_code or request.previousSQL
+    if existing_code and existing_code.strip() and _is_code_edit_request(request.query):
         yield AgentStatus(step_id=1, message="Updating code based on your request...")
         llm_service = get_llm_service()
         try:
             modified_code = _apply_python_code_edit(
-                request.previousSQL,
+                existing_code,
                 request.query,
                 request.queryHistory,
                 llm_service,
@@ -1250,6 +1251,34 @@ def generate_python_for_request(request: GenerateSQLRequest) -> Generator[Union[
     keywords_str = ", ".join(db_keywords[:5]) if db_keywords else "business data"
     database_info = f"{friendly_name}: {db_description} ({keywords_str})."
 
+    db_objects_context = ""
+    if request.database_objects:
+        objects_list = ", ".join([obj for obj in request.database_objects if obj])
+        if objects_list:
+            db_objects_context = (
+                "### PRIORITIZED DATABASE OBJECTS\n"
+                f"The following database objects are already identified as relevant: {objects_list}. "
+                "Prioritize these over general schema discovery unless the query explicitly requires otherwise.\n\n"
+            )
+
+    editor_context = ""
+    editor_existing_code = request.existing_code or existing_code
+    if request.error_message or editor_existing_code:
+        editor_context = "### EDITOR MODE\nReview the provided code. "
+        if request.error_message:
+            editor_context += (
+                "An error is attached; identify the root cause (syntax, logic, or schema mismatch) and provide a corrected version.\n"
+                "### ERROR\n"
+                f"{request.error_message}\n"
+            )
+        else:
+            editor_context += "No error is attached; optimize or extend the logic based on the user request.\n"
+        if editor_existing_code:
+            editor_context += "### EXISTING CODE\n" + editor_existing_code + "\n"
+        if request.is_user_code:
+            editor_context += "### NOTE\nThe code was manually written by the user. Preserve their style and intent while correcting issues.\n"
+        editor_context += "\n"
+
     # Step 3: Build Python generation prompt
     prompt = f"""### ROLE
 You are an expert Python Programmer and Data Scientist specializing in **pandas** and **sqlalchemy**.
@@ -1275,6 +1304,7 @@ Date Ranges: {', '.join(date_ranges) if date_ranges else 'None'}
 {value_context}
 
 ### DATABASE SCHEMA
+{db_objects_context}{editor_context}
 {schema_text}
 
 ### PYTHON CODE GUIDELINES

@@ -104,6 +104,10 @@ class GenerateSQLRequest(BaseModel):
     context: Optional[DiscoveryContext] = None # Can be passed from frontend if they modified the discovery result
     previousSQL: Optional[str] = None # Previous SQL query for reference
     queryHistory: Optional[str] = None # Accumulated query history from conversation
+    database_objects: Optional[List[str]] = None # Prioritized tables/views/columns for generation
+    existing_code: Optional[str] = None # Base code for optimization or expansion
+    error_message: Optional[str] = None # Error message or stack trace for debugging
+    is_user_code: bool = False # True if provided code was written by the user
     forceGeneral: bool = False # If True, skip classification and go straight to general LLM chat
     queryMode: Literal["generate", "search", "plan", "code_advisor"] = "generate"  # "generate" for SQL generation, "search" for object search, "plan" for planning mode, "code_advisor" for code review/advice
     table_override: Optional[List[str]] = None # Explicit schema.table list from user selection

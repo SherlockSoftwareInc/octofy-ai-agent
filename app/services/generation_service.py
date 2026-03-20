@@ -23,6 +23,100 @@ def parse_table_override_name(raw_name: str) -> Tuple[str, str]:
         return schema.strip() or "dbo", table.strip()
     return "dbo", cleaned.strip()
 
+
+def _normalize_database_objects(database_objects: Optional[List[str]]) -> List[str]:
+    if not database_objects:
+        return []
+    cleaned = []
+    seen = set()
+    for obj in database_objects:
+        if not obj:
+            continue
+        item = str(obj).strip()
+        if not item:
+            continue
+        key = item.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        cleaned.append(item)
+    return cleaned
+
+
+def _resolve_database_objects_to_tables(
+    database_objects: List[str],
+    vector_store,
+    source_id: Optional[str],
+    allowed_tables: Optional[Set[str]] = None
+) -> Tuple[List[TableSchema], List[str]]:
+    if not database_objects:
+        return [], []
+
+    resolved_tables: List[TableSchema] = []
+    unresolved: List[str] = []
+
+    for raw_obj in database_objects:
+        cleaned = raw_obj.strip().replace('[', '').replace(']', '')
+        if not cleaned:
+            continue
+
+        parts = [p for p in cleaned.split('.') if p]
+        schema_name = None
+        table_name = None
+        if len(parts) >= 2:
+            schema_name, table_name = parts[0], parts[1]
+        elif parts:
+            schema_name, table_name = "dbo", parts[0]
+
+        matched = None
+        if schema_name and table_name:
+            try:
+                matched = vector_store.get_schema_by_name(schema_name, table_name)
+            except Exception:
+                matched = None
+
+        if not matched:
+            try:
+                candidates = _search_schemas_scoped(
+                    vector_store,
+                    raw_obj,
+                    top_k=1,
+                    source_id=source_id
+                )
+                if candidates:
+                    matched = candidates[0]
+            except Exception:
+                matched = None
+
+        if matched:
+            full_name = f"{matched.schema_name}.{matched.table_name}".lower()
+            if allowed_tables and full_name not in allowed_tables:
+                unresolved.append(raw_obj)
+                continue
+            if not any(
+                t.schema_name == matched.schema_name and t.table_name == matched.table_name
+                for t in resolved_tables
+            ):
+                resolved_tables.append(matched)
+        else:
+            unresolved.append(raw_obj)
+
+    return resolved_tables, unresolved
+
+
+def _merge_tables_into_context(context: DiscoveryContext, tables: List[TableSchema]) -> None:
+    if not tables:
+        return
+    existing = {(t.schema_name.lower(), t.table_name.lower()) for t in context.relevant_tables}
+    insert_index = 0
+    for table in tables:
+        key = (table.schema_name.lower(), table.table_name.lower())
+        if key in existing:
+            continue
+        context.relevant_tables.insert(insert_index, table)
+        insert_index += 1
+        existing.add(key)
+
 def hydrate_override_context(
     table_names: List[str],
     source_id: Optional[str] = None
@@ -1666,6 +1760,11 @@ def generate_sql_for_request(request: GenerateSQLRequest, previous_sql: Optional
     if query_history:
         combined_query = f"{query_history}. {request.query}"
         logging.info(f"[Context] Combined query with history: {combined_query}")
+
+    normalized_db_objects = _normalize_database_objects(request.database_objects)
+    existing_code = request.existing_code or request.previousSQL
+    editor_mode = "debug" if request.error_message else ("optimize" if existing_code else "fresh")
+    is_editor_mode = editor_mode != "fresh"
     
     # Check for plan mode first - conversational planning
     if request.queryMode == "plan":
@@ -1863,6 +1962,13 @@ def generate_sql_for_request(request: GenerateSQLRequest, previous_sql: Optional
     discovery_query = combined_query
 
     allowed_tables = _get_allowed_table_set(vector_store, selected_source_id)
+
+    db_object_tables, db_object_unresolved = _resolve_database_objects_to_tables(
+        normalized_db_objects,
+        vector_store,
+        selected_source_id,
+        allowed_tables=allowed_tables
+    )
     
     # Extract entities and score complexity for database queries (using context-aware query)
     entities, date_ranges = extract_entities(discovery_query)
@@ -2118,6 +2224,11 @@ def generate_sql_for_request(request: GenerateSQLRequest, previous_sql: Optional
                     selected_source_id
                 )
     
+    if db_object_tables and not use_table_override:
+        _merge_tables_into_context(context, db_object_tables)
+    if db_object_unresolved:
+        logging.info(f"[DB Objects] Unresolved database_objects: {db_object_unresolved}")
+
     if not use_table_override:
         # Branch-aware validation routing
         if discovery_branch == "kb_direct":
@@ -2447,6 +2558,32 @@ Alternatively, if these table references are incorrect, please rephrase your que
     from app.services.schema_context_utils import build_schema_text
     initial_schema_text = build_schema_text(context.relevant_tables, use_table_override=use_table_override)
 
+    db_objects_context = ""
+    if normalized_db_objects:
+        objects_list = ", ".join(normalized_db_objects)
+        db_objects_context = (
+            "### PRIORITIZED DATABASE OBJECTS\n"
+            f"The following database objects are already identified as relevant: {objects_list}. "
+            "Prioritize these over general schema discovery unless the query explicitly requires otherwise.\n\n"
+        )
+
+    editor_context = ""
+    if is_editor_mode:
+        editor_context = "### EDITOR MODE\nReview the provided code. "
+        if request.error_message:
+            editor_context += (
+                "An error is attached; identify the root cause (syntax, logic, or schema mismatch) and provide a corrected version.\n"
+                "### ERROR\n"
+                f"{request.error_message}\n"
+            )
+        else:
+            editor_context += "No error is attached; optimize or extend the logic based on the user request.\n"
+        if existing_code:
+            editor_context += "### EXISTING CODE\n" + existing_code + "\n"
+        if request.is_user_code:
+            editor_context += "### NOTE\nThe code was manually written by the user. Preserve their style and intent while correcting issues.\n"
+        editor_context += "\n"
+
     # Build validated mapping block from pre-flight validation for T-SQL adherence
     validated_mapping_section = ""
     if last_sufficiency_result:
@@ -2496,7 +2633,7 @@ Date Ranges: {', '.join(date_ranges) if date_ranges else 'None'}
 ### KNOWLEDGE BASE EXAMPLES
 {reference_text}{value_context}
 
-{context_guard}{validated_mapping_section}### AVAILABLE SCHEMAS (table names and column lists — use only these)
+{db_objects_context}{editor_context}{context_guard}{validated_mapping_section}### AVAILABLE SCHEMAS (table names and column lists — use only these)
 {initial_schema_text}
 
 ### REASONING PROCESS
@@ -2605,7 +2742,7 @@ Extracted Entities: {', '.join(entities) if entities else 'None'}
 ### KNOWLEDGE BASE EXAMPLES
 {reference_text}{value_context}
 
-{context_guard}{validated_mapping_section}### AVAILABLE SCHEMAS (table names and column lists — use only these)
+{db_objects_context}{editor_context}{context_guard}{validated_mapping_section}### AVAILABLE SCHEMAS (table names and column lists — use only these)
 {schema_text}
 
 {attempt_history_section}
