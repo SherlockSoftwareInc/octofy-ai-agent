@@ -50,6 +50,11 @@ class Settings(BaseSettings):
     VECTOR_PROVIDER: str = "milvus"
     VECTOR_HOST: str = "localhost"
     VECTOR_PORT: str = "19630"
+    VECTOR_SQLITE_PATH: Optional[str] = None  # default: ./data/vector-index.sqlite
+    BUILTIN_SQL_GENERATOR: bool = True
+    PRECOMPUTED_QUERY_DIRECT_MATCH_THRESHOLD: float = 0.93
+    PRECOMPUTED_QUERY_FEW_SHOT_THRESHOLD: float = 0.82
+    OBJECT_SEARCH_VECTOR_SCORE_THRESHOLD: float = 0.50
 
     APP_NAME: str = "Octofy AI Agent"
     APP_VERSION: str = "1.0.0"

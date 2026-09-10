@@ -4,7 +4,8 @@ from app.core.config import settings
 from app.api.endpoints import (
     discovery, generation, admin, settings as settings_endpoint, 
     contributions, schema as schema_endpoint, summarize,
-    data_sources, schema_tree, users, conversations
+    data_sources, schema_tree, users, conversations,
+    admin_semantic, admin_precomputed, admin_skills_import,
 )
 from app.services.ingest_service import create_milvus_collections, ingest_metadata
 from app.services.vector_store import get_vector_store
@@ -42,6 +43,9 @@ app.include_router(generation.router, prefix=settings.API_V1_STR, tags=["generat
 app.include_router(schema_endpoint.router, prefix=settings.API_V1_STR, tags=["schema"])
 app.include_router(admin.router, prefix=f"{settings.API_V1_STR}/admin", tags=["admin"])
 app.include_router(settings_endpoint.router, prefix=f"{settings.API_V1_STR}/admin", tags=["settings"])
+app.include_router(admin_semantic.router, prefix=f"{settings.API_V1_STR}/admin", tags=["admin-semantic"])
+app.include_router(admin_precomputed.router, prefix=f"{settings.API_V1_STR}/admin", tags=["admin-precomputed"])
+app.include_router(admin_skills_import.router, prefix=f"{settings.API_V1_STR}/admin", tags=["admin-skills"])
 app.include_router(contributions.router, prefix=settings.API_V1_STR, tags=["contributions"])
 app.include_router(summarize.router, prefix=settings.API_V1_STR, tags=["summarize"])
 

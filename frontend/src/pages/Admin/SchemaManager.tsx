@@ -52,6 +52,7 @@ export const SchemaManager: React.FC<SchemaManagerProps> = ({ onUploadStateChang
     const [currentPage, setCurrentPage] = useState(0);
     const [inspectingDb, setInspectingDb] = useState(false);
     const [showDbInspection, setShowDbInspection] = useState(false);
+    const [fetchError, setFetchError] = useState<string | null>(null);
 
     // Prevent page navigation during upload
     useEffect(() => {
@@ -77,9 +78,10 @@ export const SchemaManager: React.FC<SchemaManagerProps> = ({ onUploadStateChang
     const fetchData = async (includeDbInspection: boolean = false) => {
         console.time('[FRONTEND] Schema fetch total');
         setLoading(true);
+        setFetchError(null);
         try {
             console.time('[FRONTEND] API call');
-            const data = await api.admin.getSchemaStatus(includeDbInspection);
+            const data = await api.admin.getSchemaStatus(includeDbInspection, selectedSourceId || undefined);
             console.timeEnd('[FRONTEND] API call');
             
             if (Array.isArray(data)) {
@@ -88,9 +90,13 @@ export const SchemaManager: React.FC<SchemaManagerProps> = ({ onUploadStateChang
             } else {
                 console.warn("Invalid schema data received:", data);
                 setSchemas([]);
+                setFetchError('Schema status returned an unexpected response.');
             }
         } catch (e) {
             console.error("Failed to fetch schemas", e);
+            setSchemas([]);
+            const err = e as { response?: { data?: { detail?: string } }; message?: string };
+            setFetchError(err.response?.data?.detail || err.message || 'Failed to load schemas');
         } finally {
             setLoading(false);
             console.timeEnd('[FRONTEND] Schema fetch total');
@@ -262,10 +268,10 @@ export const SchemaManager: React.FC<SchemaManagerProps> = ({ onUploadStateChang
         let filtered = schemas;
         if (searchQuery.trim()) {
             const query = searchQuery.toLowerCase();
-            filtered = schemas.filter(schema =>
-                schema.table_name.toLowerCase().includes(query) ||
-                schema.schema_name.toLowerCase().includes(query)
-            );
+            filtered = schemas.filter(schema => {
+                const name = (schema.object_name || schema.table_name || '').toLowerCase();
+                return name.includes(query) || schema.schema_name.toLowerCase().includes(query);
+            });
         }
 
         // Paginate
@@ -278,7 +284,7 @@ export const SchemaManager: React.FC<SchemaManagerProps> = ({ onUploadStateChang
 
     useEffect(() => {
         fetchData();
-    }, []);
+    }, [selectedSourceId]);
 
     const handleDownload = async () => {
         try {
@@ -339,7 +345,7 @@ export const SchemaManager: React.FC<SchemaManagerProps> = ({ onUploadStateChang
     const handleInspectDatabase = async () => {
         setInspectingDb(true);
         try {
-            const data = await api.admin.inspectDatabase();
+            const data = await api.admin.inspectDatabase(selectedSourceId || undefined);
             if (Array.isArray(data)) {
                 console.log(`[FRONTEND] Database inspection found ${data.length} objects`);
                 setSchemas(data);
@@ -612,13 +618,24 @@ export const SchemaManager: React.FC<SchemaManagerProps> = ({ onUploadStateChang
                 </ul>
             </div>
 
+            <div className="bg-slate-900/50 border border-slate-800 rounded-xl p-4 mb-4">
+                <DataSourceSelector
+                    selectedSourceId={selectedSourceId}
+                    onSourceChange={setSelectedSourceId}
+                />
+                <p className="text-xs text-slate-500 mt-2">
+                    Object list is loaded from the Milvus schemas collection
+                    {loading ? '…' : ` (${schemas.length} object${schemas.length === 1 ? '' : 's'})`}.
+                </p>
+            </div>
+
             {/* Search Box */}
             <div className="mb-4">
                 <div className="relative">
                     <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-slate-500" size={18} />
                     <input
                         type="text"
-                        placeholder="Search by table name or schema..."
+                        placeholder="Search by object name or schema..."
                         value={searchQuery}
                         onChange={(e) => {
                             setSearchQuery(e.target.value);
@@ -643,37 +660,40 @@ export const SchemaManager: React.FC<SchemaManagerProps> = ({ onUploadStateChang
                 <table className="w-full text-left">
                     <thead className="bg-slate-950 text-slate-400">
                         <tr>
-                            <th className="p-4">Table</th>
+                            <th className="p-4">Object</th>
                             <th className="p-4">Type</th>
-                            <th className="p-4">Indexed</th>
-                            <th className="p-4">Description (Knowledge)</th>
+                            <th className="p-4">Columns</th>
+                            <th className="p-4">Description</th>
                             <th className="p-4">Actions</th>
                         </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-800">
-                        {filteredAndPaginatedSchemas.items.map((item) => (
-                            <tr key={`${item.schema_name}.${item.table_name}`} className="hover:bg-slate-800/50">
+                        {filteredAndPaginatedSchemas.items.map((item) => {
+                            const objectName = item.object_name || item.table_name;
+                            const objectType = (item.object_type || item.table_type || 'table').toLowerCase();
+                            const typeClass =
+                                objectType === 'view'
+                                    ? 'bg-purple-500/20 text-purple-300'
+                                    : objectType === 'function'
+                                    ? 'bg-amber-500/20 text-amber-300'
+                                    : objectType === 'stored_procedure'
+                                    ? 'bg-rose-500/20 text-rose-300'
+                                    : 'bg-blue-500/20 text-blue-300';
+                            return (
+                            <tr key={`${item.source_id || ''}.${item.schema_name}.${objectName}`} className="hover:bg-slate-800/50">
                                 <td className="p-4">
                                     <div className="font-mono font-medium text-slate-200">
-                                        {item.table_name}
+                                        {objectName}
                                     </div>
                                     <div className="text-xs text-slate-500">{item.schema_name}</div>
                                 </td>
                                 <td className="p-4">
-                                    <span className={`text-xs px-2 py-1 rounded-full ${item.table_type === 'view' ? 'bg-purple-500/20 text-purple-300' : 'bg-blue-500/20 text-blue-300'}`}>
-                                        {item.table_type || 'table'}
+                                    <span className={`text-xs px-2 py-1 rounded-full ${typeClass}`}>
+                                        {objectType}
                                     </span>
                                 </td>
-                                <td className="p-4">
-                                    {item.is_indexed ? (
-                                        <span className="flex items-center gap-1 text-emerald-400 text-sm">
-                                            <CheckCircle size={14} /> Indexed
-                                        </span>
-                                    ) : (
-                                        <span className="flex items-center gap-1 text-amber-500 text-sm">
-                                            <AlertCircle size={14} /> Missing
-                                        </span>
-                                    )}
+                                <td className="p-4 text-slate-300 text-sm">
+                                    {item.column_count ?? 0}
                                 </td>
                                 <td className="p-4 max-w-md">
                                     <p className="text-xs text-slate-400 truncate" title={item.description || ''}>
@@ -711,7 +731,8 @@ export const SchemaManager: React.FC<SchemaManagerProps> = ({ onUploadStateChang
                                     </div>
                                 </td>
                             </tr>
-                        ))}
+                            );
+                        })}
                     </tbody>
                 </table>
                 {filteredAndPaginatedSchemas.totalItems === 0 && searchQuery && (
@@ -727,7 +748,13 @@ export const SchemaManager: React.FC<SchemaManagerProps> = ({ onUploadStateChang
                 )}
                 {schemas.length === 0 && !loading && !searchQuery && (
                     <div className="p-8 text-center space-y-4">
-                        <p className="text-slate-500 mb-4">No schemas found in the vector database.</p>
+                        <p className="text-slate-500 mb-4">
+                            {fetchError
+                                ? fetchError
+                                : selectedSourceId
+                                ? 'No objects found for this data source. Use Reload on the Data Sources page, then refresh.'
+                                : 'No schemas found in the vector database.'}
+                        </p>
                         <button
                             onClick={handleSyncAll}
                             disabled={syncingAll}

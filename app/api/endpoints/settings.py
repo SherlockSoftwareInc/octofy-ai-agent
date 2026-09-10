@@ -336,3 +336,41 @@ def verify_settings(current_user: User = Depends(get_current_active_admin)):
         results["milvus_message"] = f"Milvus connection failed: {str(e)}"
 
     return results
+
+
+from pydantic import BaseModel
+from app.core.config import settings as runtime_settings
+from app.core.constants import (
+    DefaultObjectSearchVectorScoreThreshold,
+    DefaultPrecomputedQueryDirectMatchThreshold,
+    DefaultPrecomputedQueryFewShotThreshold,
+)
+
+
+class GeneratorThresholds(BaseModel):
+    precomputedQueryDirectMatchThreshold: float = DefaultPrecomputedQueryDirectMatchThreshold
+    precomputedQueryFewShotThreshold: float = DefaultPrecomputedQueryFewShotThreshold
+    objectSearchVectorScoreThreshold: float = DefaultObjectSearchVectorScoreThreshold
+
+
+@router.get("/generator-thresholds", response_model=GeneratorThresholds)
+def get_generator_thresholds(current_user: User = Depends(get_current_active_admin)):
+    return GeneratorThresholds(
+        precomputedQueryDirectMatchThreshold=runtime_settings.PRECOMPUTED_QUERY_DIRECT_MATCH_THRESHOLD,
+        precomputedQueryFewShotThreshold=runtime_settings.PRECOMPUTED_QUERY_FEW_SHOT_THRESHOLD,
+        objectSearchVectorScoreThreshold=runtime_settings.OBJECT_SEARCH_VECTOR_SCORE_THRESHOLD,
+    )
+
+
+@router.put("/generator-thresholds", response_model=GeneratorThresholds)
+def update_generator_thresholds(body: GeneratorThresholds, current_user: User = Depends(get_current_active_admin)):
+    runtime_settings.PRECOMPUTED_QUERY_DIRECT_MATCH_THRESHOLD = body.precomputedQueryDirectMatchThreshold
+    runtime_settings.PRECOMPUTED_QUERY_FEW_SHOT_THRESHOLD = body.precomputedQueryFewShotThreshold
+    clamped = max(0.0, min(1.0, body.objectSearchVectorScoreThreshold))
+    runtime_settings.OBJECT_SEARCH_VECTOR_SCORE_THRESHOLD = clamped
+    return GeneratorThresholds(
+        precomputedQueryDirectMatchThreshold=runtime_settings.PRECOMPUTED_QUERY_DIRECT_MATCH_THRESHOLD,
+        precomputedQueryFewShotThreshold=runtime_settings.PRECOMPUTED_QUERY_FEW_SHOT_THRESHOLD,
+        objectSearchVectorScoreThreshold=runtime_settings.OBJECT_SEARCH_VECTOR_SCORE_THRESHOLD,
+    )
+

@@ -13,16 +13,54 @@ import logging
 import json
 import time
 
+from app.utils.sse import format_sse, sse_error, sse_event, sse_result, sse_status
+
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
+
+def _wrap_generation_event(item):
+    if isinstance(item, AgentStatus):
+        return sse_status(
+            stage=item.details.get("stage") if item.details else "status",
+            message=item.message,
+            step_id=item.step_id,
+            **(item.details or {}),
+        )
+    if isinstance(item, dict):
+        if item.get("type") in {"status", "result", "done", "error"} and "payload" in item:
+            if item["type"] == "result":
+                payload = item["payload"]
+                if hasattr(payload, "model_dump"):
+                    item = {**item, "payload": payload.model_dump(by_alias=True)}
+            item.setdefault("message", "")
+            return item
+        if item.get("type") == "result":
+            payload = item["payload"]
+            if hasattr(payload, "model_dump"):
+                payload = payload.model_dump(by_alias=True)
+            return sse_result(payload, item.get("message") or "")
+        if item.get("type") == "done":
+            return sse_event("done", item.get("payload") or {}, item.get("message") or "")
+        if item.get("type") == "error":
+            return sse_error(item.get("message") or "error", item.get("payload"))
+    return sse_event("status", {}, str(item))
+
+
 @router.post("/generate-sql")
+@router.post("/generation/generate-sql")
 async def generate_sql_endpoint(
     request: GenerateSQLRequest, 
     http_request: Request,
     current_user: User = Depends(verify_api_key),
     db: Session = Depends(get_user_db)
 ):
+    if not (request.query or "").strip():
+        raise HTTPException(status_code=400, detail="Bad request")
+    if request.source_id:
+        from app.services.source_resolver import resolve_known_source_id
+        request.source_id = resolve_known_source_id(request.source_id)
+
     start_time = time.time()
     final_result = None
     error_occurred = False
@@ -32,30 +70,25 @@ async def generate_sql_endpoint(
         nonlocal final_result, error_occurred, error_message
         try:
             for item in generate_sql_for_request(request, request.previousSQL, request.queryHistory):
-                if isinstance(item, AgentStatus):
-                    yield f"data: {json.dumps(item.model_dump())}\n\n"
-                elif isinstance(item, dict) and item.get("type") == "result":
-                    # Payload is a GenerateSQLResponse object
-                    payload = item["payload"]
-                    final_result = payload
-                    data = {
-                        "type": "result",
-                        "payload": payload.model_dump(by_alias=True)
-                    }
-                    yield f"data: {json.dumps(data)}\n\n"
-                elif isinstance(item, dict) and item.get("type") == "done":
-                    # Forward done signal to frontend
-                    yield f"data: {json.dumps({'type': 'done'})}\n\n"
+                wrapped = _wrap_generation_event(item)
+                if wrapped.get("type") == "result":
+                    payload = wrapped.get("payload")
+                    if isinstance(payload, GenerateSQLResponse):
+                        final_result = payload
+                    elif isinstance(payload, dict):
+                        try:
+                            final_result = GenerateSQLResponse.model_validate(payload)
+                        except Exception:
+                            final_result = None
+                yield format_sse(wrapped)
+        except HTTPException:
+            raise
         except Exception as e:
             error_occurred = True
             error_message = str(e)
             logger.error(f"Error in generate_sql_endpoint: {str(e)}")
             logger.error(traceback.format_exc())
-            error_data = {
-                "type": "error",
-                "message": str(e)
-            }
-            yield f"data: {json.dumps(error_data)}\n\n"
+            yield format_sse(sse_error(str(e), {"detail": str(e)}))
         finally:
             # Log activity after generation completes
             execution_time = time.time() - start_time

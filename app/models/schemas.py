@@ -114,6 +114,9 @@ class GenerateSQLRequest(BaseModel):
     chart_type_override: Optional[ChartTypeLiteral] = None  # User-specified chart type
     user_selected_tables: Optional[List[str]] = None  # User's checkbox selections from threshold prompt
     planning_context: Optional[Dict[str, Any]] = None  # Structured planning state for conversational exploration
+    source_id: Optional[str] = None  # Target data source for multi-source hosts
+    top_k: Optional[int] = None
+    semantic_mode: Optional[bool] = None
 
 
 # --- Turn-Type Classification Models ---
@@ -166,6 +169,15 @@ class GenerateSQLResponse(BaseModel):
     discovery_branch: Optional[str] = None  # "kb_direct", "kb_gap_fill", or "dual_prong"
     source_id: Optional[str] = None  # Data source ID to use when executing this SQL
     is_code_edit: Optional[bool] = None  # If True, frontend should update the previous code box in place
+    success: Optional[bool] = None
+    attempts: Optional[int] = None
+    token_usage: Optional[Dict[str, Any]] = None
+    processing_time_ms: Optional[int] = None
+    hallucination_count: Optional[int] = None
+    agentic_retry_count: Optional[int] = None
+    canonical_question: Optional[str] = None
+    error_category: Optional[str] = None
+    failure_report: Optional[Dict[str, Any]] = None
 
 class AgentStatus(BaseModel):
     step_id: int
@@ -322,12 +334,16 @@ class ExecuteSQLResponse(BaseModel):
 
 class AdminSchemaStatus(BaseModel):
     schema_name: str
-    table_name: str
-    table_type: Optional[str] = "table"  # 'table' or 'view'
+    table_name: str  # display name; same as object_name from the schemas collection
+    object_name: Optional[str] = None
+    object_type: Optional[str] = None
+    table_type: Optional[str] = "table"
+    entity_type: Optional[str] = None
     is_indexed: bool
-    description: Optional[str] = None  # Rich Markdown description (also used for embedding)
+    description: Optional[str] = None
     column_count: int
     last_updated: Optional[str] = None
+    source_id: Optional[str] = None
 
 class FewShotItem(BaseModel):
     id: Optional[str] = None # Milvus ID (string to handle large integers)
@@ -335,6 +351,7 @@ class FewShotItem(BaseModel):
     sql_query: str  # Also used for R code and SAS code
     knowledge_type: str = "sql_query"  # "general", "sql_query", "r_code", "sas_code"
     verified: bool = False
+    source_id: Optional[str] = None
 
 class ValueIndexItem(BaseModel):
     id: Optional[str] = None

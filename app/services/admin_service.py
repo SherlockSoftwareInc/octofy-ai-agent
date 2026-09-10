@@ -143,25 +143,75 @@ def build_table_markdown_description(
     md += "---\n"
     return md
 
-def get_schema_status(include_database_inspection: bool = False) -> List[AdminSchemaStatus]:
-    vector_store = get_vector_store()
-    
-    # 1. Get indexed tables from Milvus FIRST (fast operation)
-    indexed_schemas = vector_store.get_all_schemas()
+def _object_type_label(raw: Any) -> str:
+    value = str(raw or "table").strip().lower().replace(" ", "_")
+    aliases = {
+        "storedprocedure": "stored_procedure",
+        "fn": "function",
+        "func": "function",
+    }
+    return aliases.get(value, value or "table")
+
+
+def schema_rows_to_admin_status(rows: List[Dict[str, Any]], source_id: Optional[str] = None) -> List[AdminSchemaStatus]:
+    """Turn Milvus `schemas` rows (parents + columns) into the admin object list."""
+    parents: Dict[tuple, Dict[str, Any]] = {}
+    col_counts: Dict[tuple, int] = {}
+    for row in rows or []:
+        schema_name = (row.get("schema_name") or "dbo").strip()
+        object_name = (row.get("object_name") or row.get("table_name") or "").strip()
+        if not object_name:
+            continue
+        key = (schema_name, object_name)
+        entity = str(row.get("entity_type") or "").strip().lower()
+        if entity == "column":
+            col_counts[key] = col_counts.get(key, 0) + 1
+            continue
+        parents[key] = row
+    items: List[AdminSchemaStatus] = []
+    for (schema_name, object_name), row in sorted(parents.items(), key=lambda item: (item[0][0].lower(), item[0][1].lower())):
+        sid = row.get("data_source_id") or row.get("source_id") or source_id
+        otype = _object_type_label(row.get("object_type") or row.get("table_type") or "table")
+        items.append(AdminSchemaStatus(
+            schema_name=schema_name,
+            table_name=object_name,
+            object_name=object_name,
+            object_type=otype,
+            table_type=otype,
+            entity_type=row.get("entity_type") or "Table",
+            is_indexed=True,
+            description=row.get("description"),
+            column_count=col_counts.get((schema_name, object_name), 0),
+            source_id=sid,
+        ))
+    return items
+
+
+def _collect_indexed_schemas(source_id: Optional[str] = None) -> List[AdminSchemaStatus]:
+    """List parent objects from the Milvus `schemas` collection."""
+    from app.services.stores.provider_factory import get_vector_provider
+
+    provider = get_vector_provider()
+    if source_id:
+        rows = provider.fetch_all("schemas", source_id)
+        return schema_rows_to_admin_status(rows, source_id)
+
+    if hasattr(provider, "fetch_all_rows"):
+        rows = provider.fetch_all_rows("schemas")
+    else:
+        rows = []
+    if source_id:
+        wanted = source_id.lower()
+        rows = [row for row in rows if str(row.get("data_source_id") or "").lower() == wanted]
+    return schema_rows_to_admin_status(rows, source_id)
+
+
+def get_schema_status(include_database_inspection: bool = False, source_id: Optional[str] = None) -> List[AdminSchemaStatus]:
+    indexed_schemas = _collect_indexed_schemas(source_id)
     
     # Skip database inspection if not requested (performance optimization)
     if not include_database_inspection:
-        status_list = []
-        for schema_obj in indexed_schemas:
-            status_list.append(AdminSchemaStatus(
-                schema_name=schema_obj.schema_name,
-                table_name=schema_obj.table_name,
-                table_type=schema_obj.table_type or "table",
-                is_indexed=True,
-                description=schema_obj.description,
-                column_count=len(schema_obj.columns)
-            ))
-        return status_list
+        return indexed_schemas
     
     # 2. Get real DB tables and views (Try-Catch for DB Connection issues)
     # Build a set of what we need to check instead of getting ALL tables
@@ -194,20 +244,8 @@ def get_schema_status(include_database_inspection: bool = False) -> List[AdminSc
         
         # Determine status
         status = "Live" if is_live else ("Indexed (DB Error)" if db_connection_error else "Orphaned")
-        
-        # Use column count from vector store (already has it from schema_obj)
-        # Don't query database for column count - too expensive!
-        col_count = len(schema_obj.columns) if schema_obj.columns else 0
-            
-        status_list.append(AdminSchemaStatus(
-            schema_name=schema_obj.schema_name,
-            table_name=schema_obj.table_name,
-            table_type=schema_obj.table_type or 'table',
-            is_indexed=True,
-            description=schema_obj.description,
-            column_count=col_count,
-            last_updated=status
-        ))
+        schema_obj.last_updated = status
+        status_list.append(schema_obj)
     
     return status_list
 

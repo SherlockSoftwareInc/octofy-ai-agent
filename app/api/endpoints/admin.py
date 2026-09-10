@@ -32,15 +32,23 @@ _upload_progress = {"current": 0, "total": 0, "status": "idle"}
 # --- Schema Management ---
 
 @router.get("/schema/status", response_model=List[AdminSchemaStatus])
-def get_schemas_status(include_db_inspection: bool = False, current_user: User = Depends(get_current_active_admin)):
+def get_schemas_status(
+    include_db_inspection: bool = False,
+    source_id: Optional[str] = None,
+    current_user: User = Depends(get_current_active_admin),
+):
     """Get status of all schemas in database vs vector store
     
     Args:
         include_db_inspection: If True, compare with database to show missing tables.
                               If False (default), only return indexed schemas for faster loading.
+        source_id: Optional data source filter (vector provider + schema_index_v2).
     """
     try:
-        return get_schema_status(include_database_inspection=include_db_inspection)
+        if source_id:
+            from app.services.source_resolver import resolve_known_source_id
+            source_id = resolve_known_source_id(source_id)
+        return get_schema_status(include_database_inspection=include_db_inspection, source_id=source_id)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -556,6 +564,14 @@ def add_fewshot(item: FewShotItem, current_user: User = Depends(get_current_acti
             item.sql_query, 
             item.knowledge_type if item.knowledge_type else "sql_query"
         )
+        try:
+            from app.services.source_resolver import resolve_or_primary
+            from app.services.stores.bundle import build_source_stores
+            source_id = resolve_or_primary(getattr(item, "source_id", None))
+            stores = build_source_stores(source_id)
+            stores.fewshots.upsert(item.question, item.sql_query)
+        except Exception:
+            pass
         return {"status": "success"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

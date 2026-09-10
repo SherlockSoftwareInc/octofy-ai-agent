@@ -1958,6 +1958,20 @@ def generate_sql_for_request(request: GenerateSQLRequest, previous_sql: Optional
         return
 
     # --- Data Query Branch (continues to Stage 2: Discovery) ---
+    # Built-in generator strangler: plan/search/system_catalog stay above this point.
+    from app.core.config import settings as _app_settings
+    if getattr(_app_settings, "BUILTIN_SQL_GENERATOR", True) and request.queryMode == "generate":
+        from app.core.orchestrator.builtin_sql_generator import generate_sql_builtin
+        from app.services.stores.bundle import build_source_stores
+        from app.services.source_resolver import resolve_or_primary
+
+        builtin_source = request.source_id or selected_source_id
+        builtin_source = resolve_or_primary(builtin_source)
+        stores = build_source_stores(builtin_source)
+        for event in generate_sql_builtin(request, stores):
+            yield event
+        return
+
     # Use the combined query (with conversation history) for discovery
     discovery_query = combined_query
 

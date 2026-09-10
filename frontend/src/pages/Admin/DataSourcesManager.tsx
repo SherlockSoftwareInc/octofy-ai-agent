@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useRef, useCallback } from 'react';
 import { api } from '../../api/client';
 import type { DataSourceResponse, AddDataSourceRequest, ConnectionTestResponse } from '../../api/client';
-import { Database, Plus, RefreshCw, Edit, Trash2, Loader2, Settings, AlertCircle, CheckCircle, Search, Copy, Check } from 'lucide-react';
+import { Database, Plus, RefreshCw, RotateCcw, Edit, Trash2, Loader2, Settings, AlertCircle, CheckCircle, Search, Copy, Check } from 'lucide-react';
 
 export const DataSourcesManager: React.FC = () => {
     const [dataSources, setDataSources] = useState<DataSourceResponse[]>([]);
@@ -14,6 +14,9 @@ export const DataSourcesManager: React.FC = () => {
     const [scanningSourceId, setScanningSourceId] = useState<string | null>(null);
     const [scanStatus, setScanStatus] = useState<{ [key: string]: { status: string; message: string; result?: Record<string, unknown> } }>({});
     const scanPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+    const [reloadingSourceId, setReloadingSourceId] = useState<string | null>(null);
+    const [reloadStatus, setReloadStatus] = useState<{ [key: string]: { status: string; message: string } }>({});
+    const reloadPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
     const [showScanModal, setShowScanModal] = useState(false);
     const [scanModalSourceId, setScanModalSourceId] = useState<string | null>(null);
     const [scanConnInfo, setScanConnInfo] = useState({ server: '', database_name: '', auth_type: 'windows' as string, driver: 'ODBC Driver 17 for SQL Server', trust_server_certificate: true });
@@ -61,6 +64,7 @@ export const DataSourcesManager: React.FC = () => {
         fetchDataSources();
         return () => {
             if (scanPollRef.current) clearInterval(scanPollRef.current);
+            if (reloadPollRef.current) clearInterval(reloadPollRef.current);
             if (copyResetTimerRef.current) clearTimeout(copyResetTimerRef.current);
         };
     }, []);
@@ -133,6 +137,44 @@ export const DataSourcesManager: React.FC = () => {
             } else {
                 setScanStatus(prev => ({ ...prev, [sourceId]: { status: 'error', message: detail } }));
             }
+        }
+    };
+
+    const pollReloadStatus = useCallback((sourceId: string) => {
+        if (reloadPollRef.current) clearInterval(reloadPollRef.current);
+        setReloadingSourceId(sourceId);
+        reloadPollRef.current = setInterval(async () => {
+            try {
+                const status = await api.dataSources.getReloadStatus(sourceId);
+                setReloadStatus(prev => ({ ...prev, [sourceId]: status }));
+                if (status.status === 'completed' || status.status === 'error' || status.status === 'complete') {
+                    if (reloadPollRef.current) clearInterval(reloadPollRef.current);
+                    reloadPollRef.current = null;
+                    setReloadingSourceId(null);
+                    if (status.status === 'completed' || status.status === 'complete') {
+                        await fetchDataSources();
+                    }
+                }
+            } catch {
+                if (reloadPollRef.current) clearInterval(reloadPollRef.current);
+                reloadPollRef.current = null;
+                setReloadingSourceId(null);
+            }
+        }, 2000);
+    }, []);
+
+    const handleReloadVectors = async (sourceId: string, friendlyName: string) => {
+        const confirmed = window.confirm(
+            `Reload vector collections for "${friendlyName}" from its skills/data-sources folder? Existing vectors for this source will be rebuilt.`
+        );
+        if (!confirmed) return;
+        try {
+            setReloadStatus(prev => ({ ...prev, [sourceId]: { status: 'running', message: 'Starting reload...' } }));
+            await api.dataSources.reloadVectors(sourceId);
+            pollReloadStatus(sourceId);
+        } catch (error: unknown) {
+            const detail = (error as { response?: { data?: { detail?: string } } })?.response?.data?.detail || 'Failed to start reload';
+            setReloadStatus(prev => ({ ...prev, [sourceId]: { status: 'error', message: String(detail) } }));
         }
     };
 
@@ -457,6 +499,18 @@ export const DataSourcesManager: React.FC = () => {
                                     </>
                                 )}
                                 <button
+                                    onClick={() => handleReloadVectors(source.source_id, source.friendly_name)}
+                                    disabled={reloadingSourceId === source.source_id || reloadStatus[source.source_id]?.status === 'running'}
+                                    className="p-2 bg-cyan-500/10 text-cyan-400 rounded hover:bg-cyan-500/20 disabled:opacity-50"
+                                    title="Reload vectors from skills folder"
+                                >
+                                    {reloadingSourceId === source.source_id || reloadStatus[source.source_id]?.status === 'running' ? (
+                                        <Loader2 size={16} className="animate-spin" />
+                                    ) : (
+                                        <RotateCcw size={16} />
+                                    )}
+                                </button>
+                                <button
                                     onClick={() => handleScanDatabase(source.source_id)}
                                     disabled={scanningSourceId === source.source_id || scanStatus[source.source_id]?.status === 'running'}
                                     className="p-2 bg-purple-500/10 text-purple-400 rounded hover:bg-purple-500/20 disabled:opacity-50"
@@ -498,6 +552,50 @@ export const DataSourcesManager: React.FC = () => {
                                     }`}>
                                         {connectionTestResult.result.message}
                                     </p>
+                                </div>
+                            </div>
+                        )}
+
+                        {/* Reload Status */}
+                        {reloadStatus[source.source_id] && reloadStatus[source.source_id].status !== 'idle' && (
+                            <div className={`mb-3 p-3 rounded-lg flex items-start gap-2 ${
+                                reloadStatus[source.source_id].status === 'completed' || reloadStatus[source.source_id].status === 'complete'
+                                    ? 'bg-emerald-500/10 border border-emerald-500/30'
+                                    : reloadStatus[source.source_id].status === 'error'
+                                    ? 'bg-red-500/10 border border-red-500/30'
+                                    : 'bg-cyan-500/10 border border-cyan-500/30'
+                            }`}>
+                                {reloadStatus[source.source_id].status === 'completed' || reloadStatus[source.source_id].status === 'complete' ? (
+                                    <CheckCircle size={16} className="text-emerald-400 flex-shrink-0 mt-0.5" />
+                                ) : reloadStatus[source.source_id].status === 'error' ? (
+                                    <AlertCircle size={16} className="text-red-400 flex-shrink-0 mt-0.5" />
+                                ) : (
+                                    <Loader2 size={16} className="text-cyan-400 flex-shrink-0 mt-0.5 animate-spin" />
+                                )}
+                                <div className="flex-1">
+                                    <p className={`text-sm font-medium ${
+                                        reloadStatus[source.source_id].status === 'completed' || reloadStatus[source.source_id].status === 'complete' ? 'text-emerald-300'
+                                        : reloadStatus[source.source_id].status === 'error' ? 'text-red-300'
+                                        : 'text-cyan-300'
+                                    }`}>
+                                        {reloadStatus[source.source_id].status === 'running' ? 'Reloading Vectors...' :
+                                         reloadStatus[source.source_id].status === 'error' ? 'Reload Failed' : 'Reload Complete'}
+                                    </p>
+                                    <p className="text-xs text-slate-400 mt-1">
+                                        {reloadStatus[source.source_id].message}
+                                    </p>
+                                    {reloadStatus[source.source_id].status !== 'running' && (
+                                        <button
+                                            onClick={() => setReloadStatus(prev => {
+                                                const next = { ...prev };
+                                                delete next[source.source_id];
+                                                return next;
+                                            })}
+                                            className="text-xs text-slate-500 hover:text-slate-300 mt-1"
+                                        >
+                                            Dismiss
+                                        </button>
+                                    )}
                                 </div>
                             </div>
                         )}
@@ -600,6 +698,17 @@ export const DataSourcesManager: React.FC = () => {
 
                         {!isSkillsSource && (
                             <div className="flex gap-2 mt-3 pt-3 border-t border-slate-800">
+                                <button
+                                    onClick={() => handleReloadVectors(source.source_id, source.friendly_name)}
+                                    disabled={reloadingSourceId === source.source_id || reloadStatus[source.source_id]?.status === 'running'}
+                                    className="px-3 py-1 bg-cyan-500/10 text-cyan-400 rounded hover:bg-cyan-500/20 text-sm flex items-center gap-1 disabled:opacity-50"
+                                >
+                                    {reloadingSourceId === source.source_id || reloadStatus[source.source_id]?.status === 'running' ? (
+                                        <><Loader2 size={14} className="animate-spin" /> Reloading...</>
+                                    ) : (
+                                        <><RotateCcw size={14} /> Reload</>
+                                    )}
+                                </button>
                                 {!isPrimary && (
                                     <button
                                         onClick={() => handleSetPrimary(source.source_id)}
@@ -623,6 +732,17 @@ export const DataSourcesManager: React.FC = () => {
 
                         {isSkillsSource && (
                             <div className="flex gap-2 mt-3 pt-3 border-t border-slate-800">
+                                <button
+                                    onClick={() => handleReloadVectors(source.source_id, source.friendly_name)}
+                                    disabled={reloadingSourceId === source.source_id || reloadStatus[source.source_id]?.status === 'running'}
+                                    className="px-3 py-1 bg-cyan-500/10 text-cyan-400 rounded hover:bg-cyan-500/20 text-sm flex items-center gap-1 disabled:opacity-50"
+                                >
+                                    {reloadingSourceId === source.source_id || reloadStatus[source.source_id]?.status === 'running' ? (
+                                        <><Loader2 size={14} className="animate-spin" /> Reloading...</>
+                                    ) : (
+                                        <><RotateCcw size={14} /> Reload</>
+                                    )}
+                                </button>
                                 <button
                                     onClick={() => handleScanDatabase(source.source_id)}
                                     disabled={scanningSourceId === source.source_id || scanStatus[source.source_id]?.status === 'running'}

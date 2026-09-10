@@ -39,29 +39,43 @@ Validated T-SQL → Executed results → Profiling → Insights → Chart recomm
                        ▼
 ┌─────────────────────────────────────────────────────────────────┐
 │ Stage 1: Query Analysis & Intent                                │
-│ - Query classification (database/general/uncertain)              │
-│ - Entity extraction & date range detection                       │
-│ - Complexity scoring (simple/moderate/complex)                   │
-│ - Special mode handling (search/general)                         │
+│ - Plan mode → planning_conversation() (no SQL)                  │
+│ - Search mode → search_data_objects() (no SQL)                  │
+│ - forceGeneral → off-topic LLM response                         │
+│ - 3-way intent: data_query / system_metadata / off_topic        │
+│ - Multi-source resolution (primary + data sources via Skills)   │
+│ - Entity extraction & complexity scoring (simple/moderate/complex)│
 └──────────────────────┬──────────────────────────────────────────┘
                        │
                        ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│ Stage 2: Discovery & Context Synthesis                          │
-│ ┌─────────────┐  ┌─────────────┐  ┌─────────────┐             │
-│ │ Value Index │  │  Few-Shot   │  │Schema Index │             │
-│ │ (weight 10) │  │ (weight 5)  │  │ (weight 2)  │             │
-│ └──────┬──────┘  └──────┬──────┘  └──────┬──────┘             │
-│        └─────────────────┴─────────────────┘                    │
-│                         │                                        │
-│                Re-rank & Select Top 8 Tables                    │
-│                         │                                        │
-│        ┌────────────────┴────────────────┐                      │
-│        │ Path Finding (Context Expansion)│                      │
-│        └────────────────┬────────────────┘                      │
-│                         │                                        │
-│              Schema Completeness Validation                     │
-└──────────────────────┬──────────────────────────────────────────┘
+│ Stage 2: Knowledge-Base-First Discovery (Sequential)            │
+│                                                                  │
+│  Table override? ──YES──► hydrate_override_context() ──────┐   │
+│       │ NO                                                  │   │
+│       ▼                                                     │   │
+│  KB Search (score_threshold=0.5, top_k=3)                  │   │
+│       │                                                     │   │
+│  KB results? ──YES──► LLM evaluate_example_relevance()     │   │
+│       │                     │                              │   │
+│       │           confidence≥0.7                           │   │
+│       │           & sufficient?                            │   │
+│       │            │YES          │NO                       │   │
+│       │            ▼             ▼                         │   │
+│       │      kb_direct      kb_gap_fill                    │   │
+│       │  (skip steps 8-10)  (skip steps 8-9,              │   │
+│       │                      run step 10 only)             │   │
+│       │ NO                                                  │   │
+│       ▼                                                     │   │
+│  dual_prong: Value Index + Few-Shot + Schema Index         │   │
+│  → rerank_and_select_tables()                              │   │
+│  → expand_context_with_neighbors() (path finding)         │   │
+│  → Steps 8-10 (completeness + value lookup + sufficiency) │   │
+│                                                             │   │
+│  Step 10: validate_schema_with_join_paths() or            │   │
+│           check_schema_sufficiency()                       │   │
+│           (ENABLE_JOIN_PATH_VALIDATION flag)               │   │
+└──────────┬──────────────────────────────────────────────────────┘
                        │
                        ▼
 ┌─────────────────────────────────────────────────────────────────┐
@@ -163,374 +177,517 @@ Validated T-SQL → Executed results → Profiling → Insights → Chart recomm
 
 ```python
 # File: app/services/generation_service.py
-# Function: generate_sql_for_request() - Lines 419-454
+# Function: generate_sql_for_request() - Lines 1756+
 ```
 
 ### Steps
 
-#### 1.1 Load Database Settings
+#### 1.1 Conversation Context Injection
+
+At the very start, conversation history is merged into the query so all branches have full context:
+
 ```python
-settings = get_settings_for_display()
-database_name = settings.target_db.database_name
-database_description = settings.target_db.description
-database_keywords = settings.target_db.keywords
+combined_query = request.query
+if query_history:
+    combined_query = f"{query_history}. {request.query}"
 ```
 
-**Example Output**:
-```
-Database: Northwind
-Description: Sales database for imported and exported specialty foods
-Keywords: ['sales', 'customers', 'orders', 'products', 'employees', 'shipping']
+#### 1.2 Load Data Source Settings
+
+Database metadata is now loaded from the **Skills service** (not from a static `settings.json`):
+
+```python
+from app.services.skills_service import get_skills_service
+skills_service = get_skills_service()
+data_sources = skills_service.load_data_sources_index() or []
+primary_source = skills_service.load_primary_data_source()
+
+friendly_name = primary_source.name        # e.g. "Northwind"
+db_description = primary_source.description
+db_keywords = primary_source.keywords
 ```
 
-#### 1.2 Handle Special Modes
+If no Skills data sources are configured:
+```python
+friendly_name = "Database"
+db_description = "Primary database"
+db_keywords = []
+```
+
+#### 1.3 Handle Special Modes (Pre-Classification)
+
+These modes short-circuit before any intent classification:
+
+**Plan Mode** (`queryMode="plan"`):
+- Calls `planning_conversation(combined_query, request.planning_context, user_selected_tables=...)`
+- Returns a conversational planning response — no SQL generated
 
 **Search Mode** (`queryMode="search"`):
-- Returns database objects instead of SQL
-- Used for schema exploration
+- Calls `search_data_objects(combined_query)`
+- Returns database objects for schema exploration — no SQL generated
 
-**General Chat Mode** (`forceGeneral=True`):
-- Skips SQL generation
-- Returns conversational response
+**Force General** (`forceGeneral=True`):
+- User explicitly chose "General Answer"
+- Calls `_handle_general_query()` — bypasses all classification
 
-#### 1.3 Extract Entities & Date Ranges
+#### 1.4 Editor Mode Detection
 
-Uses LLM to parse the query:
 ```python
-# Extract key nouns (e.g., "customers", "orders", "products")
-entities = ["customers", "revenue", "2024"]
-
-# Detect date ranges
-date_ranges = ["2024-01-01 to 2024-12-31"]
+existing_code = request.existing_code or request.previousSQL
+editor_mode = "debug"    if request.error_message else \
+              "optimize" if existing_code else \
+              "fresh"
 ```
 
-#### 1.4 Score Query Complexity
+- `debug` — an error message is attached; LLM is asked to diagnose and fix
+- `optimize` — existing code is attached; LLM is asked to extend or improve
+- `fresh` — standard generation from scratch
+
+#### 1.5 Intent Classification (3-Way)
+
+```python
+classification = classify_query_intent(
+    combined_query, llm_service,
+    db_name=friendly_name,
+    db_description=db_description,
+    db_keywords=db_keywords,
+    data_sources=data_sources,
+)
+query_intent = classification.get("intent")         # data_query / system_metadata / off_topic
+related_sources = classification.get("related_sources", [])
+related_source_guids = classification.get("related_source_guids", [])
+```
+
+| Intent | Description | Action |
+|--------|-------------|--------|
+| `data_query` | Query against business data tables | Proceeds to Stage 2 Discovery |
+| `system_metadata` | Query about DB structure (tables, columns, counts) | Uses `build_system_catalog_prompt()` with SQL Server catalog views |
+| `off_topic` | Unrelated to any registered data source | Returns conversational LLM response |
+
+**Multi-Source Disambiguation**: If `related_source_guids` has more than one match, the agent returns a prompt asking the user to pick one source GUID before proceeding. No SQL is generated until a single source is selected.
+
+**System Metadata Branch** (2 retry attempts):
+```python
+for attempt in range(2):
+    sql = llm_service.generate_sql_with_context(combined_query, system_prompt)
+    is_valid, error_msg, _ = validate_sql_with_db(sql, source_id=selected_source_id)
+    if is_valid:
+        return GenerateSQLResponse(sql=sql, discovery_branch="system_catalog", ...)
+```
+
+#### 1.6 Extract Entities & Score Complexity (data_query only)
+
+```python
+entities, date_ranges = extract_entities(discovery_query)
+query_complexity = score_query_complexity(discovery_query)
+```
 
 Classification rules:
 - **Simple**: Single table, basic filtering (`SELECT * FROM Products WHERE Price > 100`)
 - **Moderate**: 2-3 tables, simple joins (`SELECT c.Name, COUNT(o.OrderID) FROM Customers c JOIN Orders o...`)
-- **Complex**: 4+ tables, CTEs, subqueries, aggregations
+- **Complex**: 4+ tables, CTEs, subqueries, multi-step aggregations
 
 **Complexity affects**:
+- Prompt scripting authorization (see Stage 3)
 - Number of knowledge base examples included
-- Prompt structure
-- Validation strictness
+- Whether `DECLARE` / `#TempTable` patterns are suggested
 
 ---
 
 ## Stage 2: Discovery & Context Synthesis
 
-**Purpose**: Find the most relevant tables and example queries using multi-source RAG.
+**Purpose**: Find the most relevant tables and example queries for the user's query. The strategy is **Knowledge-Base-First** (sequential and conditional), not a flat parallel search.
 
-### 2.1 Multi-Source Discovery Strategy
-
-The system searches **three parallel sources** and combines results with weighted scoring:
+### Context Inputs (All Branches)
 
 ```python
-# File: app/services/generation_service.py
-# Lines 481-521
+allowed_tables = _get_allowed_table_set(vector_store, selected_source_id)  # source-scoped filter
+db_object_tables, db_object_unresolved = _resolve_database_objects_to_tables(
+    request.database_objects, vector_store, selected_source_id, allowed_tables=allowed_tables
+)
 ```
 
-#### Source 1: Value Index Discovery (Weight: 10)
+### Branch A: Table Override (user-pinned tables)
 
-**What**: Maps user terms to exact database values.
-
-**Example**:
-```
-User Query: "Show sales in North America"
-Value Index Search: "North America"
-→ Finds: Customers.Region = 'North America'
-→ Returns: ['Customers'] with weight 10
-```
-
-**Process**:
-1. Extract filter values from query using LLM
-2. Search `value_index` collection in Milvus
-3. Return tables containing matching values
-
-#### Source 2: Few-Shot Discovery (Weight: 5)
-
-**What**: Finds similar SQL queries from knowledge base.
-
-**Example**:
-```
-User Query: "Monthly revenue by product category"
-Few-Shot Search (semantic):
-→ Match: "What is the total revenue by category?"
-→ SQL: SELECT c.CategoryName, SUM(od.Quantity * od.UnitPrice) FROM Categories c...
-→ Extracts tables: ['Categories', 'Products', 'OrderDetails']
-→ Returns: ['Categories', 'Products', 'OrderDetails'] with weight 5 each
-```
-
-**Process**:
-1. Embed user query with OpenAI text-embedding-3-small
-2. Search `fewshot_index` collection (top 3 matches)
-3. Parse table names from example SQL queries
-
-#### Source 3: Schema Index Discovery (Weight: 2)
-
-**What**: Semantic search on table descriptions.
-
-**Example**:
-```
-User Query: "Show employee sales performance"
-Schema Search (semantic):
-→ Match: "Employees" table (description mentions "sales representatives")
-→ Match: "Orders" table (description mentions "employee assignments")
-→ Returns: ['Employees', 'Orders'] with weight 2 each
-```
-
-**Process**:
-1. Embed user query
-2. Search `schema_index` collection (top 5 matches)
-3. Return table names
-
-#### 2.2 Re-Ranking & Selection
-
-**Algorithm**:
+If `request.table_override` is non-empty, all discovery is **skipped entirely**:
 ```python
-def rerank_and_select_tables(few_shot_tables, value_tables, schema_tables):
-    scores = {}
-    
-    # Accumulate scores
-    for table in value_tables:
-        scores[table] += 10
-    for table in few_shot_tables:
-        scores[table] += 5
-    for table in schema_tables:
-        scores[table] += 2
-    
-    # Sort by score descending
-    sorted_tables = sorted(scores.items(), key=lambda x: x[1], reverse=True)
-    
-    # Return top 8
-    return [table for table, score in sorted_tables[:8]]
+context = hydrate_override_context(table_override, source_id=selected_source_id)
+# value_mappings = {} (no value lookup), Steps 8/9/10 also skipped
 ```
 
-**Example**:
+### Branch B: Explicit Context
+
+If `request.context` is provided directly (API callers), it is used as-is — discovery is skipped.
+
+### Branch C: Knowledge-Base-First Discovery (default)
+
+#### Step 1 — KB Priority Search
+
+```python
+kb_results = vector_store.search_fewshots_with_threshold(
+    discovery_query, top_k=3, knowledge_type="sql_query", score_threshold=0.5
+)
 ```
-Value Index:   ['Customers', 'Orders']        → +10 each
-Few-Shot:      ['Orders', 'Products']         → +5 each
-Schema:        ['Orders', 'Employees']        → +2 each
 
-Final Scores:
-  Orders: 10 + 5 + 2 = 17 ⭐⭐⭐
-  Customers: 10 = 10 ⭐⭐
-  Products: 5 = 5 ⭐
-  Employees: 2 = 2
+The L2 distance threshold of `0.5` filters out low-quality matches before LLM evaluation.
 
+---
+
+#### Branch 1.1 — KB Hit: LLM Evaluates Relevance
+
+```python
+kb_assessment = llm_service.evaluate_example_relevance(discovery_query, kb_results)
+is_sufficient = kb_assessment.get("is_sufficient", False)
+confidence = kb_assessment.get("confidence", 0.0)
+```
+
+##### Branch 1.1.1 `kb_direct` — High Confidence (confidence ≥ 0.7 and sufficient)
+
+**What happens**:
+1. Extract tables from the best KB example's SQL: `llm_service.extract_tables_from_sql([best_sql])`
+2. Hydrate context using only those tables via `_hydrate_discovery_context_scoped()`
+3. `value_mappings = {}` (value lookup is skipped)
+4. **Steps 8, 9, 10 are all skipped** — generation proceeds immediately
+
+KB-informed adjustments (if any) are injected into the prompt:
+```python
+adjustments = kb_assessment.get("adjustments_needed", [])
+# → Added to prompt as "### KB-INFORMED ADJUSTMENTS"
+```
+
+##### Branch 1.1.2 `kb_gap_fill` — Low Confidence (confidence < 0.7 or not sufficient)
+
+**What happens**:
+1. Start from tables extracted from KB examples
+2. Use `kb_assessment["missing_entities"]`, `["missing_tables"]`, `["suggested_search_terms"]` as gap keywords
+3. For each gap keyword (up to 5): search `schema_index` + `value_index`
+4. Expand value hits with FK relationships: `expand_value_tables_with_relationships()`
+5. Combine and source-filter all tables, then hydrate context
+6. `value_mappings = {}` (value lookup is skipped)
+7. **Steps 8, 9 are skipped; Step 10 runs**
+
+---
+
+#### Branch 1.2 `dual_prong` — No KB Hit
+
+Fallback when no KB results pass the `score_threshold=0.5` threshold.
+
+**Step 1 — NER & Value Discovery**:
+```python
+filter_values = llm_service.extract_filter_values(discovery_query)
+# For each filter value: search value_index
+# Expand results with FK relationship tracing
+value_tables = expand_value_tables_with_relationships(value_tables)
+```
+
+**Step 2 — Few-Shot Discovery** (broader, no threshold):
+```python
+similar_queries = vector_store.search_fewshots(discovery_query, top_k=3, knowledge_type="sql_query")
+few_shot_tables = llm_service.extract_tables_from_sql(few_shot_sqls)
+```
+
+**Step 3 — Schema Index Discovery**:
+```python
+schema_results = _search_schemas_scoped(vector_store, discovery_query, top_k=5, source_id=selected_source_id)
+schema_tables = [f"{s.schema_name}.{s.table_name}" for s in schema_results]
+```
+
+**Step 4 — Re-Rank & Select**:
+```python
+final_table_list = rerank_and_select_tables(few_shot_tables, value_tables, schema_tables)
+```
+
+| Source | Weight |
+|--------|--------|
+| Value Index | 10 |
+| Few-Shot | 5 |
+| Schema Index | 2 |
+
+Example:
+```
+Value Index:  ['dbo.Customers', 'dbo.Orders']     → +10 each
+Few-Shot:     ['dbo.Orders', 'dbo.Products']       → +5 each
+Schema Index: ['dbo.Orders', 'dbo.Employees']      → +2 each
+
+Scores: Orders=17, Customers=10, Products=5, Employees=2
 Selected (top 8): ['Orders', 'Customers', 'Products', 'Employees']
 ```
 
-#### 2.3 Path Finding / Context Expansion
+**Step 5 — Hydrate Context** + **Step 6 — Path Finding**:
+```python
+context = _hydrate_discovery_context_scoped(final_table_list, similar_queries, selected_source_id)
+expanded_list = expand_context_with_neighbors(final_table_list, discovery_query, selected_source_id)
+# LLM identifies "glue tables" — e.g. ['Customers', 'Products'] → adds ['Orders', 'OrderDetails']
+```
 
-**Purpose**: Identify missing "glue tables" needed for joins.
+**Steps 7–10: Full Validation Pipeline runs** (see table below).
+
+---
+
+### Validation Steps (Branch-Dependent)
+
+| Step | `kb_direct` | `kb_gap_fill` | `dual_prong` |
+|------|:-----------:|:-------------:|:------------:|
+| **Step 8**: Schema completeness (`validate_schema_completeness`) | Skip | Skip | Run |
+| **Step 9**: Value index lookup (`lookup_values_for_query`) | Skip | Skip | Run |
+| **Step 10**: Schema sufficiency check | Skip | Run | Run |
+
+#### Step 8 — Schema Completeness Validation
+
+Checks FK dependencies. On failure, auto-discovers missing tables via `perform_discovery()`. If a table still can't be found, the pipeline returns a user-facing error with next steps (e.g., sync the schema).
+
+#### Step 9 — Value Index Lookup
 
 ```python
-# Example:
-Selected Tables: ['Customers', 'Products']
-User Query: "Show customer purchases by product"
-
-Path Finding (LLM):
-→ "To connect Customers and Products, you need: Orders, OrderDetails"
-→ Adds: ['Orders', 'OrderDetails'] to context
+value_mappings = lookup_values_for_query(combined_query, allowed_tables=allowed_tables)
+# Injected into prompt as:
+# ### VERIFIED DATA MAPPINGS
+# - The value(s) 'Canada', 'USA' was found in: [dbo].[Customers].[Country]
 ```
 
-**Process**:
+#### Step 10 — Schema Sufficiency Pre-Flight Check
+
+Controlled by `ENABLE_JOIN_PATH_VALIDATION` config flag (default: `True`):
+
 ```python
-expand_context_with_neighbors(selected_tables, user_query)
-# Uses LLM to suggest intermediate tables
+if use_join_path:
+    sufficiency_result = llm_service.validate_schema_with_join_paths(
+        user_query=discovery_query, schemas=context.relevant_tables, code_type="sql"
+    )  # Checks data existence AND that a valid join path exists between tables
+else:
+    sufficiency_result = llm_service.check_schema_sufficiency(
+        user_query=discovery_query, schemas=context.relevant_tables, code_type="sql"
+    )  # Checks data existence only
 ```
 
-#### 2.4 Schema Completeness Validation
+If `status == "insufficient_data"` or `"insufficient_joins"`:
+1. `expand_context_for_missing_data()` is called with `search_suggestions` (up to 5)
+2. Step 10 re-runs once with the expanded context
+3. If still insufficient, the pipeline returns a structured error listing missing data points and any join path issues
 
-**Purpose**: Ensure all foreign key dependencies are satisfied.
-
-**Example**:
-```
-Selected: ['Orders', 'Customers']
-Orders.CustomerID → FK to Customers.CustomerID ✅
-
-Selected: ['OrderDetails', 'Shippers']
-OrderDetails.OrderID → FK to Orders.OrderID ❌ MISSING!
-
-Action: Auto-discover and add 'Orders' table
-```
-
-**Process**:
-```python
-llm_service.validate_schema_references(schema_context)
-→ Returns: "MISSING_TABLES" or "SCHEMA_COMPLETE"
-
-If missing:
-    - Search vector DB for missing tables
-    - Add to context
-    - Re-validate
-```
-
-#### 2.5 Value Index Lookup
-
-**Purpose**: Include exact categorical values in prompt.
-
-**Example**:
-```
-Query: "Sales in Canada"
-Value Lookup:
-→ Customers.Country: ["Canada", "USA", "Mexico", ...]
-→ Includes in prompt: "For Country, valid values include: 'Canada', 'USA', 'Mexico'"
-```
+If Step 10 succeeds, a `validated_mapping_section` is extracted from `validation_details` and injected directly into the generation prompt as `### VALIDATED MAPPING (use these exact tables/columns)`.
 
 ---
 
 ## Stage 3: Iterative SQL Generation & Validation
 
-**Purpose**: Generate and validate SQL, with automatic error recovery.
+**Purpose**: Generate and validate SQL, with automatic error recovery (max 5 attempts).
 
 ### 3.1 Retry Loop (Max 5 Attempts)
 
 ```python
-# File: app/services/generation_service.py
-# Lines 731-923
+# File: app/services/generation_service.py (Lines 2730+)
 
-for attempt in range(1, 6):
-    # 1. Build context prompt
-    prompt = build_prompt(...)
-    
+for attempt in range(5):
+    # 1. Build context prompt (rebuilt each attempt with updated schema + attempt history)
+    current_prompt = build_prompt(...)
+
     # 2. LLM generates SQL
-    sql = llm_service.generate_sql_with_context(prompt)
-    
-    # 3. Validate with database
-    is_valid, error_msg, missing_objects = validate_sql_with_db(sql)
-    
+    sql = llm_service.generate_sql_with_context(combined_query, current_prompt)
+
+    # 3. Check for special validation errors (TABLE_VALIDATION_ERROR / COLUMN_VALIDATION_ERROR)
+    is_special_error, error_text, special_missing = parse_validation_error(sql)
+
+    # 4. Validate with database (SET NOEXEC ON)
+    if not is_special_error:
+        is_valid, error_msg, missing_cols = validate_sql_with_db(sql, source_id=selected_source_id)
+
     if is_valid:
-        return sql  # SUCCESS!
-    
-    # 4. Intelligent recovery
-    recovery_strategy = determine_recovery(error_msg, missing_objects)
-    add_to_context_history(attempt, error_msg, recovery_strategy)
+        yield GenerateSQLResponse(sql=sql, discovery_branch=..., ...)
+        return
+
+    # 5. Intelligent recovery + append to current_context_history
+    ...
 ```
 
 ### 3.2 Context Prompt Construction
 
-**Components** (Lines 764-819):
+The prompt is rebuilt **each attempt** and includes the following sections:
 
-1. **Database Info**:
-   ```
-   DATABASE: Northwind
-   DESCRIPTION: Sales database for imported and exported specialty foods
-   KEYWORDS: sales, customers, orders, products
-   ```
+```
+{database_info}
 
-2. **Query Analysis**:
-   ```
-   USER REQUEST: Show monthly revenue for 2024
-   COMPLEXITY: moderate
-   ENTITIES: revenue, 2024
-   DATE RANGES: 2024-01-01 to 2024-12-31
-   ```
+### QUERY ANALYSIS
+Complexity Level: {query_complexity}
+Extracted Entities: {entities}
+Date Ranges: {date_ranges}
 
-3. **Knowledge Base Examples** (filtered by complexity):
-   ```
-   EXAMPLE 1:
-   Question: What is total revenue by month?
-   SQL: SELECT MONTH(OrderDate), SUM(Quantity * UnitPrice) ...
-   ```
+### KNOWLEDGE BASE EXAMPLES
+{reference_text}          ← KB examples matched to same complexity level (top 3)
+{value_context}           ← ### VERIFIED DATA MAPPINGS (from value index, top 5 columns)
 
-4. **Verified Data Mappings** (from value index):
-   ```
-   VERIFIED VALUES:
-   - Customers.Country: 'Canada', 'USA', 'Mexico', ...
-   - Products.CategoryID: 1, 2, 3, 4, 5, ...
-   ```
+{db_objects_context}      ← Only if request.database_objects provided
+{editor_context}          ← Only if editor_mode="debug" or "optimize"
+{context_guard}           ← Only if table_override active
+{validated_mapping_section} ← Only if Step 10 found validated column mappings
 
-5. **Database Schema** (with full column descriptions):
-   ```markdown
-   ### Orders (dbo.Orders)
-   Customer orders with shipping details
-   
-   | Column | Type | Description |
-   |--------|------|-------------|
-   | OrderID | int | Primary key |
-   | CustomerID | nchar(5) | FK to Customers.CustomerID |
-   | OrderDate | datetime | Date order was placed |
-   ...
-   ```
+### AVAILABLE SCHEMAS (table names and column lists — use only these)
+{schema_text}
 
-6. **Attempt History** (on retries):
-   ```
-   PREVIOUS ATTEMPTS:
-   
-   Attempt 1:
-   SQL: SELECT * FROM orders WHERE ...
-   Error: Invalid object name 'orders' (should be 'Orders' with capital O)
-   Recovery: Check table name case sensitivity
-   ```
+### REASONING PROCESS
+1. Decomposition  2. Variable Mapping  3. Drafting  4. Joins & Bridges  5. Final Selection
 
-7. **Critical SQL Rules**:
-   ```
-   - Use table aliases to avoid ambiguous columns
-   - Use CAST() for type conversions
-   - Qualify all columns with table aliases
-   - Use square brackets for reserved words
-   ```
+### VIEW HANDLING
+(prefer base tables over view variants)
+
+{scripting_instruction}   ← Varies by complexity (see below)
+
+### ATTEMPT HISTORY
+First attempt.  (or previous failures on retries)
+
+## CRITICAL SQL RULES (1–8)
+...
+
+Target Request: {combined_query}
+```
+
+#### Knowledge Base Examples (complexity-matched)
+
+KB examples are filtered to prefer those whose complexity matches the current query:
+```python
+for sq in context.similar_queries:
+    sq_complexity = score_query_complexity(sq.get("question", ""))
+    if sq_complexity == query_complexity or not complexity_relevant_queries:
+        complexity_relevant_queries.append(sq)
+```
+
+If `discovery_branch == "kb_direct"`, KB-informed adjustments are appended:
+```
+### KB-INFORMED ADJUSTMENTS
+- Change date filter from 2023 to 2024
+- Add GROUP BY ProductCategory
+Use the reference SQL as your starting point and apply these adjustments.
+```
+
+#### Scripting Authorization (complexity-dependent)
+
+| Complexity | Scripting Instruction Added |
+|---|---|
+| `complex` | Full T-SQL scripting enabled: `SET NOCOUNT ON`, `DECLARE @vars`, `#TempTables`, `DROP TABLE IF EXISTS` |
+| `moderate` | CTEs or `DECLARE` acceptable if they improve clarity |
+| `simple` | None (single-query expected) |
+
+#### Editor Mode Context
+
+```python
+if editor_mode == "debug":
+    editor_context = "### EDITOR MODE\nAn error is attached; identify the root cause and provide a corrected version.\n"
+    editor_context += f"### ERROR\n{request.error_message}\n"
+    editor_context += f"### EXISTING CODE\n{existing_code}\n"
+elif editor_mode == "optimize":
+    editor_context = "### EDITOR MODE\nNo error attached; optimize or extend the logic based on the user request.\n"
+    editor_context += f"### EXISTING CODE\n{existing_code}\n"
+```
+
+If `request.is_user_code` is set, a note is added: *"Code was manually written by the user. Preserve their style and intent."*
 
 ### 3.3 SQL Generation (LLM)
 
 ```python
-sql = llm_service.generate_sql_with_context(
-    user_query=request.query,
-    context_prompt=prompt,
-    temperature=0  # Deterministic for consistency
-)
+sql = llm_service.generate_sql_with_context(combined_query, current_prompt)
 ```
 
 **LLM Configuration**:
-- Model: `gpt-4o` (configurable)
-- Temperature: `0` (no creativity, strict SQL)
-- Max tokens: ~2000
+- Model: Configurable via `agent_settings` (default `gpt-4o` or `LLM_MODEL` env var)
+- Temperature: `0.0` — deterministic, no creativity
+- Output: Raw T-SQL wrapped in a `/* explanation */` comment block, then the SQL script
 
-### 3.4 Database Validation
+### 3.4 Dual Validation
 
 ```python
-# File: app/services/validation_service.py
-# Function: validate_sql_with_db()
+# Phase 1: Parse special LLM-generated validation errors
+is_special_error, error_text, special_missing = parse_validation_error(sql)
+# Catches: TABLE_VALIDATION_ERROR: Cannot find table [X]
+#          COLUMN_VALIDATION_ERROR: Cannot find column [X]
 
-def validate_sql_with_db(sql):
-    engine = get_db_engine()
-    with engine.connect() as conn:
-        conn.execute(text("SET NOEXEC ON"))  # Parse-only mode
-        try:
-            conn.execute(text(sql))
-            return True, "", []  # Valid!
-        except Exception as e:
-            return False, str(e), parse_missing_objects(e)
-        finally:
-            conn.execute(text("SET NOEXEC OFF"))
+# Phase 2: Database parse-check (only if not a special error)
+is_valid, error_msg, missing_cols = validate_sql_with_db(sql, source_id=selected_source_id)
+# Uses SET NOEXEC ON — parses without executing, no data modified
 ```
-
-**Validation Method**: SQL Server's `SET NOEXEC ON`
-- Parses SQL without executing
-- Catches syntax errors, invalid objects, type mismatches
-- **No data modified** during validation
 
 ### 3.5 Intelligent Recovery Strategies
 
-#### Recovery 1: Missing Object Search
+#### Recovery 1: Special Validation Error (LLM self-reported)
 
-**Error**: `Invalid object name 'dbo.ProductCategories'`
+**Error**: `TABLE_VALIDATION_ERROR: Cannot find table [ProductCategories]`
 
 **Strategy**:
 ```python
-# Search vector DB for missing table
-results = vector_store.search_schemas("ProductCategories")
-→ Finds: 'Categories' table
+for missing_obj in missing_cols:
+    disc_res = perform_discovery(DiscoveryRequest(query=missing_obj, top_k=5, source_id=...))
+    # Add newly discovered tables to context
+    # Also do a broader search: f"{request.query} {missing_obj}"
 
-# Add to discovery context
-add_table_to_context('Categories')
-add_to_prompt("Did you mean 'Categories' instead of 'ProductCategories'?")
+if no new tables found:
+    return error asking user for more information (stops retrying)
 ```
 
-#### Recovery 2: Ambiguous Column Fix
+#### Recovery 2: Database Validation Error with Missing Objects
+
+**Error**: `Invalid object name 'dbo.ProductCategories'`
+
+Same discovery-then-retry strategy as above. Broader search is performed to find related tables.
+
+#### Recovery 3: Ambiguous Column Fix
+
+**Error**: `Ambiguous column name 'Name'`
+
+```python
+recovery_instruction = f"Self-Correction: {error_msg}\n" \
+    "Re-examine the join logic and ensure all columns are properly qualified with table aliases."
+```
+
+#### Recovery 4: Type Mismatch Correction
+
+**Error**: `Conversion failed when converting varchar to int`
+
+```python
+recovery_instruction = f"Type Mismatch: {error_msg}\n" \
+    "Ensure data types match in comparisons. Use CAST() when necessary."
+```
+
+#### Attempt History Injection
+
+Each failed attempt is recorded and appended to the next prompt:
+```
+### PREVIOUS ATTEMPTS (Learn from these errors)
+Attempt 1:
+User Request: ...
+Failed Script:
+<generated SQL>
+
+Error Message:
+<SQL Server error>
+
+Recovery Strategy:
+<recovery_instruction>
+```
+
+The full failed script is included (not just the error) so the LLM can see variable/temp table context from prior attempts.
+
+### 3.6 Final Output
+
+On success:
+```python
+GenerateSQLResponse(
+    sql=sql,
+    explanation="The following code might be able to retrieve the data you requested.",
+    query_type="database",
+    context_text=current_prompt,
+    context_history=current_context_history,
+    discovery_branch=discovery_branch,  # "kb_direct" / "kb_gap_fill" / "dual_prong" / "table_override" / "system_catalog"
+    source_id=selected_source_id
+)
+```
+
+After 5 failed attempts:
+```python
+GenerateSQLResponse(
+    sql="",
+    explanation=f"Failed after 5 attempts. Final error: {error_msg}. Please try rephrasing your query.",
+    ...
+)
+```
 
 **Error**: `Ambiguous column name 'Name'`
 
@@ -975,72 +1132,86 @@ Return ExecuteSQLResponse
 ## Key Services Reference
 
 ### Generation Service
-**File**: `app/services/generation_service.py` (1,030 lines)
+**File**: `app/services/generation_service.py` (~3,000+ lines)
 
 **Key Functions**:
-- `generate_sql_for_request()` - Main SQL generation pipeline (Lines 411-933)
-- `regenerate_sql_with_error_feedback()` - Lightweight retry regeneration (Lines 945-1030)
-- `rerank_and_select_tables()` - Multi-source re-ranking (Lines 33-60)
-- `expand_context_with_neighbors()` - Path finding (Lines 95-127)
+- `generate_sql_for_request()` - Main SQL generation pipeline (Lines 1756+)
+- `rerank_and_select_tables()` - Multi-source re-ranking (value/few-shot/schema weighted scoring)
+- `expand_context_with_neighbors()` - Path finding (LLM suggests glue tables)
+- `hydrate_override_context()` - Context hydration for user-pinned tables
+- `_hydrate_discovery_context_scoped()` - Context hydration scoped to a source
+- `_search_schemas_scoped()` - Source-aware schema index search
+- `expand_value_tables_with_relationships()` - FK-traced expansion of value index hits
+- `expand_context_for_missing_data()` - Post-Step-10 context expansion
+- `_handle_general_query()` - Off-topic LLM response
+- `planning_conversation()` - Plan mode handler
+- `search_data_objects()` - Search mode handler
+- `build_system_catalog_prompt()` - System metadata SQL prompt builder
 
 ### Validation Service
-**File**: `app/services/validation_service.py` (292 lines)
+**File**: `app/services/validation_service.py`
 
 **Key Functions**:
-- `validate_sql_with_db()` - Parse-only validation with `SET NOEXEC ON` (Lines 5-65)
-- `execute_sql_query()` - Actual SQL execution with profiling (Lines 158-292)
-- `_serialize_sql_results()` - Convert SQL types to JSON (Lines 90-127)
-- `_fetch_all_result_sets()` - Handle multiple result sets (Lines 130-155)
+- `validate_sql_with_db()` - Parse-only validation with `SET NOEXEC ON`
+- `execute_sql_query()` - Actual SQL execution with timeout & row limits
+- `_serialize_sql_results()` - Convert SQL types to JSON (datetime, Decimal, bytes)
+- `_fetch_all_result_sets()` - Handle multiple SELECT result sets
 
 ### LLM Service
-**File**: `app/services/llm_service.py` (816 lines)
-
-**Implementations**:
-- `OpenAILLMService` - Direct OpenAI SDK (Lines 40-411)
-- `LiteLLMService` - Multi-provider via LiteLLM (Lines 412-786)
+**File**: `app/services/llm_service.py`
 
 **Key Methods**:
-- `generate_sql_with_context()` - SQL generation (Lines 186-219, 544-577)
-- `validate_schema_references()` - FK completeness check (Lines 88-184, 468-542)
-- `suggest_intermediate_tables()` - Path finding (Lines 343-386, 714-760)
-- `extract_filter_values()` - Value extraction (Lines 388-410, 762-786)
+- `generate_sql_with_context()` - T-SQL generation (temperature=0)
+- `evaluate_example_relevance()` - KB example relevance assessment (returns `is_sufficient`, `confidence`, `adjustments_needed`, `missing_entities`)
+- `validate_schema_with_join_paths()` - Schema sufficiency + join path validation
+- `check_schema_sufficiency()` - Schema sufficiency only (no join path check)
+- `extract_filter_values()` - NER-based filter value extraction
+- `extract_tables_from_sql()` - Extract table references from SQL strings
+- `classify_query_intent()` - 3-way intent classification (data_query / system_metadata / off_topic)
 
 ### Discovery Service
-**File**: `app/services/discovery_service.py` (33 lines)
+**File**: `app/services/discovery_service.py`
 
-**Key Function**:
-- `perform_discovery()` - Schema + few-shot search (Lines 4-32)
+**Key Functions**:
+- `perform_discovery()` - Schema + few-shot search (used in error recovery)
+- `perform_value_index_search()` - Value index search with FK relationship tracing
+
+### Skills Service
+**File**: `app/services/skills_service.py`
+
+**Key Methods**:
+- `load_data_sources_index()` - Load all registered data sources
+- `load_primary_data_source()` - Load the primary/default data source
+- Data source objects carry `.name`, `.description`, `.keywords`, `.source_id`
 
 ### Profiling Service
-**File**: `app/services/profiling_service.py` (290 lines)
+**File**: `app/services/profiling_service.py`
 
 **Key Class**: `ProfilingService`
-- `profile_dataframe()` - Generate DataProfile (Lines 22-180)
+- `profile_dataframe()` - Generate DataProfile
 - Profiling levels: `basic`, `distribution`, `relationship`
 
 ### Insight Service
-**File**: `app/services/insight_service.py` (368 lines)
 
+## Configuration Options
 **Key Class**: `InsightService`
-- `generate_insights()` - Hybrid rule-based + LLM (Lines 19-150)
+- `generate_insights()` - Hybrid rule-based + LLM
 - Insight types: `outlier`, `trend`, `correlation`, `missing_data`, `distribution`, `recommendation`
 
 ### Visualization Service
-**File**: `app/services/visualization_service.py` (420 lines)
+**File**: `app/services/visualization_service.py`
 
 **Key Class**: `VisualizationService`
-- `get_chart_recommendation()` - Optimal chart selection (Lines 17-70)
+- `get_chart_recommendation()` - Optimal chart selection
 - Supports 12 chart types: bar, line, pie, scatter, column variants, area, radar, treemap, funnel
 
 ---
 
 ## API Endpoints
-
 ### 1. Generate SQL (Parse-Only)
 
 ```http
-POST /api/v1/generate-sql
-Content-Type: application/json
+### Insight Service
 X-API-Key: your-api-key
 
 {

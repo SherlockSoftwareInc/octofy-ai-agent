@@ -705,16 +705,20 @@ export const api = {
                 params: sourceId ? { source_id: sourceId } : {}
             });
         },
-        getSchemaStatus: async (includeDbInspection: boolean = false): Promise<AdminSchemaStatus[]> => {
-            const params = includeDbInspection ? { include_db_inspection: 'true' } : {};
+        getSchemaStatus: async (includeDbInspection: boolean = false, sourceId?: string): Promise<AdminSchemaStatus[]> => {
+            const params: Record<string, string> = {};
+            if (includeDbInspection) params.include_db_inspection = 'true';
+            if (sourceId) params.source_id = sourceId;
             const response = await axios.get(`${API_BASE_URL}/admin/schema/status`, { params });
-            return response.data;
+            const rows = Array.isArray(response.data) ? response.data : [];
+            return rows.map(normalizeAdminSchemaStatus);
         },
-        inspectDatabase: async (): Promise<AdminSchemaStatus[]> => {
-            const response = await axios.get(`${API_BASE_URL}/admin/schema/status`, {
-                params: { include_db_inspection: 'true' }
-            });
-            return response.data;
+        inspectDatabase: async (sourceId?: string): Promise<AdminSchemaStatus[]> => {
+            const params: Record<string, string> = { include_db_inspection: 'true' };
+            if (sourceId) params.source_id = sourceId;
+            const response = await axios.get(`${API_BASE_URL}/admin/schema/status`, { params });
+            const rows = Array.isArray(response.data) ? response.data : [];
+            return rows.map(normalizeAdminSchemaStatus);
         },
         getSchemaTemplate: async () => {
             const response = await axios.get(`${API_BASE_URL}/admin/schema/template`, {
@@ -1156,7 +1160,23 @@ export const api = {
         deleteExcludeObjects: async (sourceId: string): Promise<{ status: string; message: string }> => {
             const response = await axios.delete(`${API_BASE_URL}/admin/data-sources/${encodeURIComponent(sourceId)}/exclude-objects`);
             return response.data;
-        }
+        },
+        reloadVectors: async (sourceId: string): Promise<{ status: string; message: string; folder?: string }> => {
+            const response = await axios.post(`${API_BASE_URL}/admin/skills/rebuild/${encodeURIComponent(sourceId)}`);
+            return response.data;
+        },
+        getReloadStatus: async (sourceId: string): Promise<{
+            status: string;
+            message: string;
+            objects?: number;
+            groups?: number;
+            qas?: number;
+            folder?: string;
+            errors?: string[];
+        }> => {
+            const response = await axios.get(`${API_BASE_URL}/admin/skills/rebuild-status/${encodeURIComponent(sourceId)}`);
+            return response.data;
+        },
     },
 
     // Schema Tree Navigation (V2 Multi-Source)
@@ -1311,11 +1331,27 @@ export interface ValueIndexItem {
 export interface AdminSchemaStatus {
     schema_name: string;
     table_name: string;
-    table_type?: string;  // 'table' or 'view'
+    object_name?: string;
+    object_type?: string;
+    table_type?: string;
+    entity_type?: string;
     is_indexed: boolean;
     description?: string;
     column_count: number;
     last_updated?: string;
+    source_id?: string;
+}
+
+function normalizeAdminSchemaStatus(row: AdminSchemaStatus): AdminSchemaStatus {
+    const objectName = row.object_name || row.table_name;
+    const objectType = (row.object_type || row.table_type || 'table').toLowerCase();
+    return {
+        ...row,
+        object_name: objectName,
+        table_name: objectName,
+        object_type: objectType,
+        table_type: objectType,
+    };
 }
 
 export interface FewShotItem {

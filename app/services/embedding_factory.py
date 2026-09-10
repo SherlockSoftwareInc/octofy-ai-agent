@@ -73,7 +73,7 @@ class EmbeddingFactory:
                     "Set EMBEDDING_API_KEY or LLM_API_KEY, or provide base_url for local endpoints."
                 )
 
-        client = OpenAI(api_key=api_key, base_url=base_url)
+        client = OpenAI(api_key=api_key, base_url=base_url, timeout=60.0)
         
         def get_embedding(text: str) -> List[float]:
             # Validate input

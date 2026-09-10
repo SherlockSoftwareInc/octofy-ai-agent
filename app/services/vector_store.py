@@ -58,10 +58,10 @@ class VectorStoreBase(ABC):
     @abstractmethod
     def insert_fewshot_item(self, question: str, sql_query: str, knowledge_type: str = "sql_query", source_guid: str = None):
         pass
-        
-    @abstractmethod
+
     def delete_fewshot_item(self, item_id: int):
-        pass
+        """Delete a few-shot row. Concrete default so SQL generation can start even if a subclass omits it."""
+        return None
 
     @abstractmethod
     def clear_fewshots_collection(self, source_id: Optional[str] = None):
@@ -181,9 +181,9 @@ class MilvusVectorStore(VectorStoreBase):
         try:
             if utility.has_collection(settings.MILVUS_COLLECTION_VALUES):
                 existing = Collection(settings.MILVUS_COLLECTION_VALUES)
-                
-                # Check Dimensions
                 fields = {f.name: f for f in existing.schema.fields}
+                if "pk" in fields and "data_source_id" in fields:
+                    return
                 if "embedding" in fields:
                     dim = fields["embedding"].params.get("dim")
                     if dim and int(dim) != self._embedding_dim:
@@ -562,7 +562,7 @@ class MilvusVectorStore(VectorStoreBase):
 
         return schemas
     
-    def search_fewshots(self, query: str, top_k: int = 3, knowledge_type: Optional[str] = None) -> List[Dict[str, Any]]:
+    def search_fewshots(self, query: str, top_k: int = 3, knowledge_type: Optional[str] = None, source_id: Optional[str] = None) -> List[Dict[str, Any]]:
         """Search few-shot examples, optionally filtered by knowledge_type."""
         if not self._connected:
             return []
@@ -578,10 +578,12 @@ class MilvusVectorStore(VectorStoreBase):
             "params": {"nprobe": 64}
         }
         
-        # Build filter expression if knowledge_type is specified
-        filter_expr = None
+        clauses = []
         if knowledge_type:
-            filter_expr = f'knowledge_type == "{knowledge_type}"'
+            clauses.append(f'knowledge_type == "{knowledge_type}"')
+        if source_id:
+            clauses.append(f'source_guid == "{source_id}"')
+        filter_expr = " && ".join(clauses) if clauses else None
         
         results = collection.search(
             data=[embedding],
@@ -641,7 +643,7 @@ class MilvusVectorStore(VectorStoreBase):
         
         return filtered
     
-    def search_values(self, query: str, top_k: int = 5) -> List[Dict[str, Any]]:
+    def search_values(self, query: str, top_k: int = 5, source_id: Optional[str] = None) -> List[Dict[str, Any]]:
         """
         Search for values using plain text matching.
         Retrieves all values and filters in Python for accurate substring matching.
@@ -649,6 +651,7 @@ class MilvusVectorStore(VectorStoreBase):
         Args:
             query: Search term to match against values (case-insensitive)
             top_k: Maximum number of results to return
+            source_id: Optional data source partition filter
             
         Returns:
             List of matching value items
@@ -664,8 +667,9 @@ class MilvusVectorStore(VectorStoreBase):
         # Retrieve all values (Milvus LIKE doesn't support wildcards properly)
         # We'll filter in Python for accurate substring matching
         try:
+            expr = f'source_guid == "{source_id}"' if source_id else "id >= 0"
             all_results = collection.query(
-                expr="id >= 0",  # Get all records
+                expr=expr,
                 output_fields=['id', 'value', 'plain_value', 'schema_name', 'table_name', 'column_name'],
                 limit=16384  # Milvus default max limit
             )
@@ -710,11 +714,19 @@ class MilvusVectorStore(VectorStoreBase):
         
         # Use empty expr for better performance (no filter scan)
         # Increase limit to handle larger schema collections
-        res = collection.query(
-            expr="",  # Empty expr is faster than "id > 0" or "id >= 0"
-            output_fields=["schema_name", "table_name", "table_type", "description"],
-            limit=16384  # Milvus max limit for better coverage
-        )
+        output_fields = ["schema_name", "table_name", "table_type", "description"]
+        try:
+            res = collection.query(
+                expr="id >= 0",
+                output_fields=output_fields + ["source_guid"],
+                limit=16384,
+            )
+        except Exception:
+            res = collection.query(
+                expr="id >= 0",
+                output_fields=output_fields,
+                limit=16384,
+            )
         
         schemas = []
         for r in res:
@@ -724,7 +736,8 @@ class MilvusVectorStore(VectorStoreBase):
                     table_name=r.get('table_name'),
                     table_type=r.get('table_type', 'table'),
                     description=r.get('description'),
-                    columns=[]
+                    columns=[],
+                    source_guid=r.get('source_guid'),
                 ))
              except: pass
         return schemas
@@ -1090,7 +1103,15 @@ class MilvusVectorStore(VectorStoreBase):
         
         collection.insert(data)
         collection.flush()
-        
+        try:
+            from app.services.stores.bundle import build_source_stores
+            from app.services.source_resolver import resolve_or_primary
+
+            source_id = resolve_or_primary(resolved_source_guid)
+            build_source_stores(source_id).fewshots.upsert(question, sql_query)
+        except Exception:
+            pass
+
     def delete_fewshot_item(self, item_id: int):
         if not self._connected:
             return
@@ -1098,11 +1119,9 @@ class MilvusVectorStore(VectorStoreBase):
             return
         collection = Collection(settings.MILVUS_COLLECTION_FEWSHOT)
         collection.load()
-        # Use string expression for deletion
         expr = f"id in [{item_id}]"
         collection.delete(expr)
         collection.flush()
-        # Release and reload to ensure consistency
         collection.release()
         collection.load()
 
@@ -1474,10 +1493,10 @@ class NullVectorStore(VectorStoreBase):
     def search_schemas(self, query: str, top_k: int = 5) -> List[TableSchema]:
         return []
 
-    def search_fewshots(self, query: str, top_k: int = 3, knowledge_type: Optional[str] = None) -> List[Dict[str, Any]]:
+    def search_fewshots(self, query: str, top_k: int = 3, knowledge_type: Optional[str] = None, source_id: Optional[str] = None) -> List[Dict[str, Any]]:
         return []
 
-    def search_values(self, query: str, top_k: int = 5) -> List[Dict[str, Any]]:
+    def search_values(self, query: str, top_k: int = 5, source_id: Optional[str] = None) -> List[Dict[str, Any]]:
         return []
 
     def get_all_schemas(self) -> List[TableSchema]:
@@ -1553,6 +1572,12 @@ def get_vector_store() -> VectorStoreBase:
     if not settings.VECTOR_DB_ENABLED:
         return NullVectorStore()
     if _vector_store_instance is None:
+        missing = getattr(MilvusVectorStore, "__abstractmethods__", frozenset()) or frozenset()
+        if missing:
+            raise TypeError(
+                "MilvusVectorStore is missing implementations for: "
+                + ", ".join(sorted(missing))
+            )
         _vector_store_instance = MilvusVectorStore()
     return _vector_store_instance
 
