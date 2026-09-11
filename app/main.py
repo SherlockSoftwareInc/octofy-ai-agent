@@ -7,7 +7,6 @@ from app.api.endpoints import (
     data_sources, schema_tree, users, conversations,
     admin_semantic, admin_precomputed, admin_skills_import,
 )
-from app.services.ingest_service import create_milvus_collections, ingest_metadata
 from app.services.vector_store import get_vector_store
 
 import warnings
@@ -113,21 +112,15 @@ async def startup_event():
         return
     try:
         logger.info("Checking Vector Database Schema Index...")
+        from app.services.stores.provider_factory import get_vector_provider
+        get_vector_provider()
         vector_store = get_vector_store()
         schemas = vector_store.get_all_schemas()
         
         if not schemas:
-            logger.info("Schema index is empty or does not exist. Initiating auto-ingestion...")
-            try:
-                # Ensure collections exist
-                create_milvus_collections()
-                # Ingest metadata
-                ingest_metadata()
-                logger.info("Auto-ingestion complete.")
-            except Exception as e:
-                logger.error(f"Auto-ingestion failed: {e}")
+            logger.info("Schema index is empty. Skipping auto-ingestion; import a skills folder or run admin sync.")
         else:
-            logger.info(f"Schema index contains {len(schemas)} items. Skipping auto-ingestion.")
+            logger.info(f"Schema index contains {len(schemas)} items.")
             
     except Exception as e:
         logger.error(f"Error during startup check: {e}")

@@ -248,7 +248,7 @@ def get_all_values() -> List[Dict[str, Any]]:
         print(f"Error retrieving values: {e}")
         return []
 
-def delete_value_item(value_id: int) -> bool:
+def delete_value_item(value_id: str) -> bool:
     """
     Delete a single value item from the index.
     """

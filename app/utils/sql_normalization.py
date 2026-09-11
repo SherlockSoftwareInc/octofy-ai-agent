@@ -10,6 +10,10 @@ _COMMENT_LINE = re.compile(r"--.*?$", re.MULTILINE)
 _STRING_LITERAL = re.compile(r"(N?'(?:''|[^'])*')", re.IGNORECASE)
 _ALIAS = re.compile(r"\b(AS)\s+[A-Za-z_][\w]*", re.IGNORECASE)
 _WHITESPACE = re.compile(r"\s+")
+_SQL_IDENT = r"(?:\[[^\]]+\]|[A-Za-z_][\w]*)"
+_FROM_JOIN_OBJECT = re.compile(
+    rf"(?is)\b(?:from|join)\s+({_SQL_IDENT}(?:\s*\.\s*{_SQL_IDENT})*)"
+)
 
 
 def strip_reasoning_header(sql: str) -> str:
@@ -41,3 +45,20 @@ def normalize_for_hash(sql: str) -> str:
 def structural_sql_hash(sql: str) -> str:
     normalized = normalize_for_hash(sql)
     return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+
+def extract_sql_object_refs(sql: str) -> list:
+    """Return schema.object names from FROM/JOIN, including bracketed names with spaces."""
+    refs = []
+    seen = set()
+    for match in _FROM_JOIN_OBJECT.finditer(sql or ""):
+        parts = [p.strip().strip("[]") for p in re.split(r"\s*\.\s*", match.group(1)) if p.strip()]
+        if not parts:
+            continue
+        qualified = ".".join(parts[-2:]) if len(parts) >= 2 else parts[0]
+        key = qualified.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        refs.append(qualified)
+    return refs

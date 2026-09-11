@@ -6,6 +6,7 @@ from typing import List, Optional, Tuple
 
 from app.core.errors import ErrorCategory
 from app.services.sql_error_classifier import SqlErrorClassifier
+from app.utils.sql_normalization import extract_sql_object_refs
 
 
 class SqlValidator:
@@ -56,15 +57,14 @@ class SqlValidator:
             return False, str(exc), []
 
     def _out_of_scope(self, sql: str, allowed: List[str]) -> Optional[str]:
-        import re
-
         allowed_set = {a.lower().replace("[", "").replace("]", "") for a in allowed}
-        refs = re.findall(r"(?:from|join)\s+(\[?\w+\]?\.\[?\w+\]?)", sql or "", flags=re.IGNORECASE)
+        allowed_names = {a.split(".")[-1] for a in allowed_set}
         missing = []
-        for ref in refs:
-            norm = ref.replace("[", "").replace("]", "").lower()
-            if allowed_set and norm not in allowed_set and norm.split(".")[-1] not in {a.split(".")[-1] for a in allowed_set}:
-                missing.append(ref)
+        for ref in extract_sql_object_refs(sql):
+            norm = ref.lower().replace("[", "").replace("]", "")
+            if norm in allowed_set or norm.split(".")[-1] in allowed_names:
+                continue
+            missing.append(ref)
         if missing:
             return "TABLE_VALIDATION_ERROR: " + ", ".join(missing)
         return None

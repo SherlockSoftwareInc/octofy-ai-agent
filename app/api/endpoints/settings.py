@@ -302,7 +302,6 @@ def verify_settings(current_user: User = Depends(get_current_active_admin)):
     # 3. Verify Milvus (Vector Store)
     try:
         from pymilvus import connections, utility
-        from app.core.config import settings as app_settings
         
         milvus_host = settings_obj.vector_config.host
         milvus_port = settings_obj.vector_config.port
@@ -312,9 +311,9 @@ def verify_settings(current_user: User = Depends(get_current_active_admin)):
         
         # Check Collections
         required_collections = [
-            app_settings.MILVUS_COLLECTION_SCHEMA,
-            app_settings.MILVUS_COLLECTION_FEWSHOT,
-            app_settings.MILVUS_COLLECTION_VALUES
+            "schemas",
+            "few_shots",
+            "value_index",
         ]
         
         missing_collections = []

@@ -869,6 +869,20 @@ function AuthenticatedApp() {
 
       if (result.query_type === 'plan') {
         // Already handled above - do nothing more
+      } else if (result.success === false) {
+        const aiMessage: ChatMessage = {
+          id: generateMessageId(),
+          role: 'assistant',
+          type: 'ai',
+          content: result.explanation || 'SQL generation did not succeed.',
+          timestamp: new Date(),
+          sqlResult: result,
+          queryType: 'database',
+          sourceQuery: currentQuery
+        };
+        updateConversation(conversationId, {
+          messages: [...currentMessages, aiMessage],
+        });
       } else if (result.query_type === 'database' || result.query_type === 'r_code' || result.query_type === 'sas_code' || result.query_type === 'python_code') {
         // For database/R/SAS/Python queries, also get discovery context for display (only for SQL really, but safe to ignore)
         let context = undefined;

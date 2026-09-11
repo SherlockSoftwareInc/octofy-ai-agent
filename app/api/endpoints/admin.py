@@ -562,16 +562,9 @@ def add_fewshot(item: FewShotItem, current_user: User = Depends(get_current_acti
         vector_store.insert_fewshot_item(
             item.question, 
             item.sql_query, 
-            item.knowledge_type if item.knowledge_type else "sql_query"
+            item.knowledge_type if item.knowledge_type else "sql_query",
+            source_guid=getattr(item, "source_id", None),
         )
-        try:
-            from app.services.source_resolver import resolve_or_primary
-            from app.services.stores.bundle import build_source_stores
-            source_id = resolve_or_primary(getattr(item, "source_id", None))
-            stores = build_source_stores(source_id)
-            stores.fewshots.upsert(item.question, item.sql_query)
-        except Exception:
-            pass
         return {"status": "success"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -580,7 +573,7 @@ def add_fewshot(item: FewShotItem, current_user: User = Depends(get_current_acti
 def delete_fewshot(item_id: str, current_user: User = Depends(get_current_active_admin)):
     try:
         vector_store = get_vector_store()
-        vector_store.delete_fewshot_item(int(item_id))
+        vector_store.delete_fewshot_item(item_id)
         return {"status": "success"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -748,7 +741,7 @@ def get_values(current_user: User = Depends(get_current_active_admin)):
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.delete("/values/{item_id}")
-def delete_value(item_id: int, current_user: User = Depends(get_current_active_admin)):
+def delete_value(item_id: str, current_user: User = Depends(get_current_active_admin)):
     """
     Delete a specific value item from the index.
     """

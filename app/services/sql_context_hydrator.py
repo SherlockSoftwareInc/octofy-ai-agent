@@ -88,9 +88,14 @@ class SqlContextHydrator:
         )
 
     def _fallback_markdown(self, obj: ScoredObject, dbms: str) -> str:
+        desc = obj.description or ""
+        if " | Description: " in desc:
+            desc = desc.split(" | Description: ", 1)[1]
+        if desc.lstrip().startswith("#") or "## Columns" in desc:
+            return desc
         cols = ", ".join(obj.matched_columns) if obj.matched_columns else ""
         extra = f"\nColumns of interest: {cols}" if cols else ""
-        return f"{quote_qualified(obj.schema_name, obj.object_name, dbms)} ({obj.object_type}){extra}\n{obj.description or ''}"
+        return f"{quote_qualified(obj.schema_name, obj.object_name, dbms)} ({obj.object_type}){extra}\n{desc}"
 
     def _prune_columns(self, markdown: str, keep: Sequence[str]) -> str:
         if not keep:

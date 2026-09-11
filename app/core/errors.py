@@ -42,6 +42,21 @@ def wrap_failure_sql_comment(message: str) -> str:
     return f"/*\n{body}\n*/"
 
 
+def wrap_failure_python_comment(message: str) -> str:
+    lines = (message or "").replace("\r\n", "\n").split("\n")
+    return "\n".join(f"# {line}" if line else "#" for line in lines)
+
+
+def apply_language_result(result: BuiltInGenerateResult, target_language: str) -> BuiltInGenerateResult:
+    if target_language != "python":
+        return result
+    if result.query_type == "database":
+        result.query_type = "python_code"
+    if not result.success and (result.sql or "").lstrip().startswith("/*"):
+        result.sql = wrap_failure_python_comment(result.message or result.explanation or "")
+    return result
+
+
 def build_detailed_failure_result(
     *,
     message: str,

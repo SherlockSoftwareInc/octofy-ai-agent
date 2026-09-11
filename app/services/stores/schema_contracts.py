@@ -289,6 +289,37 @@ def sqlite_ddl(spec: CollectionSpec) -> str:
     return f"CREATE TABLE IF NOT EXISTS {spec.name} (\n  {body}\n)"
 
 
+def schema_object_key(
+    data_source_id: str,
+    schema_name: str,
+    object_name: str,
+    column_name: str = "",
+) -> str:
+    key = f"[{data_source_id}].[{schema_name}].[{object_name}]"
+    if column_name:
+        return f"{key}.[{column_name}]"
+    return key
+
+
+def normalize_object_type(raw: Optional[str]) -> str:
+    value = (raw or "Table").strip()
+    if value in {"Table", "View", "Function"}:
+        return value
+    mapping = {
+        "table": "Table",
+        "view": "View",
+        "function": "Function",
+        "stored_procedure": "Function",
+        "storedprocedure": "Function",
+    }
+    return mapping.get(value.lower(), "Table")
+
+
+def object_type_to_table_type(object_type: str) -> str:
+    mapping = {"Table": "table", "View": "view", "Function": "function"}
+    return mapping.get(object_type, (object_type or "table").lower())
+
+
 def parent_embedding_text(object_type: str, object_name: str, description: str) -> str:
     entity = object_type if object_type in {"Table", "View", "Function"} else "Table"
     return f"Entity: {entity} | Name: {object_name} | Description: {description or ''}"

@@ -104,6 +104,8 @@ export interface GenerateSQLResponse {
     source_id?: string;
     /** If true, frontend should update the previous code box in place instead of adding a new message */
     is_code_edit?: boolean;
+    success?: boolean;
+    failure_report?: unknown;
 }
 
 export interface SearchObject {
@@ -301,7 +303,11 @@ export const api = {
                             // Stream explicitly completed
                             return finalResult!;
                         } else if (data.type === 'error') {
-                            throw new Error(data.message);
+                            if (data.payload && (data.payload.sql !== undefined || data.payload.failure_report)) {
+                                finalResult = data.payload as GenerateSQLResponse;
+                            } else {
+                                throw new Error(data.message || 'generation failed');
+                            }
                         }
                     }
                 }

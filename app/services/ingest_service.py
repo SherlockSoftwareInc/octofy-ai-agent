@@ -4,12 +4,10 @@ import re
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple
 from sqlalchemy import text, inspect
-from pymilvus import connections, FieldSchema, CollectionSchema, DataType, Collection, utility
 from openai import OpenAI
 from app.core.config import settings
 from app.services.settings_service import load_settings
 from app.core.database import get_database_engine
-from app.models.schemas import DataObject, ObjectType
 
 
 def _resolve_source_guid_from_skills() -> str:
@@ -329,218 +327,87 @@ def build_table_markdown_description(
     return md
 
 def create_milvus_collections():
-    vector_config = load_settings().vector_config
-    connections.connect(host=vector_config.host, port=vector_config.port)
-    
-    # 1. Schema Index
-    if utility.has_collection(settings.MILVUS_COLLECTION_SCHEMA):
-        utility.drop_collection(settings.MILVUS_COLLECTION_SCHEMA)
-        
-    schema_fields = [
-        FieldSchema(name="id", dtype=DataType.INT64, is_primary=True, auto_id=True),
-        FieldSchema(name="embedding", dtype=DataType.FLOAT_VECTOR, dim=EMBEDDING_DIM),
-        FieldSchema(name="source_guid", dtype=DataType.VARCHAR, max_length=128, is_partition_key=True),
-        FieldSchema(name="schema_name", dtype=DataType.VARCHAR, max_length=128),
-        FieldSchema(name="table_name", dtype=DataType.VARCHAR, max_length=128),
-        FieldSchema(name="table_type", dtype=DataType.VARCHAR, max_length=32),  # 'table' or 'view'
-        FieldSchema(name="description", dtype=DataType.VARCHAR, max_length=65535)  # Rich Markdown description (also used for embedding)
-    ]
-    schema_schema = CollectionSchema(fields=schema_fields, description="Database Schema Index")
-    schema_coll = Collection(name=settings.MILVUS_COLLECTION_SCHEMA, schema=schema_schema)
-    
-    # Create Index
-    index_params = {
-        "metric_type": "L2",
-        "index_type": "IVF_FLAT",
-        "params": {"nlist": 1024}
-    }
-    schema_coll.create_index(field_name="embedding", index_params=index_params)
-    print(f"Created collection: {settings.MILVUS_COLLECTION_SCHEMA}")
+    """Ensure contract collections exist. Never drop/recreate legacy schema_index layouts."""
+    from app.services.stores.provider_factory import get_vector_provider
 
-    # 1b. Schema Index V2 (Multi-Source)
-    if utility.has_collection(settings.MILVUS_COLLECTION_SCHEMA_V2):
-        utility.drop_collection(settings.MILVUS_COLLECTION_SCHEMA_V2)
-    
-    schema_v2_fields = [
-        FieldSchema(name="id", dtype=DataType.INT64, is_primary=True, auto_id=True),
-        FieldSchema(name="embedding", dtype=DataType.FLOAT_VECTOR, dim=EMBEDDING_DIM),
-        FieldSchema(name="source_guid", dtype=DataType.VARCHAR, max_length=128, is_partition_key=True),
-        FieldSchema(name="schema_name", dtype=DataType.VARCHAR, max_length=128),
-        FieldSchema(name="object_name", dtype=DataType.VARCHAR, max_length=128),
-        FieldSchema(name="object_type", dtype=DataType.VARCHAR, max_length=32),
-        FieldSchema(name="description", dtype=DataType.VARCHAR, max_length=65535),
-        FieldSchema(name="definition", dtype=DataType.VARCHAR, max_length=65535),
-        FieldSchema(name="return_type", dtype=DataType.VARCHAR, max_length=256),
-    ]
-    schema_v2_schema = CollectionSchema(fields=schema_v2_fields, description="Multi-Source Database Schema Index (v2)")
-    schema_v2_coll = Collection(name=settings.MILVUS_COLLECTION_SCHEMA_V2, schema=schema_v2_schema)
-    schema_v2_coll.create_index(field_name="embedding", index_params=index_params)
-    print(f"Created collection: {settings.MILVUS_COLLECTION_SCHEMA_V2}")
-
-    # 2. Few-shot Index / Knowledge Base
-    if utility.has_collection(settings.MILVUS_COLLECTION_FEWSHOT):
-        utility.drop_collection(settings.MILVUS_COLLECTION_FEWSHOT)
-        
-    fs_fields = [
-        FieldSchema(name="id", dtype=DataType.INT64, is_primary=True, auto_id=True),
-        FieldSchema(name="embedding", dtype=DataType.FLOAT_VECTOR, dim=EMBEDDING_DIM),
-        FieldSchema(name="question", dtype=DataType.VARCHAR, max_length=2048),
-        FieldSchema(name="sql_query", dtype=DataType.VARCHAR, max_length=4096),
-        FieldSchema(name="knowledge_type", dtype=DataType.VARCHAR, max_length=32)
-    ]
-    fs_schema = CollectionSchema(fields=fs_fields, description="Knowledge Base Index")
-    fs_coll = Collection(name=settings.MILVUS_COLLECTION_FEWSHOT, schema=fs_schema)
-    fs_coll.create_index(field_name="embedding", index_params=index_params)
-    print(f"Created collection: {settings.MILVUS_COLLECTION_FEWSHOT}")
-    
-    # 3. Value Index (Stub)
-    if utility.has_collection(settings.MILVUS_COLLECTION_VALUES):
-        utility.drop_collection(settings.MILVUS_COLLECTION_VALUES)
-        
-    # Value index must align with vector_store.insert_value_item expectations
-    val_fields = [
-        FieldSchema(name="id", dtype=DataType.INT64, is_primary=True, auto_id=True),
-        FieldSchema(name="embedding", dtype=DataType.FLOAT_VECTOR, dim=EMBEDDING_DIM),
-        FieldSchema(name="value", dtype=DataType.VARCHAR, max_length=256),
-        FieldSchema(name="schema_name", dtype=DataType.VARCHAR, max_length=128),
-        FieldSchema(name="table_name", dtype=DataType.VARCHAR, max_length=128),
-        FieldSchema(name="column_name", dtype=DataType.VARCHAR, max_length=128)
-    ]
-    val_schema = CollectionSchema(fields=val_fields, description="Lookup Value Index")
-    val_coll = Collection(name=settings.MILVUS_COLLECTION_VALUES, schema=val_schema)
-    val_coll.create_index(field_name="embedding", index_params=index_params)
-    print(f"Created collection: {settings.MILVUS_COLLECTION_VALUES}")
-
-    # 4. Contribution Library (Staging Area for User Contributions)
-    if utility.has_collection(settings.MILVUS_COLLECTION_CONTRIBUTIONS):
-        utility.drop_collection(settings.MILVUS_COLLECTION_CONTRIBUTIONS)
-        
-    contrib_fields = [
-        FieldSchema(name="id", dtype=DataType.INT64, is_primary=True, auto_id=True),
-        FieldSchema(name="embedding", dtype=DataType.FLOAT_VECTOR, dim=EMBEDDING_DIM),
-        FieldSchema(name="question", dtype=DataType.VARCHAR, max_length=2048),
-        FieldSchema(name="sql_query", dtype=DataType.VARCHAR, max_length=4096),
-        FieldSchema(name="knowledge_type", dtype=DataType.VARCHAR, max_length=32),
-        FieldSchema(name="user_id", dtype=DataType.VARCHAR, max_length=128),
-        FieldSchema(name="submitted_at", dtype=DataType.VARCHAR, max_length=64),
-        FieldSchema(name="status", dtype=DataType.VARCHAR, max_length=32)
-    ]
-    contrib_schema = CollectionSchema(fields=contrib_fields, description="Contribution Library - Staging Area")
-    contrib_coll = Collection(name=settings.MILVUS_COLLECTION_CONTRIBUTIONS, schema=contrib_schema)
-    contrib_coll.create_index(field_name="embedding", index_params=index_params)
-    print(f"Created collection: {settings.MILVUS_COLLECTION_CONTRIBUTIONS}")
+    provider = get_vector_provider()
+    if hasattr(provider, "ensure_schema"):
+        provider.ensure_schema()
+    print("Ensured contract Milvus collections.")
 
 def ingest_metadata(source_id: Optional[str] = None):
+    from app.services.stores.provider_factory import get_vector_provider
+    from app.services.stores.schema_rows import build_schema_object_rows, delete_schema_object_rows
+
     engine = get_database_engine(source_id)
     inspector = inspect(engine)
-    client, embedding_model = _resolve_embedding_config()
-    
+    provider = get_vector_provider()
+    if hasattr(provider, "ensure_schema"):
+        provider.ensure_schema()
+
     schemas = inspector.get_schema_names()
-    source_guid = source_id or _resolve_source_guid_from_skills()
-    
-    data_rows = []
+    data_source_id = source_id or _resolve_source_guid_from_skills()
 
     exclude_qualified, exclude_unqualified = _load_exclude_list(source_id)
     exclude_count = len(exclude_qualified) + len(exclude_unqualified)
     if exclude_count:
         print(f"Loaded {exclude_count} excluded object(s) from exclude_objects.txt")
-    
+
     print("Extracting metadata...")
-    
-    # Check for existing items to avoid duplicates
+
     existing_items = set()
-    search_collection = None
     try:
-        vector_config = load_settings().vector_config
-        connections.connect(host=vector_config.host, port=vector_config.port)
-        if utility.has_collection(settings.MILVUS_COLLECTION_SCHEMA):
-            search_collection = Collection(settings.MILVUS_COLLECTION_SCHEMA)
-            search_collection.load()
-            
-            # Query existing schema_name and table_name for this source
-            # Limit to 10000 for now, assuming we don't have massive schema counts yet
-            results = search_collection.query(
-                expr=f'source_guid == "{source_guid}"',
-                output_fields=["source_guid", "schema_name", "table_name"],
-                limit=10000
-            )
-            
-            for res in results:
-                if res.get("source_guid") == source_guid:
-                    existing_items.add((res['schema_name'], res['table_name']))
-            
-            print(f"Found {len(existing_items)} existing tables in vector store for source {source_guid}.")
+        for row in provider.fetch_all("schemas", data_source_id):
+            if (row.get("entity_type") or "Table") == "Column":
+                continue
+            existing_items.add((row.get("schema_name"), row.get("object_name")))
+        print(f"Found {len(existing_items)} existing tables in vector store for source {data_source_id}.")
     except Exception as e:
         print(f"Warning: Could not check existing items: {e}")
-        
+
+    upsert_rows = []
     for schema in schemas:
-        if schema in ['information_schema', 'sys', 'guest', 'sysadmin']: continue # Skip system schemas
-        
-        # Get both tables and views
+        if schema in ['information_schema', 'sys', 'guest', 'sysadmin']:
+            continue
+
         table_names = inspector.get_table_names(schema=schema)
         view_names = inspector.get_view_names(schema=schema)
-        
-        # Process tables and views together with their type
         objects_to_process = [(name, 'table') for name in table_names] + [(name, 'view') for name in view_names]
-        
+
         for obj_name, obj_type in objects_to_process:
             if _is_excluded(schema, obj_name, exclude_qualified, exclude_unqualified):
-                if (schema, obj_name) in existing_items and search_collection:
+                if (schema, obj_name) in existing_items:
                     try:
-                        expr = (
-                            f'source_guid == "{source_guid}" and '
-                            f'schema_name == "{schema}" and table_name == "{obj_name}"'
-                        )
-                        search_collection.delete(expr)
+                        delete_schema_object_rows(provider, data_source_id, schema, obj_name)
                         print(f"Deleted excluded {schema}.{obj_name} from vector store")
                     except Exception as del_e:
                         print(f"Error deleting excluded {schema}.{obj_name}: {del_e}")
                 else:
                     print(f"Skipping excluded {schema}.{obj_name}")
                 continue
-            # Check if already exists
+
             if (schema, obj_name) in existing_items:
                 print(f"Item {schema}.{obj_name} exists. Deleting to replace...")
                 try:
-                    if search_collection:
-                        expr = f'source_guid == "{source_guid}" and schema_name == "{schema}" and table_name == "{obj_name}"'
-                        search_collection.delete(expr)
+                    delete_schema_object_rows(provider, data_source_id, schema, obj_name)
                 except Exception as del_e:
                     print(f"Error deleting {schema}.{obj_name}: {del_e}")
-            
-            # Get columns
+
             columns = inspector.get_columns(obj_name, schema=schema)
-            
-            # Get foreign key mappings (only applicable for tables, views don't have FKs)
             fk_map = get_foreign_key_map(inspector, obj_name, schema) if obj_type == 'table' else {}
-            
-            # Get primary key columns (only applicable for tables)
             pk_columns = get_primary_key_columns(inspector, obj_name, schema) if obj_type == 'table' else []
-            
-            # Build column info list
+
             col_list = []
             for col in columns:
-                col_info = {
+                col_list.append({
                     "name": col['name'],
                     "data_type": clean_column_type(col['type']),
                     "description": col.get('comment', '')
-                }
-                col_list.append(col_info)
-            
-            # Get description from database extended properties
+                })
+
             db_description = get_table_description(engine, obj_name, schema, obj_type)
-            
-            # Use DB description if available, otherwise generate default
-            if db_description:
-                obj_description = db_description
-            else:
-                obj_description = f" -- stores {obj_name} data."
-            
-            # Build embedding text: [name] + [description]
-            # Simple and semantic - no column counts
-            full_text = f"{obj_type}: {obj_name}. {obj_description}"
-            
-            # Create rich Markdown description
+            obj_description = db_description if db_description else f" -- stores {obj_name} data."
+
             markdown_description = build_table_markdown_description(
                 schema_name=schema,
                 table_name=obj_name,
@@ -551,59 +418,25 @@ def ingest_metadata(source_id: Optional[str] = None):
                 table_type=obj_type
             )
 
-            # Generate Embedding using the markdown description
             try:
-                embedding = client.embeddings.create(input=[markdown_description], model=embedding_model).data[0].embedding
-
-                data_rows.append({
-                    "source_guid": source_guid,
-                    "schema_name": schema,
-                    "table_name": obj_name,
-                    "table_type": obj_type,  # 'table' or 'view'
-                    "description": markdown_description, # Rich Markdown description (also used for embedding)
-                    "embedding": embedding
-                })
+                upsert_rows.extend(
+                    build_schema_object_rows(
+                        provider,
+                        data_source_id,
+                        schema,
+                        obj_name,
+                        obj_type,
+                        markdown_description,
+                        col_list,
+                    )
+                )
                 print(f"Processed {obj_type} {schema}.{obj_name}")
             except Exception as e:
                 print(f"Failed to embed {obj_type} {schema}.{obj_name}: {e}")
 
-    if data_rows:
-        vector_config = load_settings().vector_config
-        connections.connect(host=vector_config.host, port=vector_config.port)
-        print(f"Inserting {len(data_rows)} rows into Milvus...")
-        collection = Collection(settings.MILVUS_COLLECTION_SCHEMA)
-        
-        # Column-based organization
-        c_embeddings = [r['embedding'] for r in data_rows]
-        c_source_guids = [r['source_guid'] for r in data_rows]
-        c_schemas = [r['schema_name'] for r in data_rows]
-        c_tables = [r['table_name'] for r in data_rows]
-        c_table_types = [r['table_type'] for r in data_rows]
-        c_descs = [r['description'] for r in data_rows]
-        
-        collection.insert([c_embeddings, c_source_guids, c_schemas, c_tables, c_table_types, c_descs])
-        collection.flush()
-        print("Ingestion complete (schema_index).")
-
-        # Also populate schema_index_v2 so schema tree and object lists show all objects
-        try:
-            from app.services.vector_store import get_vector_store
-            vs = get_vector_store()
-            vs.clear_source_objects_v2(source_guid)
-            for r in data_rows:
-                obj_type = ObjectType.VIEW if r["table_type"] == "view" else ObjectType.TABLE
-                obj = DataObject(
-                    source_id=source_guid,
-                    schema_name=r["schema_name"],
-                    object_name=r["table_name"],
-                    object_type=obj_type,
-                    description=r["description"],
-                    definition="",
-                    return_type=None,
-                )
-                vs.insert_data_object_v2(obj, r["description"])
-            print("Schema index v2 updated.")
-        except Exception as v2_err:
-            print(f"Warning: Could not update schema_index_v2: {v2_err}")
+    if upsert_rows:
+        print(f"Inserting {len(upsert_rows)} parent/column rows into schemas...")
+        provider.upsert("schemas", upsert_rows)
+        print("Ingestion complete (schemas).")
     else:
         print("No data found to ingest.")

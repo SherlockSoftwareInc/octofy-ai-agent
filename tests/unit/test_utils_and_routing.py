@@ -2,7 +2,8 @@ from app.core.branch_taxonomy import DiscoveryBranch
 from app.utils.pii import mask_pii
 from app.utils.hashing import question_lookup_key
 from app.utils.regexes import parse_validation_sentinels
-from app.utils.sql_normalization import structural_sql_hash
+from app.utils.sql_normalization import extract_sql_object_refs, structural_sql_hash
+from app.services.sql_validator import SqlValidator
 from app.core.orchestrator.router import has_strong_language_agnostic_db_signal, should_use_simple_preanalysis_fast_path
 from app.models.pipeline import AgentContext, AgentRequest
 from app.core.branch_taxonomy import GenerationMode
@@ -32,6 +33,27 @@ def test_structural_hash_ignores_whitespace_and_comments():
     a = "SELECT /* x */ 1 AS n"
     b = "select 1 as n"
     assert structural_sql_hash(a) == structural_sql_hash(b)
+
+
+def test_extract_sql_object_refs_keeps_names_with_spaces():
+    sql = """
+        SELECT [CategoryName], [CategorySales] AS [TotalRevenue]
+        FROM [dbo].[Category Sales for 1997]
+        ORDER BY [CategoryName];
+    """
+    assert extract_sql_object_refs(sql) == ["dbo.Category Sales for 1997"]
+
+
+def test_out_of_scope_allows_bracketed_names_with_spaces():
+    sql = """
+        SELECT [CategoryName], [CategorySales] AS [TotalRevenue]
+        FROM [dbo].[Category Sales for 1997]
+        ORDER BY [CategoryName];
+    """
+    validator = SqlValidator()
+    assert validator._out_of_scope(sql, ["dbo.Category Sales for 1997"]) is None
+    err = validator._out_of_scope(sql, ["dbo.Orders"])
+    assert err and "Category Sales for 1997" in err
 
 
 def test_db_signal_sql_shaped_only():

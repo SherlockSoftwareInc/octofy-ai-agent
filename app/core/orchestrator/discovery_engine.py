@@ -315,11 +315,12 @@ class DiscoveryEngine:
             objects[key] = obj
 
     def _objects_from_sql(self, sql: str) -> List[ScoredObject]:
-        import re
+        from app.utils.sql_normalization import extract_sql_object_refs
 
         objs = []
-        for match in re.finditer(r"(?:from|join)\s+\[?(\w+)\]?\.\[?(\w+)\]?", sql or "", flags=re.IGNORECASE):
-            objs.append(ScoredObject(schema_name=match.group(1), object_name=match.group(2), score=0.9))
+        for ref in extract_sql_object_refs(sql):
+            schema, name = self._split(ref)
+            objs.append(ScoredObject(schema_name=schema, object_name=name, score=0.9))
         return objs
 
     def _split(self, name: str) -> tuple:

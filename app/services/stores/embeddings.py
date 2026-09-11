@@ -125,14 +125,27 @@ def _evict_l2(provider, data_source_id: str) -> None:
             "SELECT COUNT(*) AS c FROM embedding_cache WHERE data_source_id = ?",
             (data_source_id,),
         )
-        count = int(rows[0]["c"]) if rows else 0
-        if count <= EmbeddingCacheL2Size:
+        if rows:
+            count = int(rows[0]["c"]) if rows else 0
+            if count <= EmbeddingCacheL2Size:
+                return
+            provider.execute(
+                "DELETE FROM embedding_cache WHERE rowid IN ("
+                "SELECT rowid FROM embedding_cache WHERE data_source_id = ? "
+                "ORDER BY last_accessed_utc ASC LIMIT ?)",
+                (data_source_id, EmbeddingCacheL2EvictBatch),
+            )
             return
-        provider.execute(
-            "DELETE FROM embedding_cache WHERE rowid IN ("
-            "SELECT rowid FROM embedding_cache WHERE data_source_id = ? "
-            "ORDER BY last_accessed_utc ASC LIMIT ?)",
-            (data_source_id, EmbeddingCacheL2EvictBatch),
-        )
+    except Exception:
+        pass
+    try:
+        cached = provider.fetch_all("embedding_cache", data_source_id)
+        if len(cached) <= EmbeddingCacheL2Size:
+            return
+        cached.sort(key=lambda r: r.get("last_accessed_utc") or "")
+        for row in cached[:EmbeddingCacheL2EvictBatch]:
+            key = row.get("text_hash")
+            if key:
+                provider.delete("embedding_cache", data_source_id, "text_hash", key)
     except Exception:
         pass

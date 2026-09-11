@@ -60,17 +60,21 @@ class VectorSearchService:
                 objects[parent_key] = obj
             else:
                 key = f"{schema_name}|{object_name}".lower()
-                objects.setdefault(
-                    key,
-                    ScoredObject(
+                existing = objects.get(key)
+                if existing:
+                    if hit.get("description") and not existing.description:
+                        existing.description = hit.get("description")
+                    if hit.get("object_type"):
+                        existing.object_type = hit.get("object_type") or existing.object_type
+                else:
+                    objects[key] = ScoredObject(
                         schema_name=schema_name,
                         object_name=object_name,
                         object_type=hit.get("object_type") or entity,
                         score=1.0 - float(hit.get("_distance") or 1.0),
                         vector_score=float(hit.get("_distance") or 1.0),
                         description=hit.get("description"),
-                    ),
-                )
+                    )
         ranked = sorted(objects.values(), key=lambda o: o.score, reverse=True)
         return ranked[:top_k]
 

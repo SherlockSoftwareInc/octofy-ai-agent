@@ -56,82 +56,12 @@ def _wipe_milvus_source(milvus, source_id: str) -> None:
             pass
 
 
-def _sync_legacy_schema_index(provider, source_id: str) -> int:
-    """Write parent schema rows into Milvus schema_index / schema_index_v2 for the admin UI."""
-    from app.models.schemas import ColumnInfo, DataObject, ObjectType, TableSchema
-    from app.services.vector_store import get_vector_store
-
-    vs = get_vector_store()
-    if hasattr(vs, "clear_schemas_collection"):
-        vs.clear_schemas_collection(source_id)
-    if hasattr(vs, "clear_source_objects_v2"):
-        vs.clear_source_objects_v2(source_id)
-
-    rows = provider.fetch_all("schemas", source_id)
-    parents = {}
-    columns = {}
-    for row in rows:
-        schema_name = row.get("schema_name") or "dbo"
-        object_name = row.get("object_name") or ""
-        key = (schema_name, object_name)
-        if (row.get("entity_type") or "") == "Column":
-            columns.setdefault(key, []).append(
-                ColumnInfo(
-                    name=row.get("column_name") or "",
-                    data_type="",
-                    description=row.get("description") or "",
-                )
-            )
-        else:
-            parents[key] = row
-
-    type_map = {
-        "table": ObjectType.TABLE,
-        "view": ObjectType.VIEW,
-        "function": ObjectType.FUNCTION,
-        "stored_procedure": ObjectType.STORED_PROCEDURE,
-    }
-    count = 0
-    for key, row in parents.items():
-        schema_name, object_name = key
-        raw_type = (row.get("object_type") or "Table")
-        table_type = "view" if str(raw_type).lower() == "view" else "table"
-        text = row.get("description") or object_name
-        cols = columns.get(key, [])
-        schema = TableSchema(
-            schema_name=schema_name,
-            table_name=object_name,
-            table_type=table_type,
-            description=text[:4000],
-            columns=cols,
-            source_guid=source_id,
-        )
-        vs.insert_schema_embedding(schema, text[:4000], table_type=table_type)
-        vs.insert_data_object_v2(
-            DataObject(
-                source_id=source_id,
-                schema_name=schema_name,
-                object_name=object_name,
-                object_type=type_map.get(str(raw_type).lower(), ObjectType.TABLE),
-                description=text[:4000],
-                columns=cols,
-            ),
-            text[:4000],
-        )
-        count += 1
-    return count
-
-
 def import_and_rebuild(src: str, dest_root: str, source_id: str) -> ImportReport:
     _status(source_id, status="running", message="Importing skills folder...")
     try:
         milvus = _require_milvus()
         _wipe_milvus_source(milvus, source_id)
         report = import_skills_folder(Path(src), Path(dest_root), source_id, milvus)
-        try:
-            _sync_legacy_schema_index(milvus, source_id)
-        except Exception as exc:
-            report.errors.append(f"schema_index sync: {exc}")
         _clear_provider_caches()
         _status(
             source_id,
@@ -156,10 +86,6 @@ def rebuild_source(folder: str, source_id: str) -> ImportReport:
         _status(source_id, status="running", message="Writing vectors to Milvus...")
         _wipe_milvus_source(milvus, source_id)
         report = rebuild_vectors_from_folder(folder_path, source_id, milvus)
-        try:
-            _sync_legacy_schema_index(milvus, source_id)
-        except Exception as exc:
-            report.errors.append(f"schema_index sync: {exc}")
         _clear_provider_caches()
         _status(
             source_id,

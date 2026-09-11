@@ -2,7 +2,7 @@ from pathlib import Path
 import tempfile
 
 from app.core.constants import VECTOR_SCHEMA_VERSION
-from app.services.stores.schema_contracts import ADDED_FIELDS_VS_BUILTIN, COLLECTIONS, COLLECTION_BY_NAME, PARTITION_FIELD, sqlite_ddl
+from app.services.stores.schema_contracts import ADDED_FIELDS_VS_BUILTIN, COLLECTIONS, COLLECTION_BY_NAME, PARTITION_FIELD, sqlite_ddl, schema_object_key
 from app.services.stores.sqlite_vec_provider import SqliteVecProvider
 
 
@@ -54,3 +54,8 @@ def test_sqlite_isolation_two_sources(tmp_path):
     provider.delete("few_shots_meta", "A", "key", "1")
     assert provider.fetch_all("few_shots_meta", "A") == []
     assert len(provider.fetch_all("few_shots_meta", "B")) == 1
+
+
+def test_schema_object_key_matches_builtin_format():
+    assert schema_object_key("nw", "dbo", "Customers") == "[nw].[dbo].[Customers]"
+    assert schema_object_key("nw", "dbo", "Customers", "Country") == "[nw].[dbo].[Customers].[Country]"

@@ -25,7 +25,8 @@ from app.services.object_name_resolver import ObjectNameResolver
 from app.services.sql_context_hydrator import SqlContextHydrator
 from app.services.sql_validator import SqlValidator
 from app.services.stores.bundle import SourceStores, build_source_stores
-from app.utils.sse import sse_done, sse_error, sse_result, sse_status
+from app.services.stores.skills_folder import markdown_lookup_for_objects
+from app.utils.sse import sse_done, sse_result, sse_status
 
 logger = logging.getLogger(__name__)
 
@@ -104,7 +105,6 @@ def generate_sql_builtin(
                 source_id=source_id,
             )
             payload = _to_http(result).model_dump(by_alias=True)
-            yield sse_error(result.message or "", payload)
             yield sse_result(payload, result.message or "")
             yield sse_done()
             return
@@ -204,7 +204,10 @@ def generate_sql_builtin(
     discovery.query_analysis = analysis
     hydrator = SqlContextHydrator()
     hydrator.set_value_mappings(discovery.value_mappings)
-    selected, supp, schema, validation = hydrator.build_contexts(discovery.objects)
+    markdown_lookup = markdown_lookup_for_objects(source_id, discovery.objects)
+    selected, supp, schema, validation = hydrator.build_contexts(
+        discovery.objects, markdown_lookup=markdown_lookup
+    )
     discovery.selected_object_context = selected
     discovery.supplementary_objects = supp
     discovery.schema_context = schema
@@ -223,11 +226,7 @@ def generate_sql_builtin(
     # re-emit attempt is inside loop without yield; emit a closing status
     yield emit(PipelineStage.ATTEMPT, f"Completed in {result.attempts} attempt(s)")
     payload = _to_http(result).model_dump(by_alias=True)
-    if result.success:
-        yield sse_result(payload, result.message or "")
-    else:
-        yield sse_error(result.message or "generation failed", payload)
-        yield sse_result(payload, result.message or "")
+    yield sse_result(payload, result.message or "")
     yield sse_done()
 
 

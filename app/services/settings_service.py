@@ -498,9 +498,9 @@ def validate_milvus_settings(vector_config: VectorConfig) -> None:
 
     alias = "settings_validation"
     required_collections = [
-        app_settings.MILVUS_COLLECTION_SCHEMA,
-        app_settings.MILVUS_COLLECTION_FEWSHOT,
-        app_settings.MILVUS_COLLECTION_VALUES
+        "schemas",
+        "few_shots",
+        "value_index",
     ]
 
     try:

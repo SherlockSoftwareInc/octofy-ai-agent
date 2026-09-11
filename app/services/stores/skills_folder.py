@@ -191,6 +191,63 @@ def rebuild_vectors_from_folder(folder: Path, source_id: str, provider, report: 
     return report
 
 
+def object_markdown_path(folder: Path, schema_name: str, object_name: str, object_type: str = "Table") -> Optional[Path]:
+    schemas_dir = Path(folder) / "schemas"
+    if not schemas_dir.exists():
+        return None
+    names = [f"{schema_name}.{object_name}.md"]
+    if str(object_type or "").lower() == "function":
+        names.insert(0, f"{schema_name}.fn.{object_name}.md")
+    for name in names:
+        for candidate in (schemas_dir / schema_name / name, schemas_dir / name):
+            if candidate.exists():
+                return candidate
+        matches = list(schemas_dir.rglob(name))
+        if matches:
+            return matches[0]
+    return None
+
+
+def _read_markdown(path: Optional[Path]) -> str:
+    if not path:
+        return ""
+    try:
+        return path.read_text(encoding="utf-8", errors="ignore")
+    except Exception:
+        return ""
+
+
+def load_object_markdown(source_id: str, schema_name: str, object_name: str, object_type: str = "Table") -> str:
+    try:
+        folder = resolve_data_source_folder(source_id)
+    except Exception:
+        return ""
+    return _read_markdown(object_markdown_path(folder, schema_name, object_name, object_type))
+
+
+def markdown_lookup_for_objects(source_id: Optional[str], objects) -> Dict[str, str]:
+    lookup: Dict[str, str] = {}
+    if not source_id:
+        return lookup
+    try:
+        folder = resolve_data_source_folder(source_id)
+    except Exception:
+        return lookup
+    for obj in objects or []:
+        schema_name = getattr(obj, "schema_name", None) or "dbo"
+        object_name = getattr(obj, "object_name", None) or ""
+        if not object_name:
+            continue
+        object_type = getattr(obj, "object_type", None) or "Table"
+        text = _read_markdown(object_markdown_path(folder, schema_name, object_name, object_type))
+        if not text:
+            continue
+        lookup[f"{schema_name}.{object_name}".lower()] = text
+        if hasattr(obj, "markdown"):
+            obj.markdown = text
+    return lookup
+
+
 def _parse_object_file(path: Path) -> tuple:
     name = path.stem
     if ".fn." in name:

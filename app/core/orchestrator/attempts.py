@@ -24,7 +24,14 @@ from app.core.errors import (
     build_detailed_failure_result,
     build_failure_report,
 )
-from app.core.orchestrator.prompts import build_system_prompt, build_user_prompt, critic_prompt
+from app.core.orchestrator.prompts import (
+    build_python_system_prompt,
+    build_python_user_prompt,
+    build_system_prompt,
+    build_user_prompt,
+    critic_prompt,
+    python_critic_prompt,
+)
 from app.models.pipeline import (
     AgentContext,
     BuiltInAttemptReport,
@@ -34,10 +41,17 @@ from app.models.pipeline import (
     ScoredObject,
     SmqPayload,
 )
+from app.services.python_interceptor import PythonInterceptor
 from app.services.query_interceptor import QueryInterceptor
 from app.services.semantic_compiler import SemanticCompilationError, SemanticCompiler
 from app.services.sql_error_classifier import SqlErrorClassifier
 from app.services.sql_validator import SqlValidator
+from app.utils.python_normalization import (
+    extract_python_body,
+    extract_sql_from_python,
+    structural_python_hash,
+    syntax_check_python,
+)
 from app.utils.regexes import parse_validation_sentinels
 from app.utils.sql_normalization import extract_sql_body, structural_sql_hash
 
@@ -52,10 +66,15 @@ def run_attempt_loop(
     time_budget_ms: int = MaxGenerationTimeMs,
     semantic_mode: bool = False,
     started_at: Optional[float] = None,
+    target_language: str = "sql",
 ) -> BuiltInGenerateResult:
     started_at = started_at or time.time()
     interceptor = QueryInterceptor()
+    python_interceptor = PythonInterceptor()
     validator = SqlValidator(context.request.source_id, context.dbms_type)
+    python_mode = target_language == "python"
+    if python_mode:
+        semantic_mode = False
     classifier = SqlErrorClassifier()
     compiler = SemanticCompiler()
     attempt_reports: List[BuiltInAttemptReport] = []
