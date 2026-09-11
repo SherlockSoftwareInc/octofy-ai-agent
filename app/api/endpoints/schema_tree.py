@@ -221,7 +221,6 @@ def _build_tree_v1(settings) -> SchemaTreeResponse:
         is_indexed=True
     )
     
-    # Get schemas from legacy collection
     vector_store = get_vector_store()
     schemas = vector_store.get_all_schemas()
     

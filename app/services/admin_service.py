@@ -666,7 +666,7 @@ def ingest_schemas_from_excel(file_content: bytes, mode: str = "append", progres
     """
     Parse Excel file and ingest schema/table metadata.
     
-    File format required (matches schema_index collection):
+    File format required (matches the contract schemas collection):
     - schema_name: Schema name (e.g., 'dbo')
     - table_name: Table or view name (e.g., 'Customers')
     - table_type: 'table' or 'view' (optional, defaults to 'table')

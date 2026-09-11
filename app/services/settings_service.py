@@ -497,11 +497,9 @@ def validate_milvus_settings(vector_config: VectorConfig) -> None:
     from pymilvus import connections, utility
 
     alias = "settings_validation"
-    required_collections = [
-        "schemas",
-        "few_shots",
-        "value_index",
-    ]
+    from app.services.stores.schema_contracts import RUNTIME_VECTOR_COLLECTIONS
+
+    required_collections = list(RUNTIME_VECTOR_COLLECTIONS)
 
     try:
         connections.connect(alias=alias, host=host, port=port)

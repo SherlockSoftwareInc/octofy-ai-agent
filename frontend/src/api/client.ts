@@ -1464,6 +1464,7 @@ export interface ContributionRequest {
     sql_query: string;
     knowledge_type?: string;
     user_id?: string;
+    source_id?: string;
 }
 
 export interface ContributionResponse {

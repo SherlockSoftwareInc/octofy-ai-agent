@@ -310,11 +310,9 @@ def verify_settings(current_user: User = Depends(get_current_active_admin)):
         connections.connect(alias="verify_test", host=milvus_host, port=milvus_port, timeout=5)
         
         # Check Collections
-        required_collections = [
-            "schemas",
-            "few_shots",
-            "value_index",
-        ]
+        from app.services.stores.schema_contracts import RUNTIME_VECTOR_COLLECTIONS
+
+        required_collections = list(RUNTIME_VECTOR_COLLECTIONS)
         
         missing_collections = []
         for col_name in required_collections:

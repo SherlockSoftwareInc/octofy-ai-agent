@@ -513,6 +513,7 @@ class ContributionRequest(BaseModel):
     sql_query: str
     knowledge_type: Optional[str] = "sql_query"
     user_id: Optional[str] = None
+    source_id: Optional[str] = None
 
 class ContributionResponse(BaseModel):
     success: bool

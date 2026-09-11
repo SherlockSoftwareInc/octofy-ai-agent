@@ -1,42 +1,26 @@
-import sys
-import os
+"""Clear and recreate the contract few_shots collections."""
 
-# Add parent directory to path to allow importing app modules
+import os
+import sys
+
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from app.services.vector_store import get_vector_store
-from app.services.settings_service import load_settings
-from app.core.config import settings
-from pymilvus import connections, utility
+from app.services.stores.provider_factory import get_vector_provider
+from app.services.vector_store import refresh_vector_store
+
 
 def rebuild_fewshots():
-    print("Connecting to Milvus...")
-    vector_config = load_settings().vector_config
-    connections.connect(
-        alias="default", 
-        host=vector_config.host, 
-        port=vector_config.port
-    )
-    
-    collection_name = settings.MILVUS_COLLECTION_FEWSHOT
-    
-    if utility.has_collection(collection_name):
-        print(f"Dropping existing collection: {collection_name}")
-        utility.drop_collection(collection_name)
-        print("Collection dropped.")
-    else:
-        print(f"Collection {collection_name} does not exist.")
-    
-    print("Re-initializing VectorStore to trigger collection creation...")
-    # This will trigger _connect_milvus which calls _ensure_fewshot_collection
-    vector_store = get_vector_store()
-    
-    # Verify creation
-    if utility.has_collection(collection_name):
-        print(f"Successfully recreated collection: {collection_name}")
-        print("Done!")
-    else:
-        print("Error: Collection was not created.")
+    print("Preparing contract few_shots collections...")
+    get_vector_provider.cache_clear()
+    provider = get_vector_provider()
+    if hasattr(provider, "ensure_schema"):
+        provider.ensure_schema()
+
+    vector_store = refresh_vector_store()
+    vector_store.clear_fewshots_collection()
+    print("Cleared few_shots and few_shots_meta.")
+    print("Done!")
+
 
 if __name__ == "__main__":
     rebuild_fewshots()

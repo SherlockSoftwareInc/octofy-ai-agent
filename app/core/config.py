@@ -18,7 +18,7 @@ class Settings(BaseSettings):
     MILVUS_COLLECTION_SCHEMA_V2: str = "schemas"
     MILVUS_COLLECTION_FEWSHOT: str = "few_shots"
     MILVUS_COLLECTION_KNOWLEDGE_BASE: str = "few_shots"
-    MILVUS_COLLECTION_CONTRIBUTIONS: str = "contribution_library"  # Staging area for user contributions (not in port-plan contract)
+    MILVUS_COLLECTION_CONTRIBUTIONS: str = "contribution_library"
     MILVUS_COLLECTION_VALUES: str = "value_index"
     
     # LLM Configuration (Provider Agnostic)

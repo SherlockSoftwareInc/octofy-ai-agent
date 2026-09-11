@@ -79,6 +79,21 @@ COLLECTIONS: List[CollectionSpec] = [
         unique_with_source=["key"],
     ),
     CollectionSpec(
+        name="contribution_library",
+        kind="scalar",
+        fields=[
+            _ds(),
+            FieldSpec("key", "TEXT", primary=True),
+            FieldSpec("question", "TEXT", not_null=True),
+            FieldSpec("sql_query", "TEXT", not_null=True),
+            FieldSpec("knowledge_type", "TEXT", not_null=True),
+            FieldSpec("user_id", "TEXT"),
+            FieldSpec("submitted_at", "TEXT"),
+            FieldSpec("status", "TEXT", not_null=True),
+        ],
+        unique_with_source=["key"],
+    ),
+    CollectionSpec(
         name="value_index",
         kind="vector",
         fields=[
@@ -259,6 +274,15 @@ COLLECTIONS: List[CollectionSpec] = [
 ]
 
 COLLECTION_BY_NAME: Dict[str, CollectionSpec] = {c.name: c for c in COLLECTIONS}
+
+# Collections the runtime must be able to read/write after ensure_schema.
+RUNTIME_VECTOR_COLLECTIONS = (
+    "schemas",
+    "few_shots",
+    "few_shots_meta",
+    "value_index",
+    "contribution_library",
+)
 
 ADDED_FIELDS_VS_BUILTIN = (PARTITION_FIELD,)
 

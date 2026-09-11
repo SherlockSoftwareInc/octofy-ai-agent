@@ -24,7 +24,6 @@ def _store(tmp_path, source_id="src1"):
     with patch("app.services.vector_store.get_vector_provider", return_value=provider), \
          patch("app.services.vector_store.load_settings", return_value=_Settings()), \
          patch("app.services.vector_store.EmbeddingFactory.create_client", side_effect=Exception("no embed")), \
-         patch.object(MilvusVectorStore, "_ensure_contributions_collection", lambda self: None), \
          patch.object(MilvusVectorStore, "_resolve_default_source_guid", lambda self: source_id):
         store = MilvusVectorStore()
         store.provider = provider
@@ -94,3 +93,35 @@ def test_facade_has_no_legacy_ensure_droppers():
     assert not hasattr(MilvusVectorStore, "_ensure_schema_collection")
     assert not hasattr(MilvusVectorStore, "_ensure_fewshot_collection")
     assert not hasattr(MilvusVectorStore, "_ensure_schema_v2_collection")
+    assert not hasattr(MilvusVectorStore, "_ensure_contributions_collection")
+
+
+def test_submit_contribution_then_approve_to_kb(tmp_path):
+    store, provider = _store(tmp_path)
+    contrib_id = store.insert_contribution(
+        "How many customers?",
+        "SELECT COUNT(*) FROM dbo.Customers",
+        knowledge_type="sql_query",
+        source_guid="src1",
+    )
+    rows = provider.fetch_all("contribution_library", "src1")
+    assert len(rows) == 1
+    assert rows[0]["key"] == contrib_id
+    assert rows[0]["sql_query"] == "SELECT COUNT(*) FROM dbo.Customers"
+
+    listed = store.get_all_contributions()
+    assert listed[0]["id"] == contrib_id
+
+    kb_id = store.move_contribution_to_knowledge_base(contrib_id)
+    assert provider.fetch_all("contribution_library", "src1") == []
+    shots = provider.fetch_all("few_shots", "src1")
+    assert len(shots) == 1
+    assert shots[0]["sql"] == "SELECT COUNT(*) FROM dbo.Customers"
+    assert shots[0]["key"] == kb_id
+
+
+def test_delete_contribution_by_string_id(tmp_path):
+    store, provider = _store(tmp_path)
+    contrib_id = store.insert_contribution("q", "SELECT 1", source_guid="src1")
+    store.delete_contribution(str(contrib_id))
+    assert provider.fetch_all("contribution_library", "src1") == []

@@ -55,7 +55,8 @@ def submit_contribution(request: ContributionRequest, api_key: str = Depends(ver
             question=request.question,
             sql_query=request.sql_query,
             knowledge_type=request.knowledge_type or "sql_query",
-            user_id=request.user_id
+            user_id=request.user_id,
+            source_guid=request.source_id,
         )
         
         return ContributionResponse(
@@ -119,7 +120,7 @@ def approve_contribution(request: ApproveContributionRequest, current_user: User
         vector_store = get_vector_store()
         # Move to knowledge base (with optional edited question and SQL)
         new_id = vector_store.move_contribution_to_knowledge_base(
-            int(request.contribution_id),
+            request.contribution_id,
             edited_question=request.edited_question,
             edited_sql=request.edited_sql,
             knowledge_type=request.knowledge_type
@@ -146,7 +147,7 @@ def reject_contribution(contribution_id: str, current_user: User = Depends(get_c
     
     try:
         vector_store = get_vector_store()
-        vector_store.delete_contribution(int(contribution_id))
+        vector_store.delete_contribution(contribution_id)
         logger.info(f"Rejected contribution {contribution_id}")
         return {"status": "success", "message": "Contribution rejected and removed."}
     except Exception as e:

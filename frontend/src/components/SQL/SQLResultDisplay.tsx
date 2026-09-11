@@ -515,7 +515,8 @@ export const SQLResultDisplay: React.FC<SQLResultDisplayProps> = ({
             const response = await api.contributions.submit({
                 question: trimmedQuestion,
                 sql_query: trimmedSQL,
-                knowledge_type: knowledgeType
+                knowledge_type: knowledgeType,
+                source_id: sourceId,
             });
 
             if (response.success) {

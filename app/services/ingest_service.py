@@ -327,7 +327,7 @@ def build_table_markdown_description(
     return md
 
 def create_milvus_collections():
-    """Ensure contract collections exist. Never drop/recreate legacy schema_index layouts."""
+    """Ensure contract collections exist."""
     from app.services.stores.provider_factory import get_vector_provider
 
     provider = get_vector_provider()

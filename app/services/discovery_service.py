@@ -95,8 +95,8 @@ def _filter_ranked_tables_by_source(
 
 def perform_discovery(request: DiscoveryRequest) -> DiscoveryResponse:
     """
-    Legacy discovery function - kept for backward compatibility
-    Uses Milvus schema_index (deprecated)
+    Legacy discovery function - kept for backward compatibility.
+    Uses the contract schemas and few_shots collections.
     """
     vector_store = get_vector_store()
     # Search for relevant tables

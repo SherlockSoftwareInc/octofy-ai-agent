@@ -42,7 +42,7 @@ def get_schemas_status(
     Args:
         include_db_inspection: If True, compare with database to show missing tables.
                               If False (default), only return indexed schemas for faster loading.
-        source_id: Optional data source filter (vector provider + schema_index_v2).
+        source_id: Optional data source filter (vector provider schemas collection).
     """
     try:
         if source_id:
@@ -133,7 +133,7 @@ def export_schemas(current_user: User = Depends(get_current_active_admin)):
         
         # Prepare data for export (exclude embeddings)
         # schemas are TableSchema objects, not dicts
-        # Columns match the Milvus schema_index collection: schema_name, table_name, table_type, description
+        # Columns match the contract schemas collection: schema_name, table_name, table_type, description
         export_data = []
         for schema in schemas:
             export_data.append({

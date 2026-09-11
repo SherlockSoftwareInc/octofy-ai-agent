@@ -11,13 +11,10 @@ from app.services.stores.schema_rows import build_schema_object_rows, delete_sch
 from app.services.fewshot_vector_service import FewShotVectorService
 from app.services.value_index_service import ValueIndexService
 from app.services.vector_search_service import VectorSearchService
+from datetime import datetime, timezone
+from uuid import uuid4
 import hashlib
 import logging
-
-try:
-    from pymilvus import Collection, utility, FieldSchema, CollectionSchema, DataType
-except ImportError:  # pragma: no cover - optional for contract-facade tests
-    Collection = utility = FieldSchema = CollectionSchema = DataType = None
 
 _vector_store_instance = None
 
@@ -107,11 +104,11 @@ class VectorStoreBase(ABC):
         pass
     
     @abstractmethod
-    def insert_contribution(self, question: str, sql_query: str, knowledge_type: str = "sql_query", user_id: str = None) -> int:
+    def insert_contribution(self, question: str, sql_query: str, knowledge_type: str = "sql_query", user_id: str = None, source_guid: str = None) -> Union[int, str]:
         pass
     
     @abstractmethod
-    def delete_contribution(self, contribution_id: int):
+    def delete_contribution(self, contribution_id: Union[int, str]):
         pass
     
     @abstractmethod
@@ -120,7 +117,7 @@ class VectorStoreBase(ABC):
         pass
     
     @abstractmethod
-    def move_contribution_to_knowledge_base(self, contribution_id: int, edited_question: str = None, edited_sql: str = None, knowledge_type: Optional[str] = None) -> int:
+    def move_contribution_to_knowledge_base(self, contribution_id: Union[int, str], edited_question: str = None, edited_sql: str = None, knowledge_type: Optional[str] = None) -> Union[int, str]:
         """Move contribution to knowledge base. Returns new knowledge base item ID.
         
         Args:
@@ -156,8 +153,6 @@ class MilvusVectorStore(VectorStoreBase):
 
         self.provider = get_vector_provider()
         self._connected = bool(getattr(self.provider, "_connected", False))
-        if self._connected:
-            self._ensure_contributions_collection()
 
     def _stores(self, source_id: Optional[str] = None):
         sid = source_id or self._resolve_default_source_guid()
@@ -477,7 +472,7 @@ class MilvusVectorStore(VectorStoreBase):
         if not self._connected:
             raise Exception("Milvus is not connected. Cannot insert fewshot item.")
         _, _, fewshots, _ = self._stores(source_guid)
-        fewshots.upsert(question, sql_query)
+        return fewshots.upsert(question, sql_query)
 
     def delete_fewshot_item(self, item_id: Union[int, str]):
         if not self._connected:
@@ -569,98 +564,64 @@ class MilvusVectorStore(VectorStoreBase):
                 seen.add(sid)
                 self.provider.delete_source("value_index", sid)
 
-    def _ensure_contributions_collection(self):
-        """Ensure the contributions collection exists with proper schema (not part of the port-plan contract)."""
-        if not self._connected or utility is None:
-            return
-        try:
-            if utility.has_collection(settings.MILVUS_COLLECTION_CONTRIBUTIONS):
-                existing = Collection(settings.MILVUS_COLLECTION_CONTRIBUTIONS)
-                field_names = [f.name for f in existing.schema.fields]
-                if "knowledge_type" in field_names:
-                    return
-                utility.drop_collection(settings.MILVUS_COLLECTION_CONTRIBUTIONS)
+    def _contribution_rows(self) -> List[Dict[str, Any]]:
+        if hasattr(self.provider, "fetch_all_rows"):
+            return self.provider.fetch_all_rows("contribution_library")
+        return self.provider.fetch_all("contribution_library", self._resolve_default_source_guid())
 
-            contrib_fields = [
-                FieldSchema(name="id", dtype=DataType.INT64, is_primary=True, auto_id=True),
-                FieldSchema(name="embedding", dtype=DataType.FLOAT_VECTOR, dim=self._embedding_dim),
-                FieldSchema(name="question", dtype=DataType.VARCHAR, max_length=2048),
-                FieldSchema(name="sql_query", dtype=DataType.VARCHAR, max_length=4096),
-                FieldSchema(name="knowledge_type", dtype=DataType.VARCHAR, max_length=32),
-                FieldSchema(name="user_id", dtype=DataType.VARCHAR, max_length=128),
-                FieldSchema(name="submitted_at", dtype=DataType.VARCHAR, max_length=64),
-                FieldSchema(name="status", dtype=DataType.VARCHAR, max_length=32)
-            ]
-            contrib_schema = CollectionSchema(fields=contrib_fields, description="Contribution Library - Staging Area")
-            coll = Collection(name=settings.MILVUS_COLLECTION_CONTRIBUTIONS, schema=contrib_schema)
-            index_params = {
-                "metric_type": "COSINE",
-                "index_type": "IVF_FLAT",
-                "params": {"nlist": 1024}
-            }
-            coll.create_index(field_name="embedding", index_params=index_params)
-            coll.flush()
-            print(f"Created/updated collection: {settings.MILVUS_COLLECTION_CONTRIBUTIONS}")
-        except Exception as e:
-            print(f"Failed to ensure contributions collection: {e}")
+    def _find_contribution(self, contribution_id: Union[int, str]) -> Optional[Dict[str, Any]]:
+        key = str(contribution_id)
+        for row in self._contribution_rows():
+            if str(row.get("key") or row.get("id") or "") == key:
+                return row
+        return None
 
     def get_all_contributions(self) -> List[Dict[str, Any]]:
-        if not self._connected or utility is None:
+        if not self._connected:
             return []
-        self._ensure_contributions_collection()
-        if not utility.has_collection(settings.MILVUS_COLLECTION_CONTRIBUTIONS):
-            return []
-        collection = Collection(settings.MILVUS_COLLECTION_CONTRIBUTIONS)
-        collection.load()
-        res = collection.query(
-            expr="id >= 0",
-            output_fields=["id", "question", "sql_query", "knowledge_type", "user_id", "submitted_at", "status"],
-            limit=1000,
-            consistency_level="Strong"
-        )
-        return res
-
-    def insert_contribution(self, question: str, sql_query: str, knowledge_type: str = "sql_query", user_id: str = None) -> int:
-        from datetime import datetime
-
-        if not self._connected or utility is None:
-            raise Exception("Milvus is not connected. Cannot insert contribution.")
-        self._ensure_contributions_collection()
-        collection = Collection(settings.MILVUS_COLLECTION_CONTRIBUTIONS)
-
-        embedding = self._get_embedding(question)
-        submitted_at = datetime.now().isoformat()
-
-        data = [
-            [embedding],
-            [question],
-            [sql_query],
-            [knowledge_type],
-            [user_id or "anonymous"],
-            [submitted_at],
-            ["pending"]
+        return [
+            {
+                "id": r.get("key"),
+                "question": r.get("question"),
+                "sql_query": r.get("sql_query") or r.get("sql"),
+                "knowledge_type": r.get("knowledge_type") or "sql_query",
+                "user_id": r.get("user_id"),
+                "submitted_at": r.get("submitted_at"),
+                "status": r.get("status") or "pending",
+                "source_guid": r.get("data_source_id"),
+            }
+            for r in self._contribution_rows()
         ]
 
-        result = collection.insert(data)
-        collection.flush()
+    def insert_contribution(self, question: str, sql_query: str, knowledge_type: str = "sql_query", user_id: str = None, source_guid: str = None) -> Union[int, str]:
+        if not self._connected:
+            raise Exception("Vector store is not connected. Cannot insert contribution.")
+        source_id, _, _, _ = self._stores(source_guid)
+        key = str(uuid4())
+        self.provider.upsert(
+            "contribution_library",
+            [{
+                "data_source_id": source_id,
+                "key": key,
+                "question": question,
+                "sql_query": sql_query,
+                "knowledge_type": knowledge_type or "sql_query",
+                "user_id": user_id or "anonymous",
+                "submitted_at": datetime.now(timezone.utc).isoformat(),
+                "status": "pending",
+            }],
+        )
+        return key
 
-        if result.primary_keys:
-            return result.primary_keys[0]
-        return -1
-
-    def delete_contribution(self, contribution_id: int):
-        if not self._connected or utility is None:
+    def delete_contribution(self, contribution_id: Union[int, str]):
+        if not self._connected:
             return
-        self._ensure_contributions_collection()
-        if not utility.has_collection(settings.MILVUS_COLLECTION_CONTRIBUTIONS):
+        row = self._find_contribution(contribution_id)
+        if not row:
             return
-        collection = Collection(settings.MILVUS_COLLECTION_CONTRIBUTIONS)
-        collection.load()
-        expr = f"id in [{contribution_id}]"
-        collection.delete(expr)
-        collection.flush()
-        collection.release()
-        collection.load()
+        sid = row.get("data_source_id") or self._resolve_default_source_guid()
+        key = str(row.get("key") or contribution_id)
+        self.provider.delete("contribution_library", sid, "key", key)
 
     def check_similarity(self, question: str, threshold: float = 0.9, knowledge_type: Optional[str] = None) -> tuple:
         if not self._connected:
@@ -698,32 +659,23 @@ class MilvusVectorStore(VectorStoreBase):
             raise e
         return export_data
 
-    def move_contribution_to_knowledge_base(self, contribution_id: int, edited_question: str = None, edited_sql: str = None, knowledge_type: Optional[str] = None) -> int:
-        if not self._connected or utility is None:
-            raise Exception("Milvus is not connected. Cannot move contribution.")
-        self._ensure_contributions_collection()
+    def move_contribution_to_knowledge_base(self, contribution_id: Union[int, str], edited_question: str = None, edited_sql: str = None, knowledge_type: Optional[str] = None) -> Union[int, str]:
+        if not self._connected:
+            raise Exception("Vector store is not connected. Cannot move contribution.")
 
-        contrib_collection = Collection(settings.MILVUS_COLLECTION_CONTRIBUTIONS)
-        contrib_collection.load()
-
-        res = contrib_collection.query(
-            expr=f"id == {contribution_id}",
-            output_fields=["question", "sql_query", "knowledge_type"],
-            limit=1
-        )
-
-        if not res:
+        contribution = self._find_contribution(contribution_id)
+        if not contribution:
             raise Exception(f"Contribution {contribution_id} not found")
 
-        contribution = res[0]
-        question = edited_question if edited_question else contribution['question']
-        sql_query = edited_sql if edited_sql else contribution['sql_query']
-        stored_type = contribution.get('knowledge_type')
+        source_id = contribution.get("data_source_id") or contribution.get("source_guid") or self._resolve_default_source_guid()
+        question = edited_question if edited_question else contribution.get("question")
+        sql_query = edited_sql if edited_sql else (contribution.get("sql_query") or contribution.get("sql"))
+        stored_type = contribution.get("knowledge_type")
         final_type = knowledge_type or stored_type or "sql_query"
 
-        self.insert_fewshot_item(question, sql_query, final_type)
+        kb_key = self.insert_fewshot_item(question, sql_query, final_type, source_guid=source_id)
         self.delete_contribution(contribution_id)
-        return -1
+        return kb_key or contribution.get("key") or str(contribution_id)
 
 
 class NullVectorStore(VectorStoreBase):
@@ -791,16 +743,16 @@ class NullVectorStore(VectorStoreBase):
     def get_all_contributions(self) -> List[Dict[str, Any]]:
         return []
 
-    def insert_contribution(self, question: str, sql_query: str, knowledge_type: str = "sql_query", user_id: str = None) -> int:
+    def insert_contribution(self, question: str, sql_query: str, knowledge_type: str = "sql_query", user_id: str = None, source_guid: str = None) -> Union[int, str]:
         return -1
 
-    def delete_contribution(self, contribution_id: int):
+    def delete_contribution(self, contribution_id: Union[int, str]):
         return None
 
     def check_similarity(self, question: str, threshold: float = 0.9, knowledge_type: Optional[str] = None) -> tuple:
         return (False, 0.0, None)
 
-    def move_contribution_to_knowledge_base(self, contribution_id: int, edited_question: str = None, edited_sql: str = None, knowledge_type: Optional[str] = None) -> int:
+    def move_contribution_to_knowledge_base(self, contribution_id: Union[int, str], edited_question: str = None, edited_sql: str = None, knowledge_type: Optional[str] = None) -> Union[int, str]:
         return -1
 
     def export_all_data(self) -> Dict[str, Any]:

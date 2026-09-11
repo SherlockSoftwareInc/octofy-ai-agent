@@ -41,7 +41,7 @@ class MilvusProvider:
             }
             host = getattr(settings, "VECTOR_HOST", None) or settings.MILVUS_HOST
             port = getattr(settings, "VECTOR_PORT", None) or settings.MILVUS_PORT
-            connections.connect(alias="default", host=host, port=port)
+            connections.connect(alias="default", host=host, port=port, timeout=5)
             self._connected = True
             self.ensure_schema()
         except Exception as exc:

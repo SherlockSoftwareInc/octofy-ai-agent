@@ -27,7 +27,6 @@ class TestInsertFewshotItem:
         with patch("app.services.vector_store.get_vector_provider", return_value=provider), \
              patch("app.services.vector_store.load_settings", return_value=_Settings()), \
              patch("app.services.vector_store.EmbeddingFactory.create_client", side_effect=Exception("no embed")), \
-             patch.object(MilvusVectorStore, "_ensure_contributions_collection", lambda self: None), \
              patch.object(MilvusVectorStore, "_resolve_default_source_guid", lambda self: "src1"):
             store = MilvusVectorStore()
             store.provider = provider

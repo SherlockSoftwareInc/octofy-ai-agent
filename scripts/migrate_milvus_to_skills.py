@@ -1,7 +1,7 @@
 """
-Migration Script: Convert Milvus schema_index to Skills Files
+Migration Script: Convert Milvus schemas to Skills Files
 
-This script reads all table schemas from Milvus schema_index collection
+This script reads all table schemas from the contract schemas collection
 and generates the skills directory structure with markdown files.
 
 Usage:
@@ -20,7 +20,6 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from app.services.vector_store import get_vector_store
 from app.models.schemas import TableSchema
-from app.core.config import settings
 
 
 def normalize_name(name: str) -> str:
@@ -136,7 +135,7 @@ def generate_data_source_file(ds_info: Dict, output_dir: Path):
 
 ## Schema Notes
 
-This data source was auto-generated from the Milvus schema_index collection.
+This data source was auto-generated from the Milvus schemas collection.
 Please manually enhance with:
 - Specific time ranges
 - Update frequency
@@ -202,7 +201,7 @@ def generate_data_group_file(group_info: Dict, ds_folder: str, output_dir: Path)
 
 ## Description
 
-This data group was auto-generated from Milvus schema_index.
+This data group was auto-generated from Milvus schemas.
 Contains {len(group_info['tables'])} table(s).
 
 ## Data Objects
@@ -279,13 +278,13 @@ def migrate_milvus_to_skills(output_dir: str, dry_run: bool = False):
     try:
         vector_store = get_vector_store()
         all_tables = vector_store.get_all_schemas()
-        print(f"[SUCCESS] Found {len(all_tables)} tables in schema_index")
+        print(f"[SUCCESS] Found {len(all_tables)} tables in schemas")
     except Exception as e:
         print(f"[ERROR] Error connecting to Milvus: {e}")
         return
     
     if not all_tables:
-        print("[WARNING] No tables found in Milvus schema_index. Nothing to migrate.")
+        print("[WARNING] No tables found in Milvus schemas. Nothing to migrate.")
         return
     
     # Group tables by schema (data source)
@@ -367,7 +366,7 @@ def migrate_milvus_to_skills(output_dir: str, dry_run: bool = False):
 
 
 def main():
-    parser = argparse.ArgumentParser(description='Migrate Milvus schema_index to Skills files')
+    parser = argparse.ArgumentParser(description='Migrate Milvus schemas to Skills files')
     parser.add_argument('--output-dir', default='skills/data-sources',
                        help='Output directory for skills files (default: skills/data-sources)')
     parser.add_argument('--dry-run', action='store_true',
