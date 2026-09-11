@@ -107,62 +107,114 @@ async def generate_sql_endpoint(
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 @router.post("/generate-r")
-async def generate_r_endpoint(request: GenerateSQLRequest, api_key: str = Depends(verify_api_key)):
+async def generate_r_endpoint(
+    request: GenerateSQLRequest,
+    http_request: Request,
+    current_user: User = Depends(verify_api_key),
+    db: Session = Depends(get_user_db),
+):
+    if not (request.query or "").strip():
+        raise HTTPException(status_code=400, detail="Bad request")
     request.source_id = require_source_id(request.source_id)
 
+    start_time = time.time()
+    final_result = None
+    error_occurred = False
+    error_message = None
+
     def event_generator():
+        nonlocal final_result, error_occurred, error_message
         try:
             for item in generate_r_for_request(request):
-                if isinstance(item, AgentStatus):
-                    yield f"data: {json.dumps(item.model_dump())}\n\n"
-                elif isinstance(item, dict) and item.get("type") == "result":
-                    payload = item["payload"]
-                    data = {
-                        "type": "result",
-                        "payload": payload.model_dump(by_alias=True)
-                    }
-                    yield f"data: {json.dumps(data)}\n\n"
-                elif isinstance(item, dict) and item.get("type") == "done":
-                    # Forward done signal to frontend
-                    yield f"data: {json.dumps({'type': 'done'})}\n\n"
+                wrapped = _wrap_generation_event(item)
+                if wrapped.get("type") == "result":
+                    payload = wrapped.get("payload")
+                    if isinstance(payload, GenerateSQLResponse):
+                        final_result = payload
+                    elif isinstance(payload, dict):
+                        try:
+                            final_result = GenerateSQLResponse.model_validate(payload)
+                        except Exception:
+                            final_result = None
+                yield format_sse(wrapped)
+        except HTTPException:
+            raise
         except Exception as e:
+            error_occurred = True
+            error_message = str(e)
             logger.error(f"Error in generate_r_endpoint: {str(e)}")
             logger.error(traceback.format_exc())
-            error_data = {
-                "type": "error",
-                "message": str(e)
-            }
-            yield f"data: {json.dumps(error_data)}\n\n"
+            yield format_sse(sse_error(str(e), {"detail": str(e)}))
+        finally:
+            execution_time = time.time() - start_time
+            log_sql_generation(
+                db=db,
+                user_id=current_user.id,
+                query=request.query,
+                sql=final_result.sql if final_result else None,
+                tokens_used=final_result.usage.total_tokens if final_result and hasattr(final_result, "usage") else None,
+                execution_time=execution_time,
+                success=not error_occurred,
+                error_message=error_message,
+                ip_address=http_request.client.host if http_request.client else None,
+                user_agent=http_request.headers.get("user-agent"),
+            )
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 @router.post("/generate-sas")
-async def generate_sas_endpoint(request: GenerateSQLRequest, api_key: str = Depends(verify_api_key)):
+async def generate_sas_endpoint(
+    request: GenerateSQLRequest,
+    http_request: Request,
+    current_user: User = Depends(verify_api_key),
+    db: Session = Depends(get_user_db),
+):
+    if not (request.query or "").strip():
+        raise HTTPException(status_code=400, detail="Bad request")
     request.source_id = require_source_id(request.source_id)
 
+    start_time = time.time()
+    final_result = None
+    error_occurred = False
+    error_message = None
+
     def event_generator():
+        nonlocal final_result, error_occurred, error_message
         try:
             for item in generate_sas_for_request(request):
-                if isinstance(item, AgentStatus):
-                    yield f"data: {json.dumps(item.model_dump())}\n\n"
-                elif isinstance(item, dict) and item.get("type") == "result":
-                    payload = item["payload"]
-                    data = {
-                        "type": "result",
-                        "payload": payload.model_dump(by_alias=True)
-                    }
-                    yield f"data: {json.dumps(data)}\n\n"
-                elif isinstance(item, dict) and item.get("type") == "done":
-                    # Forward done signal to frontend
-                    yield f"data: {json.dumps({'type': 'done'})}\n\n"
+                wrapped = _wrap_generation_event(item)
+                if wrapped.get("type") == "result":
+                    payload = wrapped.get("payload")
+                    if isinstance(payload, GenerateSQLResponse):
+                        final_result = payload
+                    elif isinstance(payload, dict):
+                        try:
+                            final_result = GenerateSQLResponse.model_validate(payload)
+                        except Exception:
+                            final_result = None
+                yield format_sse(wrapped)
+        except HTTPException:
+            raise
         except Exception as e:
+            error_occurred = True
+            error_message = str(e)
             logger.error(f"Error in generate_sas_endpoint: {str(e)}")
             logger.error(traceback.format_exc())
-            error_data = {
-                "type": "error",
-                "message": str(e)
-            }
-            yield f"data: {json.dumps(error_data)}\n\n"
+            yield format_sse(sse_error(str(e), {"detail": str(e)}))
+        finally:
+            execution_time = time.time() - start_time
+            log_sql_generation(
+                db=db,
+                user_id=current_user.id,
+                query=request.query,
+                sql=final_result.sql if final_result else None,
+                tokens_used=final_result.usage.total_tokens if final_result and hasattr(final_result, "usage") else None,
+                execution_time=execution_time,
+                success=not error_occurred,
+                error_message=error_message,
+                ip_address=http_request.client.host if http_request.client else None,
+                user_agent=http_request.headers.get("user-agent"),
+            )
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 

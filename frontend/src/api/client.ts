@@ -335,7 +335,16 @@ export const api = {
         return finalResult;
     },
 
-    generateRStream: async (query: string, onStatus: (status: AgentStatus) => void, context?: DiscoveryContext, signal?: AbortSignal, sourceId?: string): Promise<GenerateSQLResponse> => {
+    generateRStream: async (
+        query: string,
+        onStatus: (status: AgentStatus) => void,
+        context?: DiscoveryContext,
+        signal?: AbortSignal,
+        previousSQL?: string,
+        queryHistory?: string,
+        tableOverride?: string[],
+        sourceId?: string
+    ): Promise<GenerateSQLResponse> => {
         const url = `${API_BASE_URL}/generate-r`;
         const apiKey = getApiKey();
         const headers: Record<string, string> = {
@@ -345,7 +354,15 @@ export const api = {
             headers['X-API-Key'] = apiKey;
         }
         const source_id = requireSourceId(sourceId);
-        const body = JSON.stringify({ query, context, source_id });
+        const body = JSON.stringify({
+            query,
+            context,
+            previousSQL,
+            queryHistory,
+            queryMode: 'generate',
+            table_override: tableOverride,
+            source_id
+        });
 
         const response = await fetch(url, {
             method: 'POST',
@@ -392,7 +409,11 @@ export const api = {
                             // Stream explicitly completed
                             return finalResult!;
                         } else if (data.type === 'error') {
-                            throw new Error(data.message);
+                            if (data.payload && (data.payload.sql !== undefined || data.payload.failure_report)) {
+                                finalResult = data.payload as GenerateSQLResponse;
+                            } else {
+                                throw new Error(data.message || 'generation failed');
+                            }
                         }
                     }
                 }
@@ -405,7 +426,16 @@ export const api = {
         return finalResult;
     },
 
-    generateSASStream: async (query: string, onStatus: (status: AgentStatus) => void, context?: DiscoveryContext, signal?: AbortSignal, sourceId?: string): Promise<GenerateSQLResponse> => {
+    generateSASStream: async (
+        query: string,
+        onStatus: (status: AgentStatus) => void,
+        context?: DiscoveryContext,
+        signal?: AbortSignal,
+        previousSQL?: string,
+        queryHistory?: string,
+        tableOverride?: string[],
+        sourceId?: string
+    ): Promise<GenerateSQLResponse> => {
         const url = `${API_BASE_URL}/generate-sas`;
         const apiKey = getApiKey();
         const headers: Record<string, string> = {
@@ -415,7 +445,15 @@ export const api = {
             headers['X-API-Key'] = apiKey;
         }
         const source_id = requireSourceId(sourceId);
-        const body = JSON.stringify({ query, context, source_id });
+        const body = JSON.stringify({
+            query,
+            context,
+            previousSQL,
+            queryHistory,
+            queryMode: 'generate',
+            table_override: tableOverride,
+            source_id
+        });
 
         const response = await fetch(url, {
             method: 'POST',
@@ -462,7 +500,11 @@ export const api = {
                             // Stream explicitly completed
                             return finalResult!;
                         } else if (data.type === 'error') {
-                            throw new Error(data.message);
+                            if (data.payload && (data.payload.sql !== undefined || data.payload.failure_report)) {
+                                finalResult = data.payload as GenerateSQLResponse;
+                            } else {
+                                throw new Error(data.message || 'generation failed');
+                            }
                         }
                     }
                 }

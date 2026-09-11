@@ -27,10 +27,16 @@ from app.core.errors import (
 from app.core.orchestrator.prompts import (
     build_python_system_prompt,
     build_python_user_prompt,
+    build_r_system_prompt,
+    build_r_user_prompt,
+    build_sas_system_prompt,
+    build_sas_user_prompt,
     build_system_prompt,
     build_user_prompt,
     critic_prompt,
     python_critic_prompt,
+    r_critic_prompt,
+    sas_critic_prompt,
 )
 from app.models.pipeline import (
     AgentContext,
@@ -43,6 +49,8 @@ from app.models.pipeline import (
 )
 from app.services.python_interceptor import PythonInterceptor
 from app.services.query_interceptor import QueryInterceptor
+from app.services.r_interceptor import RInterceptor
+from app.services.sas_interceptor import SASInterceptor
 from app.services.semantic_compiler import SemanticCompilationError, SemanticCompiler
 from app.services.sql_error_classifier import SqlErrorClassifier
 from app.services.sql_validator import SqlValidator
@@ -51,6 +59,18 @@ from app.utils.python_normalization import (
     extract_sql_from_python,
     structural_python_hash,
     syntax_check_python,
+)
+from app.utils.r_normalization import (
+    extract_r_body,
+    extract_sql_from_r,
+    structural_r_hash,
+    syntax_check_r,
+)
+from app.utils.sas_normalization import (
+    extract_sas_body,
+    extract_sql_from_sas,
+    structural_sas_hash,
+    syntax_check_sas,
 )
 from app.utils.regexes import parse_validation_sentinels
 from app.utils.sql_normalization import extract_sql_body, structural_sql_hash
@@ -71,9 +91,14 @@ def run_attempt_loop(
     started_at = started_at or time.time()
     interceptor = QueryInterceptor()
     python_interceptor = PythonInterceptor()
+    r_interceptor = RInterceptor()
+    sas_interceptor = SASInterceptor()
     validator = SqlValidator(context.request.source_id, context.dbms_type)
     python_mode = target_language == "python"
-    if python_mode:
+    r_mode = target_language == "r"
+    sas_mode = target_language == "sas"
+    script_mode = python_mode or r_mode or sas_mode
+    if script_mode:
         semantic_mode = False
     classifier = SqlErrorClassifier()
     compiler = SemanticCompiler()
@@ -129,6 +154,12 @@ def run_attempt_loop(
         if python_mode:
             system = build_python_system_prompt(context, discovery, attempt_history=history_text)
             user = build_python_user_prompt(context)
+        elif r_mode:
+            system = build_r_system_prompt(context, discovery, attempt_history=history_text)
+            user = build_r_user_prompt(context)
+        elif sas_mode:
+            system = build_sas_system_prompt(context, discovery, attempt_history=history_text)
+            user = build_sas_user_prompt(context)
         else:
             system = build_system_prompt(
                 context,
@@ -151,12 +182,29 @@ def run_attempt_loop(
             )
             continue
 
-        sql = extract_python_body(raw) if python_mode else extract_sql_body(raw)
+        if python_mode:
+            sql = extract_python_body(raw)
+        elif r_mode:
+            sql = extract_r_body(raw)
+        elif sas_mode:
+            sql = extract_sas_body(raw)
+        else:
+            sql = extract_sql_body(raw)
         if python_mode and sql:
             from app.utils.python_normalization import qualify_sql_in_python
 
             known = [(o.schema_name, o.object_name) for o in discovery.objects]
             sql = qualify_sql_in_python(sql, known)
+        elif r_mode and sql:
+            from app.utils.r_normalization import qualify_sql_in_r
+
+            known = [(o.schema_name, o.object_name) for o in discovery.objects]
+            sql = qualify_sql_in_r(sql, known)
+        elif sas_mode and sql:
+            from app.utils.sas_normalization import qualify_sql_in_sas
+
+            known = [(o.schema_name, o.object_name) for o in discovery.objects]
+            sql = qualify_sql_in_sas(sql, known)
         if semantic_mode:
             smq = _extract_smq(raw)
             if smq is None:
@@ -211,6 +259,20 @@ def run_attempt_loop(
                     ok, reason = interceptor.check(embedded, user_requested_write=user_write)
                     if not ok:
                         break
+        elif r_mode:
+            ok, reason = r_interceptor.check(sql, user_requested_write=user_write)
+            if ok:
+                for embedded in extract_sql_from_r(sql):
+                    ok, reason = interceptor.check(embedded, user_requested_write=user_write)
+                    if not ok:
+                        break
+        elif sas_mode:
+            ok, reason = sas_interceptor.check(sql, user_requested_write=user_write)
+            if ok:
+                for embedded in extract_sql_from_sas(sql):
+                    ok, reason = interceptor.check(embedded, user_requested_write=user_write)
+                    if not ok:
+                        break
         else:
             ok, reason = interceptor.check(sql, user_requested_write=user_write)
         if not ok:
@@ -228,15 +290,26 @@ def run_attempt_loop(
             continue
 
         # 3. Structural hash
-        digest = structural_python_hash(sql) if python_mode else structural_sql_hash(sql)
+        digest = (
+            structural_python_hash(sql) if python_mode
+            else structural_r_hash(sql) if r_mode
+            else structural_sas_hash(sql) if sas_mode
+            else structural_sql_hash(sql)
+        )
         if digest in hash_history:
             hallucination_count += 1
             loop_breaker = True
             threshold = HallucinationExitThresholdWithBreaker if circuit_breaker else HallucinationExitThreshold
             if hallucination_count >= threshold:
+                repeated = (
+                    "Repeated Python structure detected" if python_mode
+                    else "Repeated R structure detected" if r_mode
+                    else "Repeated SAS structure detected" if sas_mode
+                    else "Repeated SQL structure detected"
+                )
                 return _fail(
                     "hallucination_loop",
-                    "Repeated SQL structure detected" if not python_mode else "Repeated Python structure detected",
+                    repeated,
                     attempt,
                     attempt_reports,
                     discovery,
@@ -256,8 +329,12 @@ def run_attempt_loop(
         # 4. Attempt-1 DB pre-check before critic
         if attempt == 1:
             emit(PipelineStage.DB_VALIDATION, "Database pre-check (attempt 1)")
-            db_ok, db_err, db_missing = _validate_candidate(sql, validator, allowed, python_mode)
-            if db_ok and (not python_mode or extract_sql_from_python(sql)):
+            db_ok, db_err, db_missing = _validate_candidate(sql, validator, allowed, target_language)
+            if db_ok and (
+                (not python_mode or extract_sql_from_python(sql))
+                and (not r_mode or extract_sql_from_r(sql))
+                and (not sas_mode or extract_sql_from_sas(sql))
+            ):
                 skip_critic = True
 
         critic_result = CombinedValidationResult()
@@ -265,6 +342,10 @@ def run_attempt_loop(
             emit(PipelineStage.CRITIC, "LLM critic")
             if python_mode:
                 critic_result = _run_python_critic(llm, sql, discovery.schema_context_for_validation, context.combined_query)
+            elif r_mode:
+                critic_result = _run_r_critic(llm, sql, discovery.schema_context_for_validation, context.combined_query)
+            elif sas_mode:
+                critic_result = _run_sas_critic(llm, sql, discovery.schema_context_for_validation, context.combined_query)
             else:
                 critic_result = _run_critic(llm, sql, discovery.schema_context_for_validation, context.combined_query, semantic_json if semantic_mode else None)
             if critic_result.canonical_question:
@@ -284,7 +365,7 @@ def run_attempt_loop(
 
         if not skip_critic:
             emit(PipelineStage.DB_VALIDATION, "Database validation")
-            db_ok, db_err, db_missing = _validate_candidate(sql, validator, allowed, python_mode)
+            db_ok, db_err, db_missing = _validate_candidate(sql, validator, allowed, target_language)
 
         if db_ok:
             elapsed_ms = int((time.time() - started_at) * 1000)
@@ -382,23 +463,60 @@ def _run_python_critic(llm, code, schema, query) -> CombinedValidationResult:
         return CombinedValidationResult()
 
 
-def _validate_candidate(code: str, validator: SqlValidator, allowed: List[str], python_mode: bool):
-    if not python_mode:
+def _run_r_critic(llm, code, schema, query) -> CombinedValidationResult:
+    if llm is None:
+        return CombinedValidationResult()
+    try:
+        data = llm.complete_json(r_critic_prompt(code, schema, query))
+        return CombinedValidationResult(
+            requirements_satisfied=bool(data.get("requirements_satisfied", True)),
+            schema_valid=bool(data.get("schema_valid", True)),
+            feedback=data.get("feedback") or "",
+            status=data.get("status"),
+            canonical_question=data.get("canonical_question"),
+            missing_objects=list(data.get("missing_objects") or []),
+        )
+    except Exception:
+        return CombinedValidationResult()
+
+
+def _run_sas_critic(llm, code, schema, query) -> CombinedValidationResult:
+    if llm is None:
+        return CombinedValidationResult()
+    try:
+        data = llm.complete_json(sas_critic_prompt(code, schema, query))
+        return CombinedValidationResult(
+            requirements_satisfied=bool(data.get("requirements_satisfied", True)),
+            schema_valid=bool(data.get("schema_valid", True)),
+            feedback=data.get("feedback") or "",
+            status=data.get("status"),
+            canonical_question=data.get("canonical_question"),
+            missing_objects=list(data.get("missing_objects") or []),
+        )
+    except Exception:
+        return CombinedValidationResult()
+
+
+def _validate_candidate(code: str, validator: SqlValidator, allowed: List[str], target_language: str):
+    extractors = {
+        "python": (syntax_check_python, extract_sql_from_python),
+        "r": (syntax_check_r, extract_sql_from_r),
+        "sas": (syntax_check_sas, extract_sql_from_sas),
+    }
+    pair = extractors.get(target_language)
+    if not pair:
         return validator.validate(code, allowed)
-    ok, err = syntax_check_python(code)
+    syntax_check, extract_sql = pair
+    ok, err = syntax_check(code)
     if not ok:
         return False, err, []
-    sqls = extract_sql_from_python(code)
+    sqls = extract_sql(code)
     if not sqls:
         return True, "", []
-    last_err = ""
-    last_missing: List[str] = []
     for sql in sqls:
         db_ok, db_err, db_missing = validator.validate(sql, allowed)
         if not db_ok:
-            last_err = db_err
-            last_missing = db_missing or []
-            return False, last_err, last_missing
+            return False, db_err, db_missing or []
     return True, "", []
 
 

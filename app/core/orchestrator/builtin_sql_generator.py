@@ -32,6 +32,18 @@ from app.utils.python_normalization import (
     materialize_python_code,
     syntax_check_python,
 )
+from app.utils.r_normalization import (
+    extract_r_body,
+    extract_sql_from_r,
+    materialize_r_code,
+    syntax_check_r,
+)
+from app.utils.sas_normalization import (
+    extract_sas_body,
+    extract_sql_from_sas,
+    materialize_sas_code,
+    syntax_check_sas,
+)
 from app.utils.sse import sse_done, sse_result, sse_status
 
 logger = logging.getLogger(__name__)
@@ -48,6 +60,9 @@ def generate_sql_builtin(
     llm = llm or LlmClient()
     source_id = stores.source_id
     python_mode = target_language == "python"
+    r_mode = target_language == "r"
+    sas_mode = target_language == "sas"
+    script_mode = python_mode or r_mode or sas_mode
     step = 0
 
     def emit(stage: str, message: str, **extra):
@@ -61,7 +76,13 @@ def generate_sql_builtin(
         return _to_http(result).model_dump(by_alias=True)
 
     def code_from_match(sql: str) -> str:
-        return materialize_python_code(sql) if python_mode else sql
+        if python_mode:
+            return materialize_python_code(sql)
+        if r_mode:
+            return materialize_r_code(sql)
+        if sas_mode:
+            return materialize_sas_code(sql)
+        return sql
 
     yield emit(PipelineStage.ROUTING, "Validating and routing request")
     agent_req = build_agent_request(request, source_id)
@@ -127,7 +148,7 @@ def generate_sql_builtin(
 
     engine = DiscoveryEngine(stores, llm)
     engine.clear_analysis_cache()
-    semantic_mode = False if python_mode else stores.semantic.is_enabled(context.request.semantic_mode)
+    semantic_mode = False if script_mode else stores.semantic.is_enabled(context.request.semantic_mode)
 
     # No-discovery rewrite/optimize path
     if decision.skip_discovery and decision.route in {RouteKind.OPTIMIZE, RouteKind.GENERATE} and context.request.existing_code:
@@ -255,6 +276,22 @@ def generate_python_builtin(
     yield from generate_sql_builtin(request, stores, llm, target_language="python")
 
 
+def generate_r_builtin(
+    request: GenerateSQLRequest,
+    stores: SourceStores,
+    llm: Optional[LlmClient] = None,
+) -> Generator[Dict[str, Any], None, None]:
+    yield from generate_sql_builtin(request, stores, llm, target_language="r")
+
+
+def generate_sas_builtin(
+    request: GenerateSQLRequest,
+    stores: SourceStores,
+    llm: Optional[LlmClient] = None,
+) -> Generator[Dict[str, Any], None, None]:
+    yield from generate_sql_builtin(request, stores, llm, target_language="sas")
+
+
 def Kb_distance_exact() -> float:
     from app.core.constants import KbExactMatchThreshold
 
@@ -263,6 +300,8 @@ def Kb_distance_exact() -> float:
 
 def _generate_from_provided_sql(context, stores, llm, emit, started, target_language: str = "sql") -> BuiltInGenerateResult:
     python_mode = target_language == "python"
+    r_mode = target_language == "r"
+    sas_mode = target_language == "sas"
     existing = context.request.existing_code or ""
     validator = SqlValidator(context.request.source_id, context.dbms_type)
     deadline = started + (NoDiscoveryTimeBudgetMs / 1000.0)
@@ -280,9 +319,40 @@ def _generate_from_provided_sql(context, stores, llm, emit, started, target_lang
                 if not db_ok:
                     return False, db_err
             return True, ""
+        if r_mode:
+            ok, err = syntax_check_r(code)
+            if not ok:
+                return False, err
+            sqls = extract_sql_from_r(code)
+            if not sqls:
+                return True, ""
+            for sql in sqls:
+                db_ok, db_err, _ = validator.validate(sql)
+                if not db_ok:
+                    return False, db_err
+            return True, ""
+        if sas_mode:
+            ok, err = syntax_check_sas(code)
+            if not ok:
+                return False, err
+            sqls = extract_sql_from_sas(code)
+            if not sqls:
+                return True, ""
+            for sql in sqls:
+                db_ok, db_err, _ = validator.validate(sql)
+                if not db_ok:
+                    return False, db_err
+            return True, ""
         return validator.validate(code)[:2]
 
-    code = materialize_python_code(existing) if python_mode else existing
+    if python_mode:
+        code = materialize_python_code(existing)
+    elif r_mode:
+        code = materialize_r_code(existing)
+    elif sas_mode:
+        code = materialize_sas_code(existing)
+    else:
+        code = existing
     ok, err = _validate(code)
     if ok:
         return BuiltInGenerateResult(
@@ -314,6 +384,16 @@ def _generate_from_provided_sql(context, stores, llm, emit, started, target_lang
             f"Fix this Python pandas/sqlalchemy script for dialect {context.dbms_type}. "
             f"Error: {err}\nUser request: {context.combined_query}\nCode:\n{code}"
         )
+    elif r_mode:
+        prompt = (
+            f"Fix this R tidyverse/DBI script for dialect {context.dbms_type}. "
+            f"Error: {err}\nUser request: {context.combined_query}\nCode:\n{code}"
+        )
+    elif sas_mode:
+        prompt = (
+            f"Fix this SAS PROC SQL script for dialect {context.dbms_type}. "
+            f"Error: {err}\nUser request: {context.combined_query}\nCode:\n{code}"
+        )
     else:
         prompt = f"Fix this SQL for dialect {context.dbms_type}. Error: {err}\nSQL:\n{code}"
     try:
@@ -322,6 +402,10 @@ def _generate_from_provided_sql(context, stores, llm, emit, started, target_lang
 
         if python_mode:
             fixed = extract_python_body(raw) or code
+        elif r_mode:
+            fixed = extract_r_body(raw) or code
+        elif sas_mode:
+            fixed = extract_sas_body(raw) or code
         else:
             fixed = extract_sql_body(raw) or code
         ok, err = _validate(fixed)
@@ -358,6 +442,10 @@ def _to_http(result: BuiltInGenerateResult) -> GenerateSQLResponse:
     explanation = result.explanation or result.message
     if result.query_type == "python_code" and result.success:
         explanation = explanation or "The following Python code uses pandas to analyze your data."
+    elif result.query_type == "r_code" and result.success:
+        explanation = explanation or "The following R code uses tidyverse to analyze your data."
+    elif result.query_type == "sas_code" and result.success:
+        explanation = explanation or "The following SAS code may resolve your request."
     return GenerateSQLResponse(
         sql=result.sql or "",
         explanation=explanation,

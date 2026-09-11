@@ -870,9 +870,16 @@ function AuthenticatedApp() {
           queryToSend = `${planningSummary}\n\nAdditional requirements:\n${currentQuery}`;
         }
 
-        result = await api.generateRStream(queryToSend, (status) => {
-          setSteps([status]);
-        }, undefined, abortControllerRef.current.signal, sourceId);
+        result = await api.generateRStream(
+          queryToSend,
+          (status) => setSteps([status]),
+          undefined,
+          abortControllerRef.current.signal,
+          lastGeneratedSQL || undefined,
+          queryHistory || undefined,
+          tableOverride,
+          sourceId
+        );
         // Ensure query_type is set
         if (!result.query_type) result.query_type = 'r_code';
       } else if (queryMode === 'generate-sas') {
@@ -884,9 +891,16 @@ function AuthenticatedApp() {
           queryToSend = `${planningSummary}\n\nAdditional requirements:\n${currentQuery}`;
         }
 
-        result = await api.generateSASStream(queryToSend, (status) => {
-          setSteps([status]);
-        }, undefined, abortControllerRef.current.signal, sourceId);
+        result = await api.generateSASStream(
+          queryToSend,
+          (status) => setSteps([status]),
+          undefined,
+          abortControllerRef.current.signal,
+          lastGeneratedSQL || undefined,
+          queryHistory || undefined,
+          tableOverride,
+          sourceId
+        );
         if (!result.query_type) result.query_type = 'sas_code';
       } else if (queryMode === 'generate-python') {
         // Use summary as prompt if available; pass previous code and history for edit follow-ups
@@ -988,18 +1002,18 @@ function AuthenticatedApp() {
 
         // In-place update: when backend signals a code edit, update the previous code box instead of adding a new message
         let updatedMessagesForTitle: ChatMessage[];
-        if (result.query_type === 'python_code' && result.is_code_edit) {
-          let lastPythonAiIndex = -1;
+        if ((result.query_type === 'python_code' || result.query_type === 'r_code' || result.query_type === 'sas_code') && result.is_code_edit) {
+          let lastCodeAiIndex = -1;
           for (let i = currentMessages.length - 1; i >= 0; i--) {
             const m = currentMessages[i];
-            if (m.type === 'ai' && m.queryType === 'python_code') {
-              lastPythonAiIndex = i;
+            if (m.type === 'ai' && m.queryType === result.query_type) {
+              lastCodeAiIndex = i;
               break;
             }
           }
-          if (lastPythonAiIndex >= 0) {
+          if (lastCodeAiIndex >= 0) {
             const updatedMessages = currentMessages.map((msg, i) =>
-              i === lastPythonAiIndex
+              i === lastCodeAiIndex
                 ? { ...msg, sqlResult: result, content: result.explanation || msg.content }
                 : msg
             );
@@ -1016,7 +1030,13 @@ function AuthenticatedApp() {
               id: generateMessageId(),
               role: 'assistant',
               type: 'ai',
-              content: result.explanation || 'Here is the generated Python code:',
+              content: result.explanation || (
+                result.query_type === 'r_code'
+                  ? 'Here is the generated R code:'
+                  : result.query_type === 'sas_code'
+                    ? 'Here is the generated SAS code:'
+                    : 'Here is the generated Python code:'
+              ),
               timestamp: new Date(),
               discoveryResult: context,
               sqlResult: result,

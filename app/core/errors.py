@@ -47,13 +47,28 @@ def wrap_failure_python_comment(message: str) -> str:
     return "\n".join(f"# {line}" if line else "#" for line in lines)
 
 
+def wrap_failure_r_comment(message: str) -> str:
+    return wrap_failure_python_comment(message)
+
+
+_LANGUAGE_QUERY_TYPES = {
+    "python": "python_code",
+    "r": "r_code",
+    "sas": "sas_code",
+}
+
+
 def apply_language_result(result: BuiltInGenerateResult, target_language: str) -> BuiltInGenerateResult:
-    if target_language != "python":
+    query_type = _LANGUAGE_QUERY_TYPES.get(target_language)
+    if not query_type:
         return result
     if result.query_type == "database":
-        result.query_type = "python_code"
+        result.query_type = query_type
     if not result.success and (result.sql or "").lstrip().startswith("/*"):
-        result.sql = wrap_failure_python_comment(result.message or result.explanation or "")
+        if target_language == "python":
+            result.sql = wrap_failure_python_comment(result.message or result.explanation or "")
+        elif target_language == "r":
+            result.sql = wrap_failure_r_comment(result.message or result.explanation or "")
     return result
 
 
