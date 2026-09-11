@@ -12,6 +12,14 @@ const getApiKey = () => {
     return localStorage.getItem('api_key');
 };
 
+function requireSourceId(sourceId?: string | null): string {
+    const id = (sourceId || '').trim();
+    if (!id) {
+        throw new Error('source_id is required. Select a data source before calling this API.');
+    }
+    return id;
+}
+
 // Use dynamic API base URL
 const API_BASE_URL = getApiBaseUrl();
 
@@ -199,8 +207,9 @@ export interface AgentStatus {
 }
 
 export const api = {
-    discovery: async (query: string): Promise<DiscoveryResponse> => {
-        const response = await axios.post(`${API_BASE_URL}/discovery`, { query, top_k: 5 });
+    discovery: async (query: string, sourceId: string): Promise<DiscoveryResponse> => {
+        const source_id = requireSourceId(sourceId);
+        const response = await axios.post(`${API_BASE_URL}/discovery`, { query, top_k: 5, source_id });
         return response.data;
     },
 
@@ -211,8 +220,10 @@ export const api = {
         queryHistory?: string,
         forceGeneral: boolean = false,
         queryMode: 'generate' | 'search' = 'generate',
-        tableOverride?: string[]
+        tableOverride?: string[],
+        sourceId?: string
     ): Promise<GenerateSQLResponse> => {
+        const source_id = requireSourceId(sourceId);
         const response = await axios.post(`${API_BASE_URL}/generate-sql`, {
             query,
             context,
@@ -220,7 +231,8 @@ export const api = {
             queryHistory,
             forceGeneral,
             queryMode,
-            table_override: tableOverride
+            table_override: tableOverride,
+            source_id
         });
         return response.data;
     },
@@ -236,7 +248,8 @@ export const api = {
         signal?: AbortSignal,
         tableOverride?: string[],
         planningContext?: unknown,
-        userSelectedTables?: string[]
+        userSelectedTables?: string[],
+        sourceId?: string
     ): Promise<GenerateSQLResponse> => {
         const url = `${API_BASE_URL}/generate-sql`;
         const apiKey = getApiKey();
@@ -246,6 +259,7 @@ export const api = {
         if (apiKey) {
             headers['X-API-Key'] = apiKey;
         }
+        const source_id = requireSourceId(sourceId);
         const body = JSON.stringify({ 
             query, 
             context, 
@@ -255,7 +269,8 @@ export const api = {
             queryMode, 
             table_override: tableOverride,
             planning_context: planningContext,
-            user_selected_tables: userSelectedTables
+            user_selected_tables: userSelectedTables,
+            source_id
         });
 
         const response = await fetch(url, {
@@ -320,7 +335,7 @@ export const api = {
         return finalResult;
     },
 
-    generateRStream: async (query: string, onStatus: (status: AgentStatus) => void, context?: DiscoveryContext, signal?: AbortSignal): Promise<GenerateSQLResponse> => {
+    generateRStream: async (query: string, onStatus: (status: AgentStatus) => void, context?: DiscoveryContext, signal?: AbortSignal, sourceId?: string): Promise<GenerateSQLResponse> => {
         const url = `${API_BASE_URL}/generate-r`;
         const apiKey = getApiKey();
         const headers: Record<string, string> = {
@@ -329,7 +344,8 @@ export const api = {
         if (apiKey) {
             headers['X-API-Key'] = apiKey;
         }
-        const body = JSON.stringify({ query, context });
+        const source_id = requireSourceId(sourceId);
+        const body = JSON.stringify({ query, context, source_id });
 
         const response = await fetch(url, {
             method: 'POST',
@@ -389,7 +405,7 @@ export const api = {
         return finalResult;
     },
 
-    generateSASStream: async (query: string, onStatus: (status: AgentStatus) => void, context?: DiscoveryContext, signal?: AbortSignal): Promise<GenerateSQLResponse> => {
+    generateSASStream: async (query: string, onStatus: (status: AgentStatus) => void, context?: DiscoveryContext, signal?: AbortSignal, sourceId?: string): Promise<GenerateSQLResponse> => {
         const url = `${API_BASE_URL}/generate-sas`;
         const apiKey = getApiKey();
         const headers: Record<string, string> = {
@@ -398,7 +414,8 @@ export const api = {
         if (apiKey) {
             headers['X-API-Key'] = apiKey;
         }
-        const body = JSON.stringify({ query, context });
+        const source_id = requireSourceId(sourceId);
+        const body = JSON.stringify({ query, context, source_id });
 
         const response = await fetch(url, {
             method: 'POST',
@@ -464,7 +481,9 @@ export const api = {
         context?: DiscoveryContext,
         signal?: AbortSignal,
         previousSQL?: string,
-        queryHistory?: string
+        queryHistory?: string,
+        tableOverride?: string[],
+        sourceId?: string
     ): Promise<GenerateSQLResponse> => {
         const url = `${API_BASE_URL}/generate-python`;
         const apiKey = getApiKey();
@@ -474,7 +493,16 @@ export const api = {
         if (apiKey) {
             headers['X-API-Key'] = apiKey;
         }
-        const body = JSON.stringify({ query, context, previousSQL, queryHistory });
+        const source_id = requireSourceId(sourceId);
+        const body = JSON.stringify({
+            query,
+            context,
+            previousSQL,
+            queryHistory,
+            queryMode: 'generate',
+            table_override: tableOverride,
+            source_id
+        });
 
         const response = await fetch(url, {
             method: 'POST',
@@ -521,7 +549,11 @@ export const api = {
                             // Stream explicitly completed
                             return finalResult!;
                         } else if (data.type === 'error') {
-                            throw new Error(data.message);
+                            if (data.payload && (data.payload.sql !== undefined || data.payload.failure_report)) {
+                                finalResult = data.payload as GenerateSQLResponse;
+                            } else {
+                                throw new Error(data.message || 'generation failed');
+                            }
                         }
                     }
                 }
@@ -603,19 +635,22 @@ export const api = {
         return finalResult;
     },
 
-    executePython: async (code: string, context?: unknown, chartTypeOverride?: ChartTypeOption, enableProfiling: boolean = false, preservedXAxis?: string, preservedYAxis?: string[]): Promise<ExecutePythonResponse> => {
+    executePython: async (code: string, context?: unknown, chartTypeOverride?: ChartTypeOption, enableProfiling: boolean = false, preservedXAxis?: string, preservedYAxis?: string[], sourceId?: string): Promise<ExecutePythonResponse> => {
+        const source_id = requireSourceId(sourceId);
         const response = await axios.post(`${API_BASE_URL}/execute-python`, { 
             code, 
             context,
             chart_type_override: chartTypeOverride,
             enable_profiling: enableProfiling,
             preserved_x_axis: preservedXAxis,
-            preserved_y_axis: preservedYAxis
+            preserved_y_axis: preservedYAxis,
+            source_id
         });
         return response.data;
     },
 
     executeSQL: async (sql: string, context?: unknown, chartTypeOverride?: ChartTypeOption, timeoutSeconds?: number, maxRows?: number, enableProfiling: boolean = false, preservedXAxis?: string, preservedYAxis?: string[], sourceId?: string): Promise<ExecuteSQLResponse> => {
+        const source_id = requireSourceId(sourceId);
         const response = await axios.post(`${API_BASE_URL}/execute-sql`, { 
             sql, 
             context,
@@ -625,7 +660,7 @@ export const api = {
             enable_profiling: enableProfiling,
             preserved_x_axis: preservedXAxis,
             preserved_y_axis: preservedYAxis,
-            source_id: sourceId
+            source_id
         });
         return response.data;
     },

@@ -3,6 +3,7 @@ from fastapi.responses import StreamingResponse
 from app.models.schemas import GenerateSQLRequest, GenerateSQLResponse, AgentStatus
 from app.services.generation_service import generate_sql_for_request
 from app.services.code_generation_service import generate_r_for_request, generate_sas_for_request, generate_python_for_request
+from app.services.source_resolver import require_source_id
 from app.core.auth import verify_api_key
 from app.models.user_models import User
 from app.services.activity_service import log_sql_generation
@@ -57,9 +58,7 @@ async def generate_sql_endpoint(
 ):
     if not (request.query or "").strip():
         raise HTTPException(status_code=400, detail="Bad request")
-    if request.source_id:
-        from app.services.source_resolver import resolve_known_source_id
-        request.source_id = resolve_known_source_id(request.source_id)
+    request.source_id = require_source_id(request.source_id)
 
     start_time = time.time()
     final_result = None
@@ -109,6 +108,8 @@ async def generate_sql_endpoint(
 
 @router.post("/generate-r")
 async def generate_r_endpoint(request: GenerateSQLRequest, api_key: str = Depends(verify_api_key)):
+    request.source_id = require_source_id(request.source_id)
+
     def event_generator():
         try:
             for item in generate_r_for_request(request):
@@ -137,6 +138,8 @@ async def generate_r_endpoint(request: GenerateSQLRequest, api_key: str = Depend
 
 @router.post("/generate-sas")
 async def generate_sas_endpoint(request: GenerateSQLRequest, api_key: str = Depends(verify_api_key)):
+    request.source_id = require_source_id(request.source_id)
+
     def event_generator():
         try:
             for item in generate_sas_for_request(request):
@@ -164,30 +167,58 @@ async def generate_sas_endpoint(request: GenerateSQLRequest, api_key: str = Depe
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 @router.post("/generate-python")
-async def generate_python_endpoint(request: GenerateSQLRequest, api_key: str = Depends(verify_api_key)):
+async def generate_python_endpoint(
+    request: GenerateSQLRequest,
+    http_request: Request,
+    current_user: User = Depends(verify_api_key),
+    db: Session = Depends(get_user_db),
+):
+    if not (request.query or "").strip():
+        raise HTTPException(status_code=400, detail="Bad request")
+    request.source_id = require_source_id(request.source_id)
+
+    start_time = time.time()
+    final_result = None
+    error_occurred = False
+    error_message = None
+
     def event_generator():
+        nonlocal final_result, error_occurred, error_message
         try:
             for item in generate_python_for_request(request):
-                if isinstance(item, AgentStatus):
-                    yield f"data: {json.dumps(item.model_dump())}\n\n"
-                elif isinstance(item, dict) and item.get("type") == "result":
-                    payload = item["payload"]
-                    data = {
-                        "type": "result",
-                        "payload": payload.model_dump(by_alias=True)
-                    }
-                    yield f"data: {json.dumps(data)}\n\n"
-                elif isinstance(item, dict) and item.get("type") == "done":
-                    # Forward done signal to frontend
-                    yield f"data: {json.dumps({'type': 'done'})}\n\n"
+                wrapped = _wrap_generation_event(item)
+                if wrapped.get("type") == "result":
+                    payload = wrapped.get("payload")
+                    if isinstance(payload, GenerateSQLResponse):
+                        final_result = payload
+                    elif isinstance(payload, dict):
+                        try:
+                            final_result = GenerateSQLResponse.model_validate(payload)
+                        except Exception:
+                            final_result = None
+                yield format_sse(wrapped)
+        except HTTPException:
+            raise
         except Exception as e:
+            error_occurred = True
+            error_message = str(e)
             logger.error(f"Error in generate_python_endpoint: {str(e)}")
             logger.error(traceback.format_exc())
-            error_data = {
-                "type": "error",
-                "message": str(e)
-            }
-            yield f"data: {json.dumps(error_data)}\n\n"
+            yield format_sse(sse_error(str(e), {"detail": str(e)}))
+        finally:
+            execution_time = time.time() - start_time
+            log_sql_generation(
+                db=db,
+                user_id=current_user.id,
+                query=request.query,
+                sql=final_result.sql if final_result else None,
+                tokens_used=final_result.usage.total_tokens if final_result and hasattr(final_result, "usage") else None,
+                execution_time=execution_time,
+                success=not error_occurred,
+                error_message=error_message,
+                ip_address=http_request.client.host if http_request.client else None,
+                user_agent=http_request.headers.get("user-agent"),
+            )
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 
@@ -210,66 +241,33 @@ async def execute_python_endpoint(
     Automatically retries up to 5 times if execution fails, using LLM to fix errors.
     Appends a chart recommendation if a DataFrame is produced.
     """
+    request.source_id = require_source_id(request.source_id)
     MAX_RETRY_ATTEMPTS = 5
     start_time = time.time()
     
     try:
-        from app.services.settings_service import load_settings, decrypt_string
-        
+        from app.services.execution_service import (
+            execute_python_code,
+            _resolve_python_connection_string,
+            _connection_target_label,
+        )
+
         # Validation: check for disallowed keywords
         if "sqlalchemy.create_engine(" in request.code and "DB_CONNECTION_STRING" not in request.code:
              logger.warning("User code contains create_engine but does not appear to use DB_CONNECTION_STRING")
 
-        # 1. Build Windows Authentication Connection String
-        # Get connection info from _data-source.md
-        from app.services.skills_service import get_skills_service
-        import re
-        import urllib.parse
-        
-        skills_service = get_skills_service()
-        data_source = skills_service.load_primary_data_source()
-        
-        # Create execution context if not exists
         exec_context = request.context or {}
-        
-        # Build connection string using Windows Authentication
-        decrypted_conn_str = None
-        if data_source:
-            try:
-                # Extract server and database from data source metadata
-                server_match = re.search(r'\*\*Server:\*\*\s*([^\n]+)', data_source.description or '')
-                database_match = re.search(r'\*\*Database:\*\*\s*([^\n]+)', data_source.description or '')
-                
-                # Also check in the raw file content
-                if not server_match or not database_match:
-                    if hasattr(data_source, 'file_path') and data_source.file_path:
-                        from pathlib import Path
-                        file_content = Path(data_source.file_path).read_text(encoding='utf-8')
-                        if not server_match:
-                            server_match = re.search(r'\*\*Server:\*\*\s*([^\n]+)', file_content)
-                        if not database_match:
-                            database_match = re.search(r'\*\*Database:\*\*\s*([^\n]+)', file_content)
-                
-                if server_match and database_match:
-                    server = server_match.group(1).strip()
-                    database = database_match.group(1).strip()
-                    
-                    # Build ODBC connection string with Windows Authentication
-                    driver = "ODBC Driver 17 for SQL Server"
-                    odbc_conn_str = f"Driver={{{driver}}};Server={server};Database={database};Trusted_Connection=yes;Encrypt=yes;TrustServerCertificate=yes"
-                    
-                    # Convert to SQLAlchemy URL format for Python code
-                    params = urllib.parse.quote_plus(odbc_conn_str)
-                    decrypted_conn_str = f"mssql+pyodbc:///?odbc_connect={params}"
-                    
-                    # Inject as a variable in the local scope
-                    exec_context['DB_CONNECTION_STRING'] = decrypted_conn_str
-                    logger.info(f"Injected Windows Authentication connection string for Python execution")
-                else:
-                    logger.warning("Could not extract Server/Database from _data-source.md")
-                        
-            except Exception as e:
-                logger.error(f"Failed to build Windows Authentication connection string: {e}")
+        source_id = request.source_id
+        decrypted_conn_str = _resolve_python_connection_string(source_id)
+        if decrypted_conn_str:
+            exec_context["DB_CONNECTION_STRING"] = decrypted_conn_str
+            logger.info(
+                "Injected DB_CONNECTION_STRING for Python execution source_id=%s %s",
+                source_id,
+                _connection_target_label(decrypted_conn_str) if decrypted_conn_str else "",
+            )
+        else:
+            logger.warning("Could not resolve DB_CONNECTION_STRING for Python execution")
         
         # Extract user_query and schema_context from context (needed for retry)
         user_query = exec_context.get("user_query", "") if exec_context else ""
@@ -288,7 +286,8 @@ async def execute_python_endpoint(
                 current_code, 
                 exec_context,
                 enable_profiling=request.enable_profiling or False,
-                user_query=user_query
+                user_query=user_query,
+                source_id=source_id,
             )
             
             # Check if execution was successful
@@ -313,7 +312,8 @@ async def execute_python_endpoint(
                     existing_code=current_code,
                     error_message=result["error"],
                     database_objects=exec_context.get("database_objects") if exec_context else None,
-                    is_user_code=exec_context.get("is_user_code", False) if exec_context else False
+                    is_user_code=exec_context.get("is_user_code", False) if exec_context else False,
+                    source_id=source_id,
                 )
                 regen_items = list(generate_python_for_request(regen_request))
                 current_code = None
@@ -321,7 +321,7 @@ async def execute_python_endpoint(
                     if isinstance(item, dict) and item.get("type") == "result":
                         payload = item.get("payload")
                         if payload:
-                            current_code = payload.sql
+                            current_code = payload.get("sql") if isinstance(payload, dict) else getattr(payload, "sql", None)
                             break
                 if not current_code:
                     raise RuntimeError("Failed to regenerate Python code from error feedback")
@@ -451,6 +451,7 @@ async def execute_sql_endpoint(
     Automatically retries up to 5 times if execution fails, using LLM to fix errors.
     Includes data profiling, insights, and chart recommendations.
     """
+    request.source_id = require_source_id(request.source_id)
     MAX_RETRY_ATTEMPTS = 5
     start_time = time.time()
     
@@ -498,7 +499,8 @@ async def execute_sql_endpoint(
                     existing_code=current_sql,
                     error_message=result["error"],
                     database_objects=request.context.get("database_objects") if request.context else None,
-                    is_user_code=request.context.get("is_user_code", False) if request.context else False
+                    is_user_code=request.context.get("is_user_code", False) if request.context else False,
+                    source_id=request.source_id,
                 )
                 regen_items = list(generate_sql_for_request(regen_request))
                 current_sql = None
@@ -506,7 +508,7 @@ async def execute_sql_endpoint(
                     if isinstance(item, dict) and item.get("type") == "result":
                         payload = item.get("payload")
                         if payload:
-                            current_sql = payload.sql
+                            current_sql = payload.get("sql") if isinstance(payload, dict) else getattr(payload, "sql", None)
                             break
                 if not current_sql:
                     raise RuntimeError("Failed to regenerate SQL from error feedback")

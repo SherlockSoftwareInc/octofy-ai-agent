@@ -49,7 +49,7 @@ class DiscoveryContext(BaseModel):
 class DiscoveryRequest(BaseModel):
     query: str = Field(..., description="User's natural language question")
     top_k: int = 5
-    source_id: Optional[str] = None
+    source_id: Optional[str] = None  # Required by POST /discovery (HTTP layer)
 
 class DiscoveryResponse(BaseModel):
     query: str
@@ -114,7 +114,7 @@ class GenerateSQLRequest(BaseModel):
     chart_type_override: Optional[ChartTypeLiteral] = None  # User-specified chart type
     user_selected_tables: Optional[List[str]] = None  # User's checkbox selections from threshold prompt
     planning_context: Optional[Dict[str, Any]] = None  # Structured planning state for conversational exploration
-    source_id: Optional[str] = None  # Target data source for multi-source hosts
+    source_id: Optional[str] = None  # Required by generate-sql/python/r/sas HTTP endpoints
     top_k: Optional[int] = None
     semantic_mode: Optional[bool] = None
 
@@ -193,12 +193,13 @@ class ExecutePythonRequest(BaseModel):
     preserved_x_axis: Optional[str] = None  # Preserve original x_axis column when changing chart type
     preserved_y_axis: Optional[List[str]] = None  # Preserve original y_axis columns when changing chart type
     enable_profiling: Optional[bool] = False  # Enable data profiling and insights generation
+    source_id: Optional[str] = None  # Required by POST /execute-python (HTTP layer)
 
 
 class ExecuteSQLRequest(BaseModel):
     sql: str  # SQL query to execute
     context: Optional[Dict[str, Any]] = None  # Optional execution context (user_query, schema_context, etc.)
-    source_id: Optional[str] = None  # Optional data source GUID for execution
+    source_id: Optional[str] = None  # Required by POST /execute-sql (HTTP layer)
     chart_type_override: Optional[ChartTypeLiteral] = None  # User-specified chart type preference
     preserved_x_axis: Optional[str] = None  # Preserve original x_axis column when changing chart type
     preserved_y_axis: Optional[List[str]] = None  # Preserve original y_axis columns when changing chart type

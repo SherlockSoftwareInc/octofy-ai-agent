@@ -10,6 +10,7 @@ import { ValueManager } from './pages/Admin/ValueManager';
 import { ContributionManager } from './pages/Admin/ContributionManager';
 import { Settings } from './pages/Admin/Settings';
 import { DataSourcesManager } from './pages/Admin/DataSourcesManager';
+import { DataSourceSelector } from './components/DataSourceSelector';
 import { UserManager } from './pages/Admin/UserManager';
 import { Toast } from './components/Toast';
 import type { ToastType } from './components/Toast';
@@ -91,6 +92,13 @@ function AuthenticatedApp() {
   const abortControllerRef = useRef<AbortController | null>(null);
   const abortedRef = useRef(false);
   const [selectedObjects, setSelectedObjects] = useState<string[]>([]);
+  const [selectedSourceId, setSelectedSourceId] = useState<string>(() => {
+    try {
+      return localStorage.getItem('octofy.selectedSourceId') || '';
+    } catch {
+      return '';
+    }
+  });
   const [planningContext, setPlanningContext] = useState<Record<string, unknown> | null>(null);
   const [planningSummary, setPlanningSummary] = useState<string | null>(null);
   const [isSchemaModalOpen, setIsSchemaModalOpen] = useState(false);
@@ -178,6 +186,9 @@ function AuthenticatedApp() {
   useEffect(() => {
     if (activeConversation) {
       setSelectedObjects(activeConversation.selectedObjects || []);
+      if (activeConversation.selectedSourceId) {
+        setSelectedSourceId(activeConversation.selectedSourceId);
+      }
       setPlanningContext(activeConversation.planningContext || null);
       setPlanningSummary(activeConversation.planningSummary || null);
     } else {
@@ -374,6 +385,18 @@ function AuthenticatedApp() {
   };
 
 
+  const handleSourceChange = (sourceId: string) => {
+    setSelectedSourceId(sourceId);
+    try {
+      localStorage.setItem('octofy.selectedSourceId', sourceId);
+    } catch {
+      /* ignore quota / private mode */
+    }
+    if (activeConversationId) {
+      updateConversation(activeConversationId, { selectedSourceId: sourceId });
+    }
+  };
+
   const handleClarificationChoice = async (messageId: string, choice: 'database' | 'general') => {
     if (!activeConversationId) return;
 
@@ -389,9 +412,13 @@ function AuthenticatedApp() {
 
     if (choice === 'database') {
       // Re-run as database query
+      if (!selectedSourceId.trim()) {
+        setToast({ message: 'Select a data source before sending.', type: 'error' });
+        return;
+      }
       setIsLoading(true);
       try {
-        const context = await api.discovery(userMessage.content);
+        const context = await api.discovery(userMessage.content, selectedSourceId);
         const result = await api.generateSQL(
           userMessage.content,
           context.context,
@@ -399,7 +426,8 @@ function AuthenticatedApp() {
           queryHistory || undefined,
           false,
           'generate',
-          selectedObjects.length > 0 ? selectedObjects : undefined
+          selectedObjects.length > 0 ? selectedObjects : undefined,
+          selectedSourceId
         );
 
         // Update the AI message with the results
@@ -430,6 +458,10 @@ function AuthenticatedApp() {
         setTimeout(() => textareaRef.current?.focus(), 0);
       }
     } else {
+      if (!selectedSourceId.trim()) {
+        setToast({ message: 'Select a data source before sending.', type: 'error' });
+        return;
+      }
       // Re-run as general query with forceGeneral flag
       setIsLoading(true);
       try {
@@ -440,7 +472,8 @@ function AuthenticatedApp() {
           queryHistory || undefined,
           true,
           'generate',
-          selectedObjects.length > 0 ? selectedObjects : undefined
+          selectedObjects.length > 0 ? selectedObjects : undefined,
+          selectedSourceId
         );
 
         // Update the AI message with the general answer
@@ -692,6 +725,13 @@ function AuthenticatedApp() {
     
     if (!canSubmit) return;
 
+    const needsDataSource = queryMode !== 'code-advisor';
+    if (needsDataSource && !selectedSourceId.trim()) {
+      setToast({ message: 'Select a data source before sending.', type: 'error' });
+      return;
+    }
+    const sourceId = selectedSourceId.trim();
+
     // Create new conversation if none exists
     let conversationId = activeConversationId;
     if (!conversationId) {
@@ -749,7 +789,8 @@ function AuthenticatedApp() {
           abortControllerRef.current.signal,
           undefined,
           planningContext,
-          selectedObjects.length > 0 ? selectedObjects : undefined  // Pass selected tables for table selection submissions
+          selectedObjects.length > 0 ? selectedObjects : undefined,
+          sourceId
         );
 
         // Update planning context from response
@@ -794,7 +835,7 @@ function AuthenticatedApp() {
 
         result = await api.generateRStream(queryToSend, (status) => {
           setSteps([status]);
-        }, undefined, abortControllerRef.current.signal);
+        }, undefined, abortControllerRef.current.signal, sourceId);
         // Ensure query_type is set
         if (!result.query_type) result.query_type = 'r_code';
       } else if (queryMode === 'generate-sas') {
@@ -808,7 +849,7 @@ function AuthenticatedApp() {
 
         result = await api.generateSASStream(queryToSend, (status) => {
           setSteps([status]);
-        }, undefined, abortControllerRef.current.signal);
+        }, undefined, abortControllerRef.current.signal, sourceId);
         if (!result.query_type) result.query_type = 'sas_code';
       } else if (queryMode === 'generate-python') {
         // Use summary as prompt if available; pass previous code and history for edit follow-ups
@@ -825,7 +866,9 @@ function AuthenticatedApp() {
           undefined,
           abortControllerRef.current.signal,
           lastGeneratedSQL || undefined,
-          queryHistory || undefined
+          queryHistory || undefined,
+          tableOverride,
+          sourceId
         );
         if (!result.query_type) result.query_type = 'python_code';
       } else if (queryMode === 'code-advisor') {
@@ -863,7 +906,10 @@ function AuthenticatedApp() {
           false,
           'generate',
           abortControllerRef.current.signal,
-          tableOverride
+          tableOverride,
+          undefined,
+          undefined,
+          sourceId
         );
       }
 
@@ -887,7 +933,7 @@ function AuthenticatedApp() {
         // For database/R/SAS/Python queries, also get discovery context for display (only for SQL really, but safe to ignore)
         let context = undefined;
         if (result.query_type === 'database') {
-          context = await api.discovery(currentQuery);
+          context = await api.discovery(currentQuery, sourceId);
         }
 
         // Store the generated SQL/code for future reference
@@ -972,7 +1018,7 @@ function AuthenticatedApp() {
 
         // Auto-generate better title after a few messages
         if (updatedMessagesForTitle.length === 4) { // After 2 exchanges
-          const autoTitle = await generateAutoTitle(updatedMessagesForTitle, api.generateSQL);
+          const autoTitle = await generateAutoTitle(updatedMessagesForTitle, api.generateSQL, sourceId);
           if (autoTitle) {
             updateConversation(conversationId, { title: autoTitle });
           }
@@ -997,7 +1043,7 @@ function AuthenticatedApp() {
 
         // Auto-generate title if needed
         if (updatedMessages.length === 4) {
-          const autoTitle = await generateAutoTitle(updatedMessages, api.generateSQL);
+          const autoTitle = await generateAutoTitle(updatedMessages, api.generateSQL, sourceId);
           if (autoTitle) {
             updateConversation(conversationId, { title: autoTitle });
           }
@@ -1044,7 +1090,7 @@ function AuthenticatedApp() {
 
         // Auto-generate title for general conversations too
         if (updatedMessages.length === 4) {
-          const autoTitle = await generateAutoTitle(updatedMessages, api.generateSQL);
+          const autoTitle = await generateAutoTitle(updatedMessages, api.generateSQL, sourceId);
           if (autoTitle) {
             updateConversation(conversationId, { title: autoTitle });
           }
@@ -1573,7 +1619,7 @@ function AuthenticatedApp() {
                                     <SQLResultDisplay
                                       sql={message.sqlResult.sql}
                                       sourceQuestion={message.sourceQuery}
-                                      sourceId={message.sqlResult.source_id}
+                                      sourceId={selectedSourceId || message.sqlResult.source_id}
                                       allUserMessages={chatHistory
                                         .filter(msg => msg.type === 'user')
                                         .map(msg => msg.content)
@@ -1794,6 +1840,13 @@ function AuthenticatedApp() {
           {/* Input Area */}
           <footer className="px-6 py-4 bg-slate-900/80 backdrop-blur border-t border-slate-800">
             <div className="w-full">
+              <div className="mb-3 max-w-xl mx-auto">
+                <DataSourceSelector
+                  selectedSourceId={selectedSourceId}
+                  onSourceChange={handleSourceChange}
+                  disabled={isLoading}
+                />
+              </div>
               {/* Mode Toggle - Radio Buttons */}
               <div className="flex items-center justify-center gap-6 mb-3">
                 {/* 1. Plan Mode - FIRST */}
@@ -1932,7 +1985,7 @@ function AuthenticatedApp() {
                   />
                   <button
                     onClick={handleSend}
-                    disabled={isLoading || (queryMode !== 'plan' && !planningSummary && !query.trim())}
+                    disabled={isLoading || (queryMode !== 'code-advisor' && !selectedSourceId.trim()) || (queryMode !== 'plan' && !planningSummary && !query.trim())}
                     className={`p-3 mb-0.5 ${queryMode === 'plan' ? 'bg-amber-600 hover:bg-amber-500 shadow-amber-500/20' : 'bg-indigo-600 hover:bg-indigo-500 shadow-indigo-500/20'} text-white rounded-lg transition-all disabled:opacity-50 shadow-lg`}
                   >
                     {isLoading ? (

@@ -72,7 +72,10 @@ const ResultWithAnalysis: React.FC<ResultWithAnalysisProps> = ({
           pythonCode,
           executionContext,
           undefined,
-          true // enable_profiling
+          true, // enable_profiling
+          undefined,
+          undefined,
+          sourceId
         );
       } else {
         throw new Error('Invalid execution type');

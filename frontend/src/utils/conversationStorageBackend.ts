@@ -70,6 +70,7 @@ function extractMetadata(conversation: Conversation): Record<string, unknown> {
   if (conversation.lastGeneratedSQL) metadata.lastGeneratedSQL = conversation.lastGeneratedSQL;
   if (conversation.queryHistory) metadata.queryHistory = conversation.queryHistory;
   if (conversation.selectedObjects) metadata.selectedObjects = conversation.selectedObjects;
+  if (conversation.selectedSourceId) metadata.selectedSourceId = conversation.selectedSourceId;
   if (conversation.planningContext) metadata.planningContext = conversation.planningContext;
   if (conversation.planningSummary) metadata.planningSummary = conversation.planningSummary;
   return metadata;
@@ -103,6 +104,7 @@ export const conversationStorageBackend = {
           lastGeneratedSQL: extraData.lastGeneratedSQL as string | undefined,
           queryHistory: extraData.queryHistory as string | undefined,
           selectedObjects: extraData.selectedObjects as string[] | undefined,
+          selectedSourceId: extraData.selectedSourceId as string | undefined,
           planningContext: extraData.planningContext as Record<string, unknown> | undefined,
           planningSummary: extraData.planningSummary as string | undefined,
         };

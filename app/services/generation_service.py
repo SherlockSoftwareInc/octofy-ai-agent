@@ -1843,7 +1843,9 @@ def generate_sql_for_request(request: GenerateSQLRequest, previous_sql: Optional
         return
 
     selected_source_id = None
-    if related_source_guids:
+    if request.source_id:
+        selected_source_id = request.source_id
+    elif related_source_guids:
         selected_source_id = related_source_guids[0]
     else:
         selected_source_id = getattr(primary_source, "source_id", None) if primary_source else None

@@ -135,6 +135,7 @@ export interface Conversation {
   lastGeneratedSQL?: string;
   queryHistory?: string;
   selectedObjects?: string[];
+  selectedSourceId?: string;
   planningContext?: any;  // Structured planning state for conversational exploration
   planningSummary?: string;  // Auto-generated summary from planning conversation
 }

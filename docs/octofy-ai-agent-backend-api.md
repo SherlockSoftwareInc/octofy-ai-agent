@@ -77,7 +77,7 @@ X-API-Key: <user-or-admin-api-key>
 
 | Endpoint | Method | Notes |
 |----------|--------|-------|
-| `/api/v1/discovery` | POST | Semantic discovery (tables, similar queries, glossary terms) |
+| `/api/v1/discovery` | POST | Semantic discovery (tables, similar queries, glossary terms). Body must include `source_id`. |
 | `/api/v1/test` | POST | Simple authenticated test endpoint |
 
 ---
@@ -88,10 +88,10 @@ All listed generation endpoints stream progress, status, and result as `text/eve
 
 | Endpoint | Method | Purpose |
 |----------|--------|---------|
-| `/api/v1/generate-sql` | POST | Generate T-SQL |
-| `/api/v1/generate-python` | POST | Generate Python code |
-| `/api/v1/generate-r` | POST | Generate R code |
-| `/api/v1/generate-sas` | POST | Generate SAS code |
+| `/api/v1/generate-sql` | POST | Generate T-SQL. Body must include `source_id`. |
+| `/api/v1/generate-python` | POST | Generate Python code. Body must include `source_id`. |
+| `/api/v1/generate-r` | POST | Generate R code. Body must include `source_id`. |
+| `/api/v1/generate-sas` | POST | Generate SAS code. Body must include `source_id`. |
 | `/api/v1/code-advisor` | POST | Streaming code advisor (rate-limited) |
 
 Typical SSE event types:
@@ -107,8 +107,8 @@ Typical SSE event types:
 
 | Endpoint | Method | Purpose |
 |----------|--------|---------|
-| `/api/v1/execute-sql` | POST | Execute SQL with retry/auto-fix support |
-| `/api/v1/execute-python` | POST | Execute Python with retry/auto-fix support |
+| `/api/v1/execute-sql` | POST | Execute SQL with retry/auto-fix support. Body must include `source_id`. |
+| `/api/v1/execute-python` | POST | Execute Python with retry/auto-fix support. Body must include `source_id`. |
 | `/api/v1/planning-summary` | POST | Generate planning context summary |
 | `/api/v1/summarize-results` | POST | Natural-language summary of result preview |
 
@@ -394,6 +394,7 @@ curl -X POST http://localhost:8000/api/v1/generate-sql \
 Common fields used by generation endpoints:
 
 - `query` (required)
+- `source_id` (required for `/discovery`, `/generate-sql`, `/generate-python`, `/generate-r`, `/generate-sas`)
 - `context`, `previousSQL`, `queryHistory`
 - `database_objects` (optional prioritized list of tables/views/columns)
 - `existing_code` (optional base code for optimization/expansion)
@@ -412,6 +413,8 @@ Generation endpoints route behavior based on these fields:
 
 `database_objects` are high-priority context and are boosted ahead of general discovery.
 
+Omitting `source_id` on discovery, generate-sql/python/r/sas, execute-sql, or execute-python returns `400` with `{"detail": "source_id is required"}`. The server does not fall back to a primary or first-listed source.
+
 ### `ExecuteSQLRequest`
 
 Supports execution controls such as:
@@ -421,13 +424,14 @@ Supports execution controls such as:
 - `timeout_seconds`, `max_rows`
 - `enable_profiling`
 - `chart_type_override`, axis preservation fields
-- `source_id` (multi-source execution)
+- `source_id` (required; selects which data source to execute against)
 
 ### `ExecutePythonRequest`
 
 Supports:
 
 - `code`
+- `source_id` (required; same connection SQL execution uses)
 - optional execution context
 - profiling and chart override controls
 

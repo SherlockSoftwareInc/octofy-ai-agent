@@ -92,7 +92,8 @@ export function generateInitialTitle(firstMessage: string): string {
 // Auto-generate a better title using AI (to be called after 2-3 messages)
 export async function generateAutoTitle(
   messages: ChatMessage[], 
-  apiGenerateSQL: typeof import('../api/client').api.generateSQL
+  apiGenerateSQL: typeof import('../api/client').api.generateSQL,
+  sourceId: string
 ): Promise<string | null> {
   try {
     // Get the first 2-3 messages to understand the context
@@ -108,7 +109,7 @@ ${conversationContext}
 
 Respond with ONLY the title, no explanation.`;
 
-    const response = await apiGenerateSQL(titlePrompt, undefined, undefined, undefined, true);
+    const response = await apiGenerateSQL(titlePrompt, undefined, undefined, undefined, true, 'generate', undefined, sourceId);
     
     if (response.explanation) {
       // Clean up the response

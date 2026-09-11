@@ -553,9 +553,15 @@ export const SQLResultDisplay: React.FC<SQLResultDisplayProps> = ({
             // enable_profiling is FALSE by default (on-demand only)
             const result = await api.executePython(
                 sql,
-                sourceQuestion ? { user_query: sourceQuestion } : undefined,
+                {
+                    ...(sourceQuestion ? { user_query: sourceQuestion } : {}),
+                    source_id: sourceId,
+                },
                 undefined,
-                false // explicitly disable automatic profiling
+                false, // explicitly disable automatic profiling
+                undefined,
+                undefined,
+                sourceId
             );
 
             // Call parent callback to persist the result
@@ -652,7 +658,8 @@ export const SQLResultDisplay: React.FC<SQLResultDisplayProps> = ({
                     newType,
                     false,
                     preservedXAxis,
-                    preservedYAxis
+                    preservedYAxis,
+                    sourceId
                 );
                 
                 if (onExecutionComplete) {
@@ -993,7 +1000,10 @@ export const SQLResultDisplay: React.FC<SQLResultDisplayProps> = ({
                                                         sql,
                                                         sourceQuestion ? { user_query: sourceQuestion } : undefined,
                                                         undefined,
-                                                        true // enable profiling for on-demand
+                                                        true, // enable profiling for on-demand
+                                                        undefined,
+                                                        undefined,
+                                                        sourceId
                                                     );
                                                     if (result.success && (result.data_profile || result.insights)) {
                                                         setAnalysisData({
@@ -1035,7 +1045,10 @@ export const SQLResultDisplay: React.FC<SQLResultDisplayProps> = ({
                                                         sql,
                                                         sourceQuestion ? { user_query: sourceQuestion } : undefined,
                                                         undefined,
-                                                        true // enable profiling for on-demand
+                                                        true, // enable profiling for on-demand
+                                                        undefined,
+                                                        undefined,
+                                                        sourceId
                                                     );
                                                     if (result.success && (result.data_profile || result.insights)) {
                                                         setAnalysisData({

@@ -13,7 +13,7 @@ from app.core.constants import (
     MaxGenerationTimeMs,
     NoDiscoveryTimeBudgetMs,
 )
-from app.core.errors import ErrorCategory, build_detailed_failure_result, build_failure_report
+from app.core.errors import ErrorCategory, apply_language_result, build_detailed_failure_result, build_failure_report
 from app.core.orchestrator.attempts import run_attempt_loop
 from app.core.orchestrator.discovery_engine import DiscoveryEngine
 from app.core.orchestrator.preprocessing import build_agent_request, preprocess
@@ -26,6 +26,12 @@ from app.services.sql_context_hydrator import SqlContextHydrator
 from app.services.sql_validator import SqlValidator
 from app.services.stores.bundle import SourceStores, build_source_stores
 from app.services.stores.skills_folder import markdown_lookup_for_objects
+from app.utils.python_normalization import (
+    extract_python_body,
+    extract_sql_from_python,
+    materialize_python_code,
+    syntax_check_python,
+)
 from app.utils.sse import sse_done, sse_result, sse_status
 
 logger = logging.getLogger(__name__)
@@ -35,10 +41,13 @@ def generate_sql_builtin(
     request: GenerateSQLRequest,
     stores: SourceStores,
     llm: Optional[LlmClient] = None,
+    *,
+    target_language: str = "sql",
 ) -> Generator[Dict[str, Any], None, None]:
     started = time.time()
     llm = llm or LlmClient()
     source_id = stores.source_id
+    python_mode = target_language == "python"
     step = 0
 
     def emit(stage: str, message: str, **extra):
@@ -47,6 +56,13 @@ def generate_sql_builtin(
         logger.info("source_id=%s stage=%s %s", source_id, stage, message)
         return sse_status(stage, message, step_id=step, source_id=source_id, **extra)
 
+    def finalize(result: BuiltInGenerateResult) -> Dict[str, Any]:
+        result = apply_language_result(result, target_language)
+        return _to_http(result).model_dump(by_alias=True)
+
+    def code_from_match(sql: str) -> str:
+        return materialize_python_code(sql) if python_mode else sql
+
     yield emit(PipelineStage.ROUTING, "Validating and routing request")
     agent_req = build_agent_request(request, source_id)
     context = preprocess(agent_req, stores)
@@ -54,7 +70,7 @@ def generate_sql_builtin(
     context = decision.context
 
     if decision.immediate_result:
-        yield sse_result(_to_http(decision.immediate_result).model_dump(by_alias=True), decision.immediate_result.message or "")
+        yield sse_result(finalize(decision.immediate_result), decision.immediate_result.message or "")
         yield sse_done()
         return
 
@@ -104,20 +120,20 @@ def generate_sql_builtin(
                 failure_report=report,
                 source_id=source_id,
             )
-            payload = _to_http(result).model_dump(by_alias=True)
+            payload = finalize(result)
             yield sse_result(payload, result.message or "")
             yield sse_done()
             return
 
     engine = DiscoveryEngine(stores, llm)
     engine.clear_analysis_cache()
-    semantic_mode = stores.semantic.is_enabled(context.request.semantic_mode)
+    semantic_mode = False if python_mode else stores.semantic.is_enabled(context.request.semantic_mode)
 
     # No-discovery rewrite/optimize path
     if decision.skip_discovery and decision.route in {RouteKind.OPTIMIZE, RouteKind.GENERATE} and context.request.existing_code:
-        yield emit(PipelineStage.PREANALYSIS, "No-discovery provided-SQL path")
-        result = _generate_from_provided_sql(context, stores, llm, emit, started)
-        yield sse_result(_to_http(result).model_dump(by_alias=True), result.message or "")
+        yield emit(PipelineStage.PREANALYSIS, "No-discovery provided-code path")
+        result = _generate_from_provided_sql(context, stores, llm, emit, started, target_language=target_language)
+        yield sse_result(finalize(result), result.message or "")
         yield sse_done()
         return
 
@@ -127,7 +143,7 @@ def generate_sql_builtin(
     if kb_exact:
         result = BuiltInGenerateResult(
             success=True,
-            sql=kb_exact.sql,
+            sql=code_from_match(kb_exact.sql),
             message="KB exact match",
             discovery_branch=DiscoveryBranch.KB_EXACT,
             attempts=0,
@@ -135,7 +151,7 @@ def generate_sql_builtin(
             token_usage=llm.token_usage.as_dict(),
             source_id=source_id,
         )
-        yield sse_result(_to_http(result).model_dump(by_alias=True))
+        yield sse_result(finalize(result))
         yield sse_done()
         return
 
@@ -154,7 +170,7 @@ def generate_sql_builtin(
                 sql = pre_exact.sql
         result = BuiltInGenerateResult(
             success=True,
-            sql=sql,
+            sql=code_from_match(sql),
             message="Precomputed exact match",
             discovery_branch=DiscoveryBranch.PRECOMPUTED_EXACT,
             attempts=0,
@@ -162,7 +178,7 @@ def generate_sql_builtin(
             token_usage=llm.token_usage.as_dict(),
             source_id=source_id,
         )
-        yield sse_result(_to_http(result).model_dump(by_alias=True))
+        yield sse_result(finalize(result))
         yield sse_done()
         return
 
@@ -171,7 +187,7 @@ def generate_sql_builtin(
     if kb_top and kb_top.score <= Kb_distance_exact():
         result = BuiltInGenerateResult(
             success=True,
-            sql=kb_top.sql,
+            sql=code_from_match(kb_top.sql),
             message="KB vector exact match",
             discovery_branch=DiscoveryBranch.KB_EXACT,
             attempts=0,
@@ -179,7 +195,7 @@ def generate_sql_builtin(
             token_usage=llm.token_usage.as_dict(),
             source_id=source_id,
         )
-        yield sse_result(_to_http(result).model_dump(by_alias=True))
+        yield sse_result(finalize(result))
         yield sse_done()
         return
 
@@ -222,12 +238,21 @@ def generate_sql_builtin(
         time_budget_ms=MaxGenerationTimeMs,
         semantic_mode=semantic_mode,
         started_at=started,
+        target_language=target_language,
     )
     # re-emit attempt is inside loop without yield; emit a closing status
     yield emit(PipelineStage.ATTEMPT, f"Completed in {result.attempts} attempt(s)")
-    payload = _to_http(result).model_dump(by_alias=True)
+    payload = finalize(result)
     yield sse_result(payload, result.message or "")
     yield sse_done()
+
+
+def generate_python_builtin(
+    request: GenerateSQLRequest,
+    stores: SourceStores,
+    llm: Optional[LlmClient] = None,
+) -> Generator[Dict[str, Any], None, None]:
+    yield from generate_sql_builtin(request, stores, llm, target_language="python")
 
 
 def Kb_distance_exact() -> float:
@@ -236,15 +261,33 @@ def Kb_distance_exact() -> float:
     return KbExactMatchThreshold
 
 
-def _generate_from_provided_sql(context, stores, llm, emit, started) -> BuiltInGenerateResult:
-    sql = context.request.existing_code or ""
+def _generate_from_provided_sql(context, stores, llm, emit, started, target_language: str = "sql") -> BuiltInGenerateResult:
+    python_mode = target_language == "python"
+    existing = context.request.existing_code or ""
     validator = SqlValidator(context.request.source_id, context.dbms_type)
     deadline = started + (NoDiscoveryTimeBudgetMs / 1000.0)
-    ok, err, _ = validator.validate(sql)
+
+    def _validate(code: str):
+        if python_mode:
+            ok, err = syntax_check_python(code)
+            if not ok:
+                return False, err
+            sqls = extract_sql_from_python(code)
+            if not sqls:
+                return True, ""
+            for sql in sqls:
+                db_ok, db_err, _ = validator.validate(sql)
+                if not db_ok:
+                    return False, db_err
+            return True, ""
+        return validator.validate(code)[:2]
+
+    code = materialize_python_code(existing) if python_mode else existing
+    ok, err = _validate(code)
     if ok:
         return BuiltInGenerateResult(
             success=True,
-            sql=sql,
+            sql=code,
             discovery_branch=DiscoveryBranch.NO_DISCOVERY,
             attempts=1,
             processing_time_ms=int((time.time() - started) * 1000),
@@ -266,21 +309,30 @@ def _generate_from_provided_sql(context, stores, llm, emit, started) -> BuiltInG
             failure_report=report,
             source_id=context.request.source_id,
         )
-    prompt = f"Fix this SQL for dialect {context.dbms_type}. Error: {err}\nSQL:\n{sql}"
+    if python_mode:
+        prompt = (
+            f"Fix this Python pandas/sqlalchemy script for dialect {context.dbms_type}. "
+            f"Error: {err}\nUser request: {context.combined_query}\nCode:\n{code}"
+        )
+    else:
+        prompt = f"Fix this SQL for dialect {context.dbms_type}. Error: {err}\nSQL:\n{code}"
     try:
         raw = llm.complete([{"role": "user", "content": prompt}])
         from app.utils.sql_normalization import extract_sql_body
 
-        fixed = extract_sql_body(raw) or sql
-        ok, err, _ = validator.validate(fixed)
+        if python_mode:
+            fixed = extract_python_body(raw) or code
+        else:
+            fixed = extract_sql_body(raw) or code
+        ok, err = _validate(fixed)
         if ok:
-            sql = fixed
+            code = fixed
     except Exception:
         pass
     if ok:
         return BuiltInGenerateResult(
             success=True,
-            sql=sql,
+            sql=code,
             discovery_branch=DiscoveryBranch.NO_DISCOVERY,
             attempts=2,
             processing_time_ms=int((time.time() - started) * 1000),
@@ -303,9 +355,12 @@ def _generate_from_provided_sql(context, stores, llm, emit, started) -> BuiltInG
 
 
 def _to_http(result: BuiltInGenerateResult) -> GenerateSQLResponse:
+    explanation = result.explanation or result.message
+    if result.query_type == "python_code" and result.success:
+        explanation = explanation or "The following Python code uses pandas to analyze your data."
     return GenerateSQLResponse(
         sql=result.sql or "",
-        explanation=result.explanation or result.message,
+        explanation=explanation,
         query_type=result.query_type,
         context_text=result.context_text,
         discovery_branch=result.discovery_branch,

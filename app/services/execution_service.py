@@ -2,6 +2,7 @@ from typing import Any, Dict, List, Optional
 import sys
 import io
 import re
+import urllib.parse
 import warnings
 import sqlalchemy
 import pandas as pd
@@ -63,6 +64,30 @@ def _sanitize_code(code: str) -> str:
             lines = lines[1:]
     
     return '\n'.join(lines).strip()
+
+
+def _connection_target_label(conn_str: str) -> str:
+    decoded = urllib.parse.unquote_plus(conn_str or "")
+    server = re.search(r"Server=([^;]+)", decoded, re.IGNORECASE)
+    database = re.search(r"Database=([^;]+)", decoded, re.IGNORECASE)
+    return (
+        f"server={(server.group(1).strip() if server else '?')} "
+        f"database={(database.group(1).strip() if database else '?')}"
+    )
+
+
+def _resolve_python_connection_string(source_id: Optional[str] = None) -> Optional[str]:
+    """Load the SQLAlchemy URL used by SQL execution for this data source."""
+    try:
+        from app.core.database import get_source_sqlalchemy_url
+
+        url = get_source_sqlalchemy_url(source_id)
+        if url:
+            return url
+    except Exception as exc:
+        logger.warning(f"Could not resolve python connection string for source_id={source_id}: {exc}")
+    return None
+
 
 def get_chart_category(df: pd.DataFrame) -> tuple:
     """
@@ -126,7 +151,8 @@ def execute_python_code(
     code: str, 
     context: Optional[Dict[str, Any]] = None,
     enable_profiling: bool = True,
-    user_query: str = ""
+    user_query: str = "",
+    source_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Executes Python code and captures stdout and any resulting DataFrame.
@@ -169,17 +195,23 @@ def execute_python_code(
         global_scope['pd'] = pd
     if 'pd' not in local_scope:
         local_scope['pd'] = pd
-    
-    # Log the DB_CONNECTION_STRING if present for debugging
-    # NOTE: This connection string uses Windows Authentication (Trusted_Connection=yes)
-    # It is dynamically built from _data-source.md in the skills directory
-    # Connection format: mssql+pyodbc:///?odbc_connect=Driver={...};Server=...;Database=...;Trusted_Connection=yes
-    if 'DB_CONNECTION_STRING' in local_scope:
-        # Mask the actual connection string for security in logs
-        conn_str = local_scope['DB_CONNECTION_STRING']
-        if isinstance(conn_str, str):
-            masked = conn_str[:20] + '...' if len(conn_str) > 20 else conn_str
-            logger.info(f"DB_CONNECTION_STRING injected into execution context: {masked}")
+
+    conn_str = local_scope.get('DB_CONNECTION_STRING') or global_scope.get('DB_CONNECTION_STRING')
+    if not conn_str:
+        conn_str = _resolve_python_connection_string(source_id)
+    from app.utils.python_normalization import bind_db_connection_string, qualify_sql_in_python
+
+    if conn_str:
+        code = bind_db_connection_string(code, conn_str)
+        global_scope['DB_CONNECTION_STRING'] = conn_str
+        local_scope['DB_CONNECTION_STRING'] = conn_str
+        logger.info(
+            "DB_CONNECTION_STRING bound into Python code and execution scope: %s",
+            _connection_target_label(conn_str),
+        )
+    else:
+        logger.warning("DB_CONNECTION_STRING was not available for Python execution")
+    code = qualify_sql_in_python(code)
         
     execution_success = False
     error_message = None

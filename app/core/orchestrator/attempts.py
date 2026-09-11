@@ -126,14 +126,18 @@ def run_attempt_loop(
             agentic_retry += 1
 
         history_text = _compact_history(attempt_reports)
-        system = build_system_prompt(
-            context,
-            discovery,
-            semantic=semantic_mode,
-            semantic_models_json=semantic_json,
-            attempt_history=history_text,
-        )
-        user = build_user_prompt(context)
+        if python_mode:
+            system = build_python_system_prompt(context, discovery, attempt_history=history_text)
+            user = build_python_user_prompt(context)
+        else:
+            system = build_system_prompt(
+                context,
+                discovery,
+                semantic=semantic_mode,
+                semantic_models_json=semantic_json,
+                attempt_history=history_text,
+            )
+            user = build_user_prompt(context)
         last_prompt = system + "\n" + user
         penalty = PresencePenaltyAfterLoop if hallucination_count else None
         try:
@@ -147,7 +151,12 @@ def run_attempt_loop(
             )
             continue
 
-        sql = extract_sql_body(raw)
+        sql = extract_python_body(raw) if python_mode else extract_sql_body(raw)
+        if python_mode and sql:
+            from app.utils.python_normalization import qualify_sql_in_python
+
+            known = [(o.schema_name, o.object_name) for o in discovery.objects]
+            sql = qualify_sql_in_python(sql, known)
         if semantic_mode:
             smq = _extract_smq(raw)
             if smq is None:
@@ -195,7 +204,15 @@ def run_attempt_loop(
 
         # 1. Safety
         user_write = bool(context.request.is_user_code and any(w in (context.request.query or "").lower() for w in ("insert", "update", "delete", "drop")))
-        ok, reason = interceptor.check(sql, user_requested_write=user_write)
+        if python_mode:
+            ok, reason = python_interceptor.check(sql, user_requested_write=user_write)
+            if ok:
+                for embedded in extract_sql_from_python(sql):
+                    ok, reason = interceptor.check(embedded, user_requested_write=user_write)
+                    if not ok:
+                        break
+        else:
+            ok, reason = interceptor.check(sql, user_requested_write=user_write)
         if not ok:
             return _fail(ErrorCategory.SAFETY, reason or "blocked", attempt, attempt_reports, discovery, llm, started_at, hallucination_count, agentic_retry, context, sql)
 
@@ -211,7 +228,7 @@ def run_attempt_loop(
             continue
 
         # 3. Structural hash
-        digest = structural_sql_hash(sql)
+        digest = structural_python_hash(sql) if python_mode else structural_sql_hash(sql)
         if digest in hash_history:
             hallucination_count += 1
             loop_breaker = True
@@ -219,7 +236,7 @@ def run_attempt_loop(
             if hallucination_count >= threshold:
                 return _fail(
                     "hallucination_loop",
-                    "Repeated SQL structure detected",
+                    "Repeated SQL structure detected" if not python_mode else "Repeated Python structure detected",
                     attempt,
                     attempt_reports,
                     discovery,
@@ -239,14 +256,17 @@ def run_attempt_loop(
         # 4. Attempt-1 DB pre-check before critic
         if attempt == 1:
             emit(PipelineStage.DB_VALIDATION, "Database pre-check (attempt 1)")
-            db_ok, db_err, db_missing = validator.validate(sql, allowed)
-            if db_ok:
+            db_ok, db_err, db_missing = _validate_candidate(sql, validator, allowed, python_mode)
+            if db_ok and (not python_mode or extract_sql_from_python(sql)):
                 skip_critic = True
 
         critic_result = CombinedValidationResult()
         if not skip_critic:
             emit(PipelineStage.CRITIC, "LLM critic")
-            critic_result = _run_critic(llm, sql, discovery.schema_context_for_validation, context.combined_query, semantic_json if semantic_mode else None)
+            if python_mode:
+                critic_result = _run_python_critic(llm, sql, discovery.schema_context_for_validation, context.combined_query)
+            else:
+                critic_result = _run_critic(llm, sql, discovery.schema_context_for_validation, context.combined_query, semantic_json if semantic_mode else None)
             if critic_result.canonical_question:
                 canonical = critic_result.canonical_question
             if not critic_result.requirements_satisfied:
@@ -264,7 +284,7 @@ def run_attempt_loop(
 
         if not skip_critic:
             emit(PipelineStage.DB_VALIDATION, "Database validation")
-            db_ok, db_err, db_missing = validator.validate(sql, allowed)
+            db_ok, db_err, db_missing = _validate_candidate(sql, validator, allowed, python_mode)
 
         if db_ok:
             elapsed_ms = int((time.time() - started_at) * 1000)
@@ -343,6 +363,43 @@ def _run_critic(llm, sql, schema, query, semantic_json) -> CombinedValidationRes
         )
     except Exception:
         return CombinedValidationResult()
+
+
+def _run_python_critic(llm, code, schema, query) -> CombinedValidationResult:
+    if llm is None:
+        return CombinedValidationResult()
+    try:
+        data = llm.complete_json(python_critic_prompt(code, schema, query))
+        return CombinedValidationResult(
+            requirements_satisfied=bool(data.get("requirements_satisfied", True)),
+            schema_valid=bool(data.get("schema_valid", True)),
+            feedback=data.get("feedback") or "",
+            status=data.get("status"),
+            canonical_question=data.get("canonical_question"),
+            missing_objects=list(data.get("missing_objects") or []),
+        )
+    except Exception:
+        return CombinedValidationResult()
+
+
+def _validate_candidate(code: str, validator: SqlValidator, allowed: List[str], python_mode: bool):
+    if not python_mode:
+        return validator.validate(code, allowed)
+    ok, err = syntax_check_python(code)
+    if not ok:
+        return False, err, []
+    sqls = extract_sql_from_python(code)
+    if not sqls:
+        return True, "", []
+    last_err = ""
+    last_missing: List[str] = []
+    for sql in sqls:
+        db_ok, db_err, db_missing = validator.validate(sql, allowed)
+        if not db_ok:
+            last_err = db_err
+            last_missing = db_missing or []
+            return False, last_err, last_missing
+    return True, "", []
 
 
 def _extract_smq(raw: str) -> Optional[SmqPayload]:

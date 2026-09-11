@@ -89,8 +89,12 @@ def _format_examples(examples: List[FewShotExample], analysis: QueryAnalysis) ->
 PYTHON_CODE_GUIDELINES = """
 PYTHON CODE GUIDELINES
 - Connectivity:
-    - The application injects DB_CONNECTION_STRING at runtime. Do NOT hardcode credentials.
-    - Include a commented example connection string, then:
+    - A Python variable named DB_CONNECTION_STRING is already defined in the execution scope.
+    - Use that variable directly. Do NOT read os.environ, os.getenv, or any environment variable.
+    - Do NOT assign DB_CONNECTION_STRING from os.environ.
+    - Do NOT hardcode server names, database names, or credentials.
+    - Include a commented example, then create the engine from the injected variable:
+      # DB_CONNECTION_STRING = ("mssql+pyodbc://@your_server_name/your_database_name?driver=ODBC+Driver+17+for+SQL+Server&trusted_connection=yes")
       engine = sqlalchemy.create_engine(DB_CONNECTION_STRING)
     - MANDATORY pattern (no context managers, no engine.connect()):
       conn = engine.raw_connection()
@@ -100,6 +104,7 @@ PYTHON CODE GUIDELINES
           conn.close()
 - Data retrieval:
     - Use ONLY tables and columns in AVAILABLE SCHEMAS.
+    - Embedded SQL MUST schema-qualify every table/view (dbo.Categories or [dbo].[Categories]). Never use a bare name like Categories.
     - Pay attention to VERIFIED DATA MAPPINGS for exact string values.
 - Data manipulation:
     - Use pandas for filtering, aggregation, and transformation.

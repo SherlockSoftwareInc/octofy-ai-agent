@@ -3,7 +3,7 @@
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from app.core.branch_taxonomy import GenerationMode, RouteKind
 
@@ -184,6 +184,8 @@ class SemanticJoin(BaseModel):
 
 
 class SemanticModel(BaseModel):
+    model_config = ConfigDict(protected_namespaces=())
+
     model_id: str
     data_source_key: Optional[str] = None
     label: str

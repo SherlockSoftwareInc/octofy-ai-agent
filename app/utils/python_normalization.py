@@ -4,12 +4,17 @@ from __future__ import annotations
 
 import ast
 import hashlib
+import io
 import re
+import tokenize
 from typing import List, Optional
 
 _SQL_START = re.compile(
     r"^\s*(SELECT|WITH|INSERT|UPDATE|DELETE|MERGE)\b",
     re.IGNORECASE,
+)
+_SQL_OBJECT = re.compile(
+    r"(?is)\b(from|join|into|update)\s+(?:\[[^\]]+\]|[A-Za-z_][\w]*)"
 )
 _FENCE_PYTHON = re.compile(r"```(?:python|py)\s*([\s\S]*?)```", re.IGNORECASE)
 _FENCE_ANY = re.compile(r"```[a-zA-Z0-9_-]*\s*([\s\S]*?)```")
@@ -112,11 +117,14 @@ def extract_python_body(text: str) -> str:
 
 def wrap_sql_as_python(sql: str) -> str:
     """Wrap a validated SQL statement in the pandas/sqlalchemy execution pattern."""
+    from app.utils.sql_normalization import qualify_unqualified_objects
+
     body = (sql or "").strip()
     if not body:
         return ""
     if looks_like_python(body):
-        return cleanup_python_code(body)
+        return qualify_sql_in_python(cleanup_python_code(body))
+    body = qualify_unqualified_objects(body)
     fence = "'''" if '"""' in body else '"""'
     indented = "\n".join(f"        {line}" if line else "" for line in body.splitlines())
     return (
@@ -167,7 +175,7 @@ def extract_sql_from_python(code: str) -> List[str]:
 
     def _add(value: Optional[str]) -> None:
         text = (value or "").strip()
-        if not text or not _SQL_START.match(text):
+        if not text or not (_SQL_START.search(text) or _SQL_OBJECT.search(text)):
             return
         key = text.lower()
         if key in seen:
@@ -211,6 +219,109 @@ def syntax_check_python(code: str) -> tuple[bool, str]:
         return False, f"Python syntax error: {exc.msg} (line {exc.lineno})"
     except Exception as exc:
         return False, f"Python compile error: {exc}"
+
+
+_ENV_CONN_BRACKET = re.compile(
+    r"""os\.environ\s*\[\s*['"]DB_CONNECTION_STRING['"]\s*\]"""
+)
+_ENV_CONN_GET = re.compile(
+    r"""os\.environ\.get\(\s*['"]DB_CONNECTION_STRING['"]\s*(?:,\s*[^)]*)?\)"""
+)
+_ENV_CONN_GETENV = re.compile(
+    r"""os\.getenv\(\s*['"]DB_CONNECTION_STRING['"]\s*(?:,\s*[^)]*)?\)"""
+)
+_CONN_ASSIGN = re.compile(r"^(\s*)DB_CONNECTION_STRING\s*=.*$", re.MULTILINE)
+
+
+def bind_db_connection_string(code: str, conn_str: str) -> str:
+    """Replace env-var lookups and bind the real connection string in the source."""
+    if not code:
+        return code
+    bound = _ENV_CONN_BRACKET.sub("DB_CONNECTION_STRING", code)
+    bound = _ENV_CONN_GET.sub("DB_CONNECTION_STRING", bound)
+    bound = _ENV_CONN_GETENV.sub("DB_CONNECTION_STRING", bound)
+    assignment = f"DB_CONNECTION_STRING = {repr(conn_str)}"
+    if _CONN_ASSIGN.search(bound):
+        bound = _CONN_ASSIGN.sub(lambda m: f"{m.group(1)}{assignment}", bound, count=1)
+    else:
+        bound = assignment + "\n" + bound
+    return bound
+
+
+def _looks_like_sql_fragment(text: str) -> bool:
+    if not text:
+        return False
+    return bool(_SQL_START.search(text) or _SQL_OBJECT.search(text))
+
+
+def _rebuild_string_token(token_str: str, new_value: str) -> str:
+    """Rebuild a STRING token using the same prefix and quote style when possible."""
+    prefix = ""
+    i = 0
+    while i < len(token_str) and token_str[i] in "rRuUfFbB":
+        prefix += token_str[i]
+        i += 1
+    rest = token_str[i:]
+    if rest.startswith("'''"):
+        quote = "'''" if "'''" not in new_value else '"""'
+        return prefix + quote + new_value + quote
+    if rest.startswith('"""'):
+        quote = '"""' if '"""' not in new_value else "'''"
+        return prefix + quote + new_value + quote
+    if rest.startswith("'"):
+        if "'" in new_value:
+            return prefix + '"' + new_value.replace('"', '\\"') + '"'
+        return prefix + "'" + new_value + "'"
+    if rest.startswith('"'):
+        if '"' in new_value:
+            return prefix + "'" + new_value.replace("'", "\\'") + "'"
+        return prefix + '"' + new_value + '"'
+    return token_str
+
+
+def qualify_sql_in_python(code: str, known_objects=None, default_schema: str = "dbo") -> str:
+    """Schema-qualify bare table names inside embedded SQL strings."""
+    if not code:
+        return code
+    from app.utils.sql_normalization import qualify_unqualified_objects
+
+    def _qualify_text(text: str) -> str:
+        if not _looks_like_sql_fragment(text):
+            return text
+        return qualify_unqualified_objects(text, known_objects, default_schema)
+
+    result = code
+    try:
+        tokens = list(tokenize.generate_tokens(io.StringIO(code).readline))
+    except (tokenize.TokenError, IndentationError, SyntaxError):
+        tokens = []
+
+    fstring_middle = getattr(tokenize, "FSTRING_MIDDLE", None)
+    for tok in tokens:
+        if tok.type == tokenize.STRING:
+            try:
+                value = ast.literal_eval(tok.string)
+            except Exception:
+                continue
+            if not isinstance(value, str):
+                continue
+            qualified = _qualify_text(value)
+            if qualified == value:
+                continue
+            result = result.replace(tok.string, _rebuild_string_token(tok.string, qualified), 1)
+        elif fstring_middle is not None and tok.type == fstring_middle:
+            qualified = _qualify_text(tok.string)
+            if qualified != tok.string:
+                result = result.replace(tok.string, qualified, 1)
+
+    if result != code:
+        return result
+
+    for sql in extract_sql_from_python(code):
+        qualified = _qualify_text(sql)
+        if qualified != sql:
+            result = result.replace(sql, qualified)
+    return result
 
 
 def structural_python_hash(code: str) -> str:

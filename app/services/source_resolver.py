@@ -40,6 +40,19 @@ def resolve_known_source_id(source_id: Optional[str], required: bool = False) ->
     raise HTTPException(status_code=404, detail="Resource not found")
 
 
+def require_source_id(source_id: Optional[str]) -> str:
+    """HTTP APIs that target a data source must pass a known source_id.
+
+    Missing values used to fall through to the first skills folder (alphabetically
+    JCM before Northwind). Callers must select a source instead.
+    """
+    trimmed = (source_id or "").strip() or None
+    resolved = resolve_known_source_id(trimmed, required=True)
+    if not resolved:
+        raise HTTPException(status_code=400, detail="source_id is required")
+    return resolved
+
+
 def resolve_or_primary(source_id: Optional[str]) -> str:
     if source_id:
         return resolve_known_source_id(source_id)

@@ -63,13 +63,16 @@ def list_data_sources(current_user: User = Depends(get_current_user)):
                 total_objects += obj_count
                 
                 # Build response for skills-based source
+                parsed = skills_service._parse_data_source_file(Path(skill_source.file_path)) if skill_source.file_path else None
+                conn = (parsed.connection_info if parsed else None) or skill_source.connection_info or {}
+
                 sources.append(DataSourceResponse(
                     source_id=source_id,
                     friendly_name=skill_source.name,
                     description=skill_source.description,
                     keywords=skill_source.keywords,
-                    server="(Defined in schema library)",
-                    database_name="(Defined in schema library)",
+                    server=conn.get("server") or "(Defined in schema library)",
+                    database_name=conn.get("database") or "(Defined in schema library)",
                     db_type="mssql",  # Default assumption
                     enabled=skill_source.status.lower() == "active",
                     is_primary=False,  # Skills sources are not primary by default
