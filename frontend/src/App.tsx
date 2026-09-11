@@ -86,7 +86,7 @@ function AuthenticatedApp() {
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
   const [query, setQuery] = useState('');
   const [isLoading, setIsLoading] = useState(false);
-  const [queryMode, setQueryMode] = useState<'plan' | 'generate-sql' | 'generate-r' | 'generate-sas' | 'generate-python' | 'code-advisor'>('plan');
+  const [queryMode, setQueryMode] = useState<'ask' | 'generate-sql' | 'generate-r' | 'generate-sas' | 'generate-python' | 'code-advisor'>('ask');
   const [toast, setToast] = useState<{ message: string; type: ToastType } | null>(null);
   const [steps, setSteps] = useState<AgentStatus[]>([]);
   const abortControllerRef = useRef<AbortController | null>(null);
@@ -256,21 +256,33 @@ function AuthenticatedApp() {
     }
   }, [query]);
 
-  // Auto-generate planning summary when switching from plan mode to code generation
+  const previousQueryModeRef = useRef(queryMode);
+  // Auto-generate a handoff summary when leaving Ask for a code-generation mode
   useEffect(() => {
+    const previousMode = previousQueryModeRef.current;
+    previousQueryModeRef.current = queryMode;
     const generateSummary = async () => {
+      const askTurns = (activeConversation?.messages || []).filter(
+        (message) => message.queryType === 'ask' || message.queryType === 'plan'
+      );
       if (
-        queryMode !== 'plan' &&  // Switched away from plan mode
-        planningContext &&  // Have planning context
-        !planningSummary &&  // Summary not yet generated
+        previousMode === 'ask' &&
+        queryMode !== 'ask' &&
+        askTurns.length > 0 &&
+        !planningSummary &&
         activeConversationId
       ) {
         try {
-          // Call backend to generate summary
-          const summaryResponse = await generatePlanningSummary(planningContext);
+          const conversationHistory = askTurns.map((message) => ({
+            role: message.role === 'user' || message.type === 'user' ? 'user' : 'assistant',
+            content: message.content,
+          }));
+          const summaryResponse = await generatePlanningSummary({
+            conversation_history: conversationHistory,
+            selected_objects: selectedObjects,
+          });
           setPlanningSummary(summaryResponse.summary);
 
-          // Add summary as AI message
           const summaryMessage: ChatMessage = {
             id: generateMessageId(),
             role: 'assistant',
@@ -295,17 +307,16 @@ function AuthenticatedApp() {
             )
           );
 
-          // Set focus to textarea after planning summary is generated
           setTimeout(() => textareaRef.current?.focus(), 100);
 
         } catch (error) {
-          console.error('Failed to generate planning summary:', error);
+          console.error('Failed to generate discussion summary:', error);
         }
       }
     };
 
     generateSummary();
-  }, [queryMode, planningContext, planningSummary, activeConversationId, activeConversation?.messages]);
+  }, [queryMode, planningSummary, activeConversationId, activeConversation?.messages, selectedObjects]);
 
   // Debounced backend sync for conversation updates
   const savePendingRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
@@ -704,20 +715,7 @@ function AuthenticatedApp() {
         ? prev.filter((item) => item !== objectName)
         : [...prev, objectName];
 
-      // Update planning context if in plan mode
-      if (queryMode === 'plan' && planningContext) {
-        const updatedContext = {
-          ...planningContext,
-          selected_tables: nextSelected
-        };
-        setPlanningContext(updatedContext);
-        updateConversation(activeConversationId, {
-          selectedObjects: nextSelected,
-          planningContext: updatedContext
-        });
-      } else {
-        updateConversation(activeConversationId, { selectedObjects: nextSelected });
-      }
+      updateConversation(activeConversationId, { selectedObjects: nextSelected });
 
       return nextSelected;
     });
@@ -754,10 +752,7 @@ function AuthenticatedApp() {
     // 1. Query has content, OR
     // 2. We have a planning summary in non-plan mode, OR
     // 3. We're in plan mode and user has selected tables (table selection submission)
-    const hasSelectedTables = selectedObjects.length > 0;
-    const canSubmit = query.trim() || 
-                      (planningSummary && queryMode !== 'plan') ||
-                      (queryMode === 'plan' && hasSelectedTables);
+    const canSubmit = query.trim() || (planningSummary && queryMode !== 'ask');
     
     if (!canSubmit) return;
 
@@ -781,7 +776,7 @@ function AuthenticatedApp() {
     // Determine user message content - use auto-generate indicator if no query but planning summary exists
     const userMessageContent = query.trim()
       ? query
-      : (planningSummary ? '✨ Auto-generate from planning summary' : '');
+      : (planningSummary ? '✨ Auto-generate from discussion summary' : '');
 
     const userMessage: ChatMessage = {
       id: generateMessageId(),
@@ -813,47 +808,39 @@ function AuthenticatedApp() {
       let result: GenerateSQLResponse;
       const tableOverride = selectedObjects.length > 0 ? selectedObjects : undefined;
 
-      // NEW: Handle plan mode
-      if (queryMode === 'plan') {
+      if (queryMode === 'ask') {
+        const historyForAsk = currentMessages
+          .slice(0, -1)
+          .filter((message) => message.content && message.queryType !== 'planning_summary')
+          .map((message) => {
+            const role = message.role === 'user' || message.type === 'user' ? 'user' : 'assistant';
+            return `${role}: ${message.content}`;
+          })
+          .join('\n');
+
         result = await api.generateSQLStream(
           currentQuery,
           (status) => setSteps([status]),
           undefined,
-          undefined,
-          undefined,
+          lastGeneratedSQL || undefined,
+          historyForAsk || undefined,
           false,
-          'plan',
+          'ask',
           abortControllerRef.current.signal,
+          selectedObjects.length > 0 ? selectedObjects : undefined,
           undefined,
-          planningContext,
           selectedObjects.length > 0 ? selectedObjects : undefined,
           sourceId
         );
 
-        // Update planning context from response
-        if (result.context_text) {
-          try {
-            const updatedContext = JSON.parse(result.context_text);
-            setPlanningContext(updatedContext);
-
-            // Update conversation
-            updateConversation(conversationId, {
-              planningContext: updatedContext
-            });
-          } catch (e) {
-            console.error('Failed to parse planning context:', e);
-          }
-        }
-
-        // Handle AI response
         const aiMessage: ChatMessage = {
           id: generateMessageId(),
           role: 'assistant',
           type: 'ai',
-          content: result.explanation || 'Planning conversation continued.',
+          content: result.explanation || 'Discussion continued.',
           timestamp: new Date(),
           sqlResult: result,
-          queryType: 'plan',
+          queryType: 'ask',
           sourceQuery: currentQuery
         };
 
@@ -964,7 +951,7 @@ function AuthenticatedApp() {
         );
       }
 
-      if (result.query_type === 'plan') {
+      if (result.query_type === 'ask' || result.query_type === 'plan') {
         // Already handled above - do nothing more
       } else if (result.success === false) {
         const aiMessage: ChatMessage = {
@@ -1485,8 +1472,15 @@ function AuthenticatedApp() {
                                 </div>
                               )}
 
-                              {/* Plan Mode and Search Results Grid */}
-                              {(message.queryType === 'plan' || message.queryType === 'search') && message.sqlResult?.explanation && (
+                              {message.sqlResult?.tool_event && (message.queryType === 'ask' || message.queryType === 'plan') && (
+                                <div className="inline-flex items-center gap-1.5 rounded-full border border-amber-500/30 bg-amber-500/10 px-2.5 py-1 text-xs text-amber-200">
+                                  <span className="text-amber-400">⚙</span>
+                                  {message.sqlResult.tool_event}
+                                </div>
+                              )}
+
+                              {/* Search Results Grid */}
+                              {message.queryType === 'search' && message.sqlResult?.explanation && (
                                 <div className="mt-2">
                                   {(() => {
                                     const apiObjects = message.sqlResult.objects;
@@ -1535,7 +1529,7 @@ function AuthenticatedApp() {
                                       })();
 
                                     if (parsedObjects.length > 0) {
-                                      const themeColor = message.queryType === 'plan' ? 'amber' : 'emerald';
+                                      const themeColor = 'emerald';
                                       const hasAutoChecked = parsedObjects.some(obj => obj.autoChecked);
 
                                       return (
@@ -1611,7 +1605,7 @@ function AuthenticatedApp() {
                                 <div className="mt-3 rounded-lg border-2 border-amber-500/40 bg-gradient-to-br from-amber-950/30 to-orange-950/20 p-4 shadow-lg">
                                   <div className="flex items-center gap-2 mb-3 text-amber-300 font-semibold">
                                     <FileText size={18} />
-                                    <span>Planning Summary</span>
+                                    <span>Discussion Summary</span>
                                   </div>
 
                                   <div className="prose prose-sm prose-invert max-w-none text-slate-200">
@@ -1640,11 +1634,11 @@ function AuthenticatedApp() {
                                     </button>
 
                                     <button
-                                      onClick={() => setQueryMode('plan')}
+                                      onClick={() => setQueryMode('ask')}
                                       className="px-3 py-1.5 text-xs rounded-md bg-amber-600 hover:bg-amber-500 text-white transition-colors flex items-center gap-1"
                                     >
                                       <Edit size={12} />
-                                      Back to Plan
+                                      Back to Ask
                                     </button>
                                   </div>
                                 </div>
@@ -1900,21 +1894,21 @@ function AuthenticatedApp() {
             <div className="w-full">
               {/* Mode Toggle - Radio Buttons */}
               <div className="flex items-center justify-center gap-6 mb-3">
-                {/* 1. Plan Mode - FIRST */}
+                {/* 1. Ask Mode - FIRST */}
                 <label className="flex items-center gap-2 cursor-pointer group">
                   <input
                     type="radio"
                     name="queryMode"
-                    value="plan"
-                    checked={queryMode === 'plan'}
+                    value="ask"
+                    checked={queryMode === 'ask'}
                     onChange={() => {
-                      setQueryMode('plan');
+                      setQueryMode('ask');
                       setPlanningSummary(null);
                     }}
                     className="w-4 h-4 text-amber-600 bg-slate-800 border-slate-600 focus:ring-amber-500 focus:ring-offset-slate-900"
                   />
-                  <span className={`text-sm font-medium transition-colors ${queryMode === 'plan' ? 'text-amber-400' : 'text-slate-400 group-hover:text-slate-300'}`}>
-                    📋 Plan
+                  <span className={`text-sm font-medium transition-colors ${queryMode === 'ask' ? 'text-amber-400' : 'text-slate-400 group-hover:text-slate-300'}`}>
+                    💬 Ask
                   </span>
                 </label>
 
@@ -1995,22 +1989,22 @@ function AuthenticatedApp() {
               </div>
 
               {/* Planning summary ready banner */}
-              {queryMode !== 'plan' && planningSummary && (
+              {queryMode !== 'ask' && planningSummary && (
                 <div className="mb-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-200">
-                  📋 I have your planning summary ready. Click below to generate code, or add additional requirements first.
+                  I have your discussion summary ready. Click below to generate code, or add additional requirements first.
                 </div>
               )}
 
               {/* Selected objects banner */}
-              {selectedObjects.length > 0 && queryMode !== 'plan' && !planningSummary && (
+              {selectedObjects.length > 0 && queryMode !== 'ask' && !planningSummary && (
                 <div className="mb-3 rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-200">
                   Context locked in. I'll use these {selectedObjects.length} object{selectedObjects.length !== 1 ? 's' : ''} for the next step. What would you like me to generate?
                 </div>
               )}
 
               <div className="relative group">
-                <div className={`absolute -inset-0.5 bg-gradient-to-r ${queryMode === 'plan' ? 'from-amber-500 to-orange-600' : 'from-indigo-500 to-purple-600'} rounded-xl opacity-30 blur group-hover:opacity-50 transition duration-500`}></div>
-                <div className={`relative flex items-end bg-slate-950 rounded-xl p-1 shadow-2xl ring-1 ring-slate-800 ${queryMode === 'plan' ? 'focus-within:ring-amber-500/50' : 'focus-within:ring-indigo-500/50'} transition-all`}>
+                <div className={`absolute -inset-0.5 bg-gradient-to-r ${queryMode === 'ask' ? 'from-amber-500 to-orange-600' : 'from-indigo-500 to-purple-600'} rounded-xl opacity-30 blur group-hover:opacity-50 transition duration-500`}></div>
+                <div className={`relative flex items-end bg-slate-950 rounded-xl p-1 shadow-2xl ring-1 ring-slate-800 ${queryMode === 'ask' ? 'focus-within:ring-amber-500/50' : 'focus-within:ring-indigo-500/50'} transition-all`}>
                   <textarea
                     ref={textareaRef}
                     value={query}
@@ -2022,8 +2016,8 @@ function AuthenticatedApp() {
                       }
                     }}
                     placeholder={
-                      queryMode === 'plan'
-                        ? 'Describe your analysis goal or ask about available data...'
+                      queryMode === 'ask'
+                        ? 'Ask about this data...'
                         : queryMode === 'code-advisor'
                           ? 'Paste your SQL, R, SAS, or Python code here for advice... (e.g., "Review this query", "Optimize this code", "Fix this bug")'
                           : planningSummary
@@ -2036,12 +2030,12 @@ function AuthenticatedApp() {
                   />
                   <button
                     onClick={handleSend}
-                    disabled={isLoading || (queryMode !== 'code-advisor' && !selectedSourceId.trim()) || (queryMode !== 'plan' && !planningSummary && !query.trim())}
-                    className={`p-3 mb-0.5 ${queryMode === 'plan' ? 'bg-amber-600 hover:bg-amber-500 shadow-amber-500/20' : 'bg-indigo-600 hover:bg-indigo-500 shadow-indigo-500/20'} text-white rounded-lg transition-all disabled:opacity-50 shadow-lg`}
+                    disabled={isLoading || (queryMode !== 'code-advisor' && !selectedSourceId.trim()) || (queryMode !== 'ask' && !planningSummary && !query.trim())}
+                    className={`p-3 mb-0.5 ${queryMode === 'ask' ? 'bg-amber-600 hover:bg-amber-500 shadow-amber-500/20' : 'bg-indigo-600 hover:bg-indigo-500 shadow-indigo-500/20'} text-white rounded-lg transition-all disabled:opacity-50 shadow-lg`}
                   >
                     {isLoading ? (
                       <Loader2 className="animate-spin" size={20} />
-                    ) : planningSummary && queryMode !== 'plan' ? (
+                    ) : planningSummary && queryMode !== 'ask' ? (
                       <span className="flex items-center gap-1 text-sm px-2">
                         ✨ {query.trim() ? 'Generate' : 'Auto-Generate'}
                       </span>

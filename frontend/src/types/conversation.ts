@@ -97,7 +97,7 @@ export interface ChatMessage {
   timestamp: Date;
   discoveryResult?: DiscoveryResponse;
   sqlResult?: GenerateSQLResponse;
-  queryType?: 'database' | 'general' | 'uncertain' | 'search' | 'plan' | 'planning_summary' | 'r_code' | 'sas_code' | 'python_code' | 'code_advisor';
+  queryType?: 'database' | 'general' | 'uncertain' | 'search' | 'plan' | 'ask' | 'planning_summary' | 'r_code' | 'sas_code' | 'python_code' | 'code_advisor';
   needsClarification?: boolean;
   sourceQuery?: string;
   executionResult?: ExecutePythonResponse;

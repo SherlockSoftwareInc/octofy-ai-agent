@@ -1632,84 +1632,10 @@ Format as markdown. Be concise but friendly. Maximum 4 sentences (unless answeri
 
 
 def generate_planning_summary(planning_context: Dict[str, Any]) -> str:
-    """
-    Generate a structured markdown summary from planning context.
-    
-    Args:
-        planning_context: Accumulated planning state
-    
-    Returns:
-        Formatted summary for display and code generation
-    """
-    import json
-    
-    try:
-        llm_service = get_llm_service()
-        
-        # Serialize context for JSON (convert sets to lists)
-        context_for_prompt = {}
-        for key, value in planning_context.items():
-            if isinstance(value, set):
-                context_for_prompt[key] = list(value)
-            else:
-                context_for_prompt[key] = value
-        
-        # Extract user's original request from conversation history
-        user_messages = [turn.get("user", "") for turn in planning_context.get("conversation_history", [])]
-        original_request = user_messages[0] if user_messages else planning_context.get("goal", "")
-        
-        prompt = f"""Create a concise summary from this planning conversation for code generation.
+    """Summarize an Ask/Discuss thread (or legacy planning context) for code generation."""
+    from app.services.discuss_service import generate_ask_summary
 
-**User's Primary Request:** {original_request}
-
-**Full Planning Context:** {json.dumps(context_for_prompt, indent=2)}
-
-CRITICAL: The summary must focus on WHAT THE USER WANTS TO ACHIEVE (their primary analysis request), NOT just list tables.
-
-Format as markdown:
-## Primary Request
-[Restate the user's original analysis question/goal in clear terms - this is the MAIN focus]
-
-## Data Sources
-[List only the selected tables - keep this section minimal]
-• [schema].[table]
-• ...
-
-## Additional Requirements
-[ONLY if user specified filters, date ranges, grouping, metrics, etc.]
-• [requirement]
-
-Guidelines:
-- The "Primary Request" section is THE MOST IMPORTANT - it should clearly state what the user wants to analyze or find out
-- Selected tables are SUPPORTING information, not the main focus
-- Keep total summary under 150 words
-- This summary will be sent directly to code generation, so it must clearly communicate the user's intent"""
-
-        summary = llm_service.chat(prompt)
-        return summary
-        
-    except Exception as e:
-        logging.error(f"Error generating planning summary: {e}")
-        # Fallback: simple summary focusing on user's primary request
-        user_messages = [turn.get("user", "") for turn in planning_context.get("conversation_history", [])]
-        original_request = user_messages[0] if user_messages else planning_context.get("goal", "Analysis goal not specified")
-        
-        tables = planning_context.get("selected_tables", [])
-        requirements = planning_context.get("requirements", [])
-        
-        summary = f"## Primary Request\n{original_request}\n\n"
-        if tables:
-            summary += f"## Data Sources\n"
-            for table in tables:
-                summary += f"• {table}\n"
-            summary += "\n"
-        if requirements:
-            summary += "## Additional Requirements\n"
-            for req in requirements[:5]:  # Limit to 5
-                req_value = req.get("value", str(req))
-                summary += f"• {req_value}\n"
-        
-        return summary
+    return generate_ask_summary(planning_context or {})
 
 
 def generate_sql_for_request(request: GenerateSQLRequest, previous_sql: Optional[str] = None, query_history: Optional[str] = None) -> Generator[Union[AgentStatus, Dict[str, Any]], None, None]:
@@ -1725,14 +1651,12 @@ def generate_sql_for_request(request: GenerateSQLRequest, previous_sql: Optional
     editor_mode = "debug" if request.error_message else ("optimize" if existing_code else "fresh")
     is_editor_mode = editor_mode != "fresh"
     
-    # Check for plan mode first - conversational planning
-    if request.queryMode == "plan":
-        yield AgentStatus(step_id=1, message="Thinking about your data needs...")
-        result = planning_conversation(
-            combined_query, 
-            request.planning_context,
-            user_selected_tables=request.user_selected_tables
-        )
+    # Ask/Discuss mode — conversational discussion, never the SQL pipeline
+    if request.queryMode in {"plan", "ask"}:
+        from app.services.discuss_service import discuss_conversation
+
+        yield AgentStatus(step_id=1, message="Thinking about your question...")
+        result = discuss_conversation(request)
         yield {"type": "result", "payload": result}
         yield {"type": "done"}
         return

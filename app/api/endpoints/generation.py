@@ -685,9 +685,9 @@ async def generate_planning_summary_endpoint(
     try:
         from app.services.generation_service import generate_planning_summary
         
-        planning_context = request.get("planning_context")
+        planning_context = request.get("planning_context") or request
         if not planning_context:
-            raise HTTPException(status_code=400, detail="planning_context required")
+            raise HTTPException(status_code=400, detail="planning_context or conversation_history required")
         
         summary = generate_planning_summary(planning_context)
         

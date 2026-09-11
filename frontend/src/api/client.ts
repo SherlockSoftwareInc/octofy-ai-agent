@@ -114,6 +114,7 @@ export interface GenerateSQLResponse {
     is_code_edit?: boolean;
     success?: boolean;
     failure_report?: unknown;
+    tool_event?: string;
 }
 
 export interface SearchObject {
@@ -244,7 +245,7 @@ export const api = {
         previousSQL?: string,
         queryHistory?: string,
         forceGeneral: boolean = false,
-        queryMode: 'generate' | 'search' | 'plan' = 'generate',
+        queryMode: 'generate' | 'search' | 'plan' | 'ask' = 'generate',
         signal?: AbortSignal,
         tableOverride?: string[],
         planningContext?: unknown,

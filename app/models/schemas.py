@@ -109,7 +109,7 @@ class GenerateSQLRequest(BaseModel):
     error_message: Optional[str] = None # Error message or stack trace for debugging
     is_user_code: bool = False # True if provided code was written by the user
     forceGeneral: bool = False # If True, skip classification and go straight to general LLM chat
-    queryMode: Literal["generate", "search", "plan", "code_advisor"] = "generate"  # "generate" for SQL generation, "search" for object search, "plan" for planning mode, "code_advisor" for code review/advice
+    queryMode: Literal["generate", "search", "plan", "ask", "code_advisor"] = "generate"
     table_override: Optional[List[str]] = None # Explicit schema.table list from user selection
     chart_type_override: Optional[ChartTypeLiteral] = None  # User-specified chart type
     user_selected_tables: Optional[List[str]] = None  # User's checkbox selections from threshold prompt
@@ -178,6 +178,7 @@ class GenerateSQLResponse(BaseModel):
     canonical_question: Optional[str] = None
     error_category: Optional[str] = None
     failure_report: Optional[Dict[str, Any]] = None
+    tool_event: Optional[str] = None  # Discuss/Ask tool chip name when a lookup ran
 
 class AgentStatus(BaseModel):
     step_id: int
