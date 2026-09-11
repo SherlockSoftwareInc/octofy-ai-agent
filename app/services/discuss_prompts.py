@@ -15,26 +15,96 @@ MAX_SELECTED_COLUMNS = 24
 COLUMN_NAME_RE = re.compile(r"^\s*[-*]\s+\*?\*?`?\[?([A-Za-z_][\w\s]*)\]?`?\*?\*?", re.MULTILINE)
 TABLE_COLUMN_RE = re.compile(r"^\|\s*\d+\s*\|\s*`?\[?([A-Za-z_][\w\s]*)\]?`?\s*\|", re.MULTILINE)
 TRAILING_PUNCT_RE = re.compile(r"[.!?,。]+$")
+ROLE_PREFIX_RE = re.compile(r"^(user|assistant|ai)\s*:\s?(.*)$", re.IGNORECASE)
 
 
-def parse_recent_conversation(query_history: Optional[str], exclude_current: bool = True) -> List[Tuple[str, str]]:
+def _normalize_role(role: str) -> str:
+    value = (role or "user").strip().lower()
+    if value in {"assistant", "ai"}:
+        return "assistant"
+    return "user"
+
+
+def _finalize_turns(
+    turns: List[Tuple[str, str]],
+    exclude_current: bool,
+    current_query: Optional[str],
+) -> List[Tuple[str, str]]:
+    cleaned = [(role, content.strip()) for role, content in turns if str(content or "").strip()]
+    if exclude_current and cleaned and cleaned[-1][0] == "user":
+        last = cleaned[-1][1]
+        incoming = (current_query or "").strip()
+        if not incoming or last == incoming:
+            cleaned = cleaned[:-1]
+    return cleaned[-MAX_RECENT_TURNS:]
+
+
+def _parse_history_json(raw: str) -> Optional[List[Tuple[str, str]]]:
+    try:
+        parsed = json.loads(raw)
+    except Exception:
+        return None
+    if not isinstance(parsed, list):
+        return None
     turns: List[Tuple[str, str]] = []
-    if not query_history:
-        return turns
-    for raw_line in str(query_history).splitlines():
-        line = raw_line.strip()
-        if not line:
+    for item in parsed:
+        if not isinstance(item, dict):
             continue
-        lowered = line.lower()
-        if lowered.startswith("user:") or lowered.startswith("user "):
-            turns.append(("user", line.split(":", 1)[-1].strip()))
-        elif lowered.startswith("assistant:") or lowered.startswith("ai:") or lowered.startswith("ai "):
-            turns.append(("assistant", line.split(":", 1)[-1].strip()))
+        content = str(item.get("content") or "").strip()
+        if not content:
+            continue
+        turns.append((_normalize_role(str(item.get("role") or "user")), content))
+    return turns
+
+
+def parse_recent_conversation(
+    query_history: Optional[str],
+    exclude_current: bool = True,
+    current_query: Optional[str] = None,
+) -> List[Tuple[str, str]]:
+    """Parse prior Ask turns as whole messages, not as individual lines.
+
+    A markdown assistant reply contains many blank/bullet lines. Splitting those
+    into fake user/assistant turns drops the real thread after MAX_RECENT_TURNS.
+    """
+    if not query_history:
+        return []
+    raw = str(query_history).strip()
+    if not raw:
+        return []
+
+    json_turns = _parse_history_json(raw)
+    if json_turns is not None:
+        return _finalize_turns(json_turns, exclude_current, current_query)
+
+    turns: List[Tuple[str, str]] = []
+    current_role: Optional[str] = None
+    current_parts: List[str] = []
+
+    def flush() -> None:
+        nonlocal current_role, current_parts
+        if current_role is None:
+            return
+        text = "\n".join(current_parts).strip()
+        if text:
+            turns.append((current_role, text))
+        current_role = None
+        current_parts = []
+
+    for raw_line in str(query_history).splitlines():
+        match = ROLE_PREFIX_RE.match(raw_line.strip())
+        if match:
+            flush()
+            current_role = _normalize_role(match.group(1))
+            current_parts = [match.group(2)]
+            continue
+        if current_role is None:
+            current_role = "user"
+            current_parts = [raw_line]
         else:
-            turns.append(("user" if not turns or turns[-1][0] == "assistant" else "assistant", line))
-    if exclude_current and turns and turns[-1][0] == "user":
-        turns = turns[:-1]
-    return turns[-MAX_RECENT_TURNS:]
+            current_parts.append(raw_line)
+    flush()
+    return _finalize_turns(turns, exclude_current, current_query)
 
 
 def format_recent_conversation_lines(turns: Sequence[Tuple[str, str]]) -> List[str]:

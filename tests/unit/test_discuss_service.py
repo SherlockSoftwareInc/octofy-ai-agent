@@ -1,5 +1,6 @@
 """Discuss/Ask pipeline: tool hints, intent gate, thread continuation, prompt."""
 
+import json
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -63,9 +64,35 @@ def test_thread_continuation_guard():
 
 def test_parse_recent_conversation_excludes_current_user():
     history = "user: first\nassistant: reply\nuser: follow up"
-    turns = parse_recent_conversation(history, exclude_current=True)
+    turns = parse_recent_conversation(history, exclude_current=True, current_query="follow up")
     assert turns[-1][0] == "assistant"
     assert turns[0] == ("user", "first")
+
+
+def test_parse_recent_conversation_keeps_multiline_assistant_as_one_turn():
+    history = (
+        "user: What data is available for a staff dashboard?\n"
+        "assistant: The database has employees, orders, and territories.\n"
+        "\n"
+        "If you want, I can next give you:\n"
+        "1. a Power BI-ready star schema version of this dataset, or\n"
+        "2. a single detailed row-level SQL dataset.\n"
+    )
+    turns = parse_recent_conversation(history, exclude_current=False)
+    assert len(turns) == 2
+    assert turns[0] == ("user", "What data is available for a staff dashboard?")
+    assert "Power BI-ready star schema" in turns[1][1]
+    assert all(role in {"user", "assistant"} for role, _ in turns)
+
+
+def test_parse_recent_conversation_accepts_json_turns():
+    history = json.dumps([
+        {"role": "user", "content": "What data is available?"},
+        {"role": "assistant", "content": "Employees, orders, territories.\n1. star schema\n2. row-level SQL"},
+    ])
+    turns = parse_recent_conversation(history, exclude_current=False)
+    assert len(turns) == 2
+    assert "star schema" in turns[1][1]
 
 
 def test_looks_like_sql_and_json_extract():
@@ -139,6 +166,34 @@ def test_discuss_continuation_overrides_short_circuit(mock_classify, mock_tool):
         result = discuss_conversation(request)
     llm.chat_completion.assert_called_once()
     assert "regional" in (result.explanation or "")
+
+
+@patch("app.services.discuss_service.try_resolve_tool_lookup", return_value=None)
+@patch("app.services.discuss_service.classify_discuss_intent", return_value=("off_topic", "ignored"))
+def test_discuss_keeps_multiline_thread_for_short_follow_up(mock_classify, mock_tool):
+    llm = MagicMock()
+    llm.chat_completion.return_value = "Here is the Power BI-ready star schema."
+    history = json.dumps([
+        {"role": "user", "content": "What data is available for a staff dashboard?"},
+        {
+            "role": "assistant",
+            "content": (
+                "Employees, orders, and territories are available.\n\n"
+                "If you want, I can next give you:\n"
+                "1. a Power BI-ready star schema version of this dataset, or\n"
+                "2. a single detailed row-level SQL dataset."
+            ),
+        },
+    ])
+    request = GenerateSQLRequest(query="1 please", queryMode="ask", queryHistory=history)
+    with patch("app.services.llm_service.get_llm_service", return_value=llm):
+        result = discuss_conversation(request)
+    sent = llm.chat_completion.call_args[0][0]
+    roles = [message["role"] for message in sent]
+    assert roles == ["system", "user", "assistant", "user"]
+    assert "Employees, orders, and territories" in sent[2]["content"]
+    assert sent[3]["content"] == "1 please"
+    assert "star schema" in (result.explanation or "")
 
 
 @patch("app.services.discuss_service.classify_discuss_intent")

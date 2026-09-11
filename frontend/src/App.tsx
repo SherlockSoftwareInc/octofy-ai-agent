@@ -783,7 +783,8 @@ function AuthenticatedApp() {
       role: 'user',
       type: 'user',
       content: userMessageContent,
-      timestamp: new Date()
+      timestamp: new Date(),
+      ...(queryMode === 'ask' ? { queryType: 'ask' as const } : {})
     };
 
     // Add user message to chat history
@@ -809,14 +810,16 @@ function AuthenticatedApp() {
       const tableOverride = selectedObjects.length > 0 ? selectedObjects : undefined;
 
       if (queryMode === 'ask') {
-        const historyForAsk = currentMessages
-          .slice(0, -1)
-          .filter((message) => message.content && message.queryType !== 'planning_summary')
-          .map((message) => {
-            const role = message.role === 'user' || message.type === 'user' ? 'user' : 'assistant';
-            return `${role}: ${message.content}`;
-          })
-          .join('\n');
+        const historyForAsk = JSON.stringify(
+          currentMessages
+            .slice(0, -1)
+            .filter((message) => message.queryType !== 'planning_summary')
+            .map((message) => ({
+              role: message.role === 'user' || message.type === 'user' ? 'user' : 'assistant',
+              content: message.content || message.sqlResult?.explanation || '',
+            }))
+            .filter((turn) => turn.content)
+        );
 
         result = await api.generateSQLStream(
           currentQuery,

@@ -153,7 +153,11 @@ def build_discuss_system_prompt(
 
 def discuss_conversation(request: GenerateSQLRequest) -> GenerateSQLResponse:
     query = (request.query or "").strip()
-    recent_turns = parse_recent_conversation(request.queryHistory, exclude_current=True)
+    recent_turns = parse_recent_conversation(
+        request.queryHistory,
+        exclude_current=True,
+        current_query=query,
+    )
     recent_lines = format_recent_conversation_lines(recent_turns)
 
     tool_result: Optional[DiscussToolResult] = None
