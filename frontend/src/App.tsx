@@ -10,7 +10,6 @@ import { ValueManager } from './pages/Admin/ValueManager';
 import { ContributionManager } from './pages/Admin/ContributionManager';
 import { Settings } from './pages/Admin/Settings';
 import { DataSourcesManager } from './pages/Admin/DataSourcesManager';
-import { DataSourceSelector } from './components/DataSourceSelector';
 import { UserManager } from './pages/Admin/UserManager';
 import { Toast } from './components/Toast';
 import type { ToastType } from './components/Toast';
@@ -32,6 +31,7 @@ import {
   generateInitialTitle,
 } from './utils/conversationStorageBackend';
 import { generateAutoTitle } from './utils/conversationStorage';
+import { assignMissingSourceIds, resolveDefaultSourceId } from './utils/conversationTree';
 import { useAuth } from './contexts/AuthContext';
 import { Login } from './pages/Login';
 import { UserProfile } from './components/UserProfile';
@@ -137,15 +137,51 @@ function AuthenticatedApp() {
         // Load from backend (falls back to user-scoped localStorage on failure)
         const loadedConversations = await conversationStorage.loadConversations();
         const loadedActiveId = conversationStorage.loadActiveConversationId();
-        
-        console.log('Loaded conversations:', loadedConversations.length);
-        
-        if (loadedConversations.length > 0) {
-          setConversations(loadedConversations);
-          if (loadedActiveId && loadedConversations.some(c => c.id === loadedActiveId)) {
+
+        let fallbackSourceId = '';
+        try {
+          const storedSourceId = localStorage.getItem('octofy.selectedSourceId') || '';
+          fallbackSourceId = storedSourceId.trim();
+        } catch {
+          fallbackSourceId = '';
+        }
+
+        try {
+          const response = await api.dataSources.getAll();
+          const defaultSourceId = resolveDefaultSourceId(response.data_sources || []);
+          if (defaultSourceId) {
+            fallbackSourceId = fallbackSourceId || defaultSourceId;
+            if (!selectedSourceId.trim()) {
+              setSelectedSourceId(defaultSourceId);
+              try {
+                localStorage.setItem('octofy.selectedSourceId', defaultSourceId);
+              } catch {
+                /* ignore quota / private mode */
+              }
+            }
+          }
+        } catch (error) {
+          console.error('Failed to load data sources for conversation assignment:', error);
+        }
+
+        const { conversations: assignedConversations, changedIds } = fallbackSourceId
+          ? assignMissingSourceIds(loadedConversations, fallbackSourceId)
+          : { conversations: loadedConversations, changedIds: [] };
+
+        for (const conversation of assignedConversations) {
+          if (changedIds.includes(conversation.id)) {
+            conversationStorage.saveConversation(conversation);
+          }
+        }
+
+        console.log('Loaded conversations:', assignedConversations.length);
+
+        if (assignedConversations.length > 0) {
+          setConversations(assignedConversations);
+          if (loadedActiveId && assignedConversations.some(c => c.id === loadedActiveId)) {
             setActiveConversationId(loadedActiveId);
           } else {
-            setActiveConversationId(loadedConversations[0].id);
+            setActiveConversationId(assignedConversations[0].id);
           }
         } else {
           setConversations([]);
@@ -322,7 +358,13 @@ function AuthenticatedApp() {
   };
 
   // Create a new conversation (local + backend sync)
-  const handleNewConversation = () => {
+  const handleNewConversation = (sourceId?: string): Conversation | undefined => {
+    const resolvedSourceId = (sourceId ?? selectedSourceId).trim();
+    if (!resolvedSourceId) {
+      setToast({ message: 'Start a chat under a data source in the sidebar first.', type: 'error' });
+      return undefined;
+    }
+
     const newConv: Conversation = {
       id: generateConversationId(),
       title: 'New Chat',
@@ -331,15 +373,22 @@ function AuthenticatedApp() {
       lastGeneratedSQL: '',
       queryHistory: '',
       selectedObjects: [],
+      selectedSourceId: resolvedSourceId,
     };
 
     setConversations(prev => [newConv, ...prev]);
     setActiveConversationId(newConv.id);
     setSelectedObjects([]);
-    
+    setSelectedSourceId(resolvedSourceId);
+    try {
+      localStorage.setItem('octofy.selectedSourceId', resolvedSourceId);
+    } catch {
+      /* ignore quota / private mode */
+    }
+
     // Sync new conversation to backend
     syncConversationToBackend(newConv);
-    
+
     return newConv;
   };
 
@@ -384,19 +433,6 @@ function AuthenticatedApp() {
     setActiveConversationId(conversationId);
   };
 
-
-  const handleSourceChange = (sourceId: string) => {
-    setSelectedSourceId(sourceId);
-    try {
-      localStorage.setItem('octofy.selectedSourceId', sourceId);
-    } catch {
-      /* ignore quota / private mode */
-    }
-    if (activeConversationId) {
-      updateConversation(activeConversationId, { selectedSourceId: sourceId });
-    }
-  };
-
   const handleClarificationChoice = async (messageId: string, choice: 'database' | 'general') => {
     if (!activeConversationId) return;
 
@@ -413,7 +449,7 @@ function AuthenticatedApp() {
     if (choice === 'database') {
       // Re-run as database query
       if (!selectedSourceId.trim()) {
-        setToast({ message: 'Select a data source before sending.', type: 'error' });
+        setToast({ message: 'Start a chat under a data source in the sidebar first.', type: 'error' });
         return;
       }
       setIsLoading(true);
@@ -459,7 +495,7 @@ function AuthenticatedApp() {
       }
     } else {
       if (!selectedSourceId.trim()) {
-        setToast({ message: 'Select a data source before sending.', type: 'error' });
+        setToast({ message: 'Start a chat under a data source in the sidebar first.', type: 'error' });
         return;
       }
       // Re-run as general query with forceGeneral flag
@@ -727,7 +763,7 @@ function AuthenticatedApp() {
 
     const needsDataSource = queryMode !== 'code-advisor';
     if (needsDataSource && !selectedSourceId.trim()) {
-      setToast({ message: 'Select a data source before sending.', type: 'error' });
+      setToast({ message: 'Start a chat under a data source in the sidebar first.', type: 'error' });
       return;
     }
     const sourceId = selectedSourceId.trim();
@@ -735,7 +771,8 @@ function AuthenticatedApp() {
     // Create new conversation if none exists
     let conversationId = activeConversationId;
     if (!conversationId) {
-      const newConv = handleNewConversation();
+      const newConv = handleNewConversation(sourceId);
+      if (!newConv) return;
       conversationId = newConv.id;
     }
 
@@ -1191,6 +1228,7 @@ function AuthenticatedApp() {
         <Sidebar
           conversations={conversations}
           activeConversationId={activeConversationId}
+          selectedSourceId={selectedSourceId}
           onSelectConversation={handleSelectConversation}
           onNewConversation={handleNewConversation}
           onDeleteConversation={handleDeleteConversation}
@@ -1840,13 +1878,6 @@ function AuthenticatedApp() {
           {/* Input Area */}
           <footer className="px-6 py-4 bg-slate-900/80 backdrop-blur border-t border-slate-800">
             <div className="w-full">
-              <div className="mb-3 max-w-xl mx-auto">
-                <DataSourceSelector
-                  selectedSourceId={selectedSourceId}
-                  onSourceChange={handleSourceChange}
-                  disabled={isLoading}
-                />
-              </div>
               {/* Mode Toggle - Radio Buttons */}
               <div className="flex items-center justify-center gap-6 mb-3">
                 {/* 1. Plan Mode - FIRST */}
