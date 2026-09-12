@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from functools import lru_cache
 from typing import Optional
 
+from app.core.config import settings
 from app.services.bm25_service import Bm25Service
 from app.services.database_catalog import DatabaseCatalog
 from app.services.fewshot_vector_service import FewShotVectorService
@@ -50,8 +51,16 @@ def build_source_stores(source_id: str, provider=None) -> SourceStores:
         values=ValueIndexService(provider, source_id),
         precomputed=PrecomputedQueryStore(provider, source_id),
         data_groups=DataGroupStore(provider, source_id),
-        semantic=SemanticModelService(provider, source_id),
-        bm25=Bm25Service(enabled=False),
+        semantic=SemanticModelService(
+            provider,
+            source_id,
+            enable_flag=settings.semantic_layer_enabled_for(source_id),
+        ),
+        bm25=Bm25Service(
+            enabled=settings.ENABLE_BM25_RETRIEVAL,
+            k1=settings.BM25_K1,
+            b=settings.BM25_B,
+        ),
         provider=provider,
     )
 

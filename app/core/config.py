@@ -1,7 +1,8 @@
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from pydantic import Field, AliasChoices
-from typing import Optional
+from pydantic import Field, AliasChoices, field_validator
+from typing import Optional, Dict
 from pathlib import Path
+import json
 
 _ROOT_ENV = str(Path(__file__).resolve().parents[2] / ".env")
 
@@ -55,6 +56,13 @@ class Settings(BaseSettings):
     PRECOMPUTED_QUERY_DIRECT_MATCH_THRESHOLD: float = 0.93
     PRECOMPUTED_QUERY_FEW_SHOT_THRESHOLD: float = 0.82
     OBJECT_SEARCH_VECTOR_SCORE_THRESHOLD: float = 0.50
+    ENABLE_BM25_RETRIEVAL: bool = False
+    BM25_WEIGHT: float = 0.5
+    BM25_K1: float = 1.2
+    BM25_B: float = 0.75
+    ENABLE_SEMANTIC_LAYER_PER_DATA_SOURCE: Dict[str, bool] = Field(default_factory=dict)
+    SEMANTIC_COMPILATION_FALLBACK_TO_RAW_SQL: bool = True
+    ENABLE_AI_DATA_ANALYSIS: bool = True
 
     APP_NAME: str = "Octofy AI Agent"
     APP_VERSION: str = "1.0.0"
@@ -84,5 +92,29 @@ class Settings(BaseSettings):
     
     # Join-Path Validation
     ENABLE_JOIN_PATH_VALIDATION: bool = True  # Use enhanced join-path validation (vs legacy sufficiency check)
+
+    @field_validator("ENABLE_SEMANTIC_LAYER_PER_DATA_SOURCE", mode="before")
+    @classmethod
+    def _parse_semantic_layer_map(cls, value):
+        if value is None or value == "":
+            return {}
+        if isinstance(value, str):
+            parsed = json.loads(value)
+            if not isinstance(parsed, dict):
+                raise ValueError("ENABLE_SEMANTIC_LAYER_PER_DATA_SOURCE must be a JSON object")
+            return parsed
+        return value
+
+    def semantic_layer_enabled_for(self, source_id: Optional[str]) -> Optional[bool]:
+        """Return the per-source semantic-layer flag, or None when unset."""
+        if not source_id:
+            return None
+        mapping = self.ENABLE_SEMANTIC_LAYER_PER_DATA_SOURCE or {}
+        if source_id not in mapping:
+            return None
+        return bool(mapping[source_id])
+
+    def object_search_vector_score_threshold(self) -> float:
+        return max(0.0, min(1.0, float(self.OBJECT_SEARCH_VECTOR_SCORE_THRESHOLD)))
     
 settings = Settings()

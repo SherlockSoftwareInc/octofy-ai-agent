@@ -22,9 +22,13 @@ class SemanticModelService:
     def is_enabled(self, request_override: Optional[bool] = None) -> bool:
         if request_override is not None:
             return bool(request_override) and self.get_active_model() is not None
-        if self.enable_flag is False:
+        flag = self.enable_flag
+        if flag is None:
+            from app.core.config import settings
+            flag = settings.semantic_layer_enabled_for(self.source_id)
+        if flag is False:
             return False
-        if self.enable_flag is True:
+        if flag is True:
             return self.get_active_model() is not None
         return self.get_active_model() is not None
 

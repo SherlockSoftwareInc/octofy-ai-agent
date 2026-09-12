@@ -5,11 +5,9 @@ from __future__ import annotations
 from typing import Dict, List, Optional, Sequence
 
 from app.core.constants import (
-    DefaultObjectSearchVectorScoreThreshold,
-    DefaultPrecomputedQueryDirectMatchThreshold,
-    DefaultPrecomputedQueryFewShotThreshold,
     PrecomputedQueryTopK,
     effective_object_search_threshold,
+    precomputed_direct_match_threshold,
 )
 from app.models.pipeline import FewShotExample, ScoredObject
 from app.services.stores.embeddings import embed_text
@@ -79,7 +77,7 @@ class VectorSearchService:
         return ranked[:top_k]
 
     def search_columns_scored(self, query: str, top_k: int = 100, min_score: Optional[float] = None) -> List[dict]:
-        threshold = effective_object_search_threshold(min_score if min_score is not None else DefaultObjectSearchVectorScoreThreshold)
+        threshold = effective_object_search_threshold(min_score)
         vector = embed_text(query, self.provider, self.source_id)
         hits = self.provider.search_vector(
             "schemas",
@@ -113,9 +111,11 @@ class VectorSearchService:
         self,
         question: str,
         top_k: int = PrecomputedQueryTopK,
-        direct_threshold: float = DefaultPrecomputedQueryDirectMatchThreshold,
-        fewshot_threshold: float = DefaultPrecomputedQueryFewShotThreshold,
+        direct_threshold: Optional[float] = None,
+        fewshot_threshold: Optional[float] = None,
     ) -> List[FewShotExample]:
+        if direct_threshold is None:
+            direct_threshold = precomputed_direct_match_threshold()
         vector = embed_text(question, self.provider, self.source_id)
         cache_rows = self.provider.fetch_all("vec_data_group_query_vectors_cache", self.source_id)
         meta = {r["query_id"]: r for r in self.provider.fetch_all("vec_data_group_queries", self.source_id)}

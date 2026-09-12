@@ -270,7 +270,9 @@ def execute_sql_query(
     insights = []
     
     # Perform data profiling and insight generation if enabled and successful
-    if enable_profiling and execution_success and structured_output and WORKFLOW_SERVICES_AVAILABLE:
+    from app.core.config import settings as app_settings
+    profiling_allowed = bool(enable_profiling) and bool(app_settings.ENABLE_AI_DATA_ANALYSIS)
+    if profiling_allowed and execution_success and structured_output and WORKFLOW_SERVICES_AVAILABLE:
         try:
             df_data = structured_output.get("data", [])
             

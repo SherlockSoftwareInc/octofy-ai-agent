@@ -22,6 +22,14 @@ DEFAULT_WEIGHTS = {
 }
 
 
+def default_weights() -> Dict[str, float]:
+    from app.core.config import settings
+
+    weights = dict(DEFAULT_WEIGHTS)
+    weights["bm25"] = float(settings.BM25_WEIGHT)
+    return weights
+
+
 def rrf_score(rank: int, weight: float, k: float = RrfK) -> float:
     return weight * (1.0 / (k + rank + 1))
 
@@ -32,7 +40,7 @@ def rrf_merge(
     k: float = RrfK,
     max_results: int = 8,
 ) -> List[ScoredObject]:
-    weights = weights or DEFAULT_WEIGHTS
+    weights = weights or default_weights()
     scores: Dict[str, float] = {}
     objects: Dict[str, ScoredObject] = {}
 

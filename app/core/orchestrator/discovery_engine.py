@@ -11,8 +11,6 @@ from app.core.constants import (
     ApplyColumnBoost,
     ApplyColumnBoostCap,
     ColumnDetailValueSeedScore,
-    DefaultPrecomputedQueryDirectMatchThreshold,
-    DefaultPrecomputedQueryFewShotThreshold,
     KbConfidenceThreshold,
     KbExactMatchThreshold,
     KbScoreThreshold,
@@ -22,6 +20,7 @@ from app.core.constants import (
     MaxRerankTables,
     RelativeColumnScoreThreshold,
     effective_object_search_threshold,
+    precomputed_few_shot_threshold,
 )
 from app.models.pipeline import (
     ActiveDataGroupContext,
@@ -231,7 +230,7 @@ class DiscoveryEngine:
         if any(f"{o.schema_name}.{o.object_name}".lower() in member_keys or o.object_name.lower() in member_keys for o in merged):
             branch = DiscoveryBranch.GROUP_ANCHORED
         examples = list(precomputed[:3])
-        if examples and examples[0].score >= DefaultPrecomputedQueryFewShotThreshold and not examples[0].is_exact_match:
+        if examples and examples[0].score >= precomputed_few_shot_threshold() and not examples[0].is_exact_match:
             branch = precomputed_related(branch)
         result = DiscoveryResult(
             objects=merged[:MaxRerankTables],

@@ -76,5 +76,21 @@ VECTOR_SCHEMA_VERSION = "1.0.0"
 
 def effective_object_search_threshold(override: Optional[float] = None) -> float:
     if override is None:
-        return DefaultObjectSearchVectorScoreThreshold
+        from app.core.config import settings
+        return settings.object_search_vector_score_threshold()
     return max(0.0, min(1.0, float(override)))
+
+
+def precomputed_direct_match_threshold() -> float:
+    from app.core.config import settings
+    return float(settings.PRECOMPUTED_QUERY_DIRECT_MATCH_THRESHOLD)
+
+
+def precomputed_few_shot_threshold() -> float:
+    from app.core.config import settings
+    return float(settings.PRECOMPUTED_QUERY_FEW_SHOT_THRESHOLD)
+
+
+def semantic_compilation_fallback_to_raw_sql() -> bool:
+    from app.core.config import settings
+    return bool(settings.SEMANTIC_COMPILATION_FALLBACK_TO_RAW_SQL)

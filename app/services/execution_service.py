@@ -451,7 +451,9 @@ def execute_python_code(
     suggested_refinements = []
     
     # Perform data profiling and insight generation if enabled and successful
-    if enable_profiling and execution_success and results and WORKFLOW_SERVICES_AVAILABLE:
+    from app.core.config import settings as app_settings
+    profiling_allowed = bool(enable_profiling) and bool(app_settings.ENABLE_AI_DATA_ANALYSIS)
+    if profiling_allowed and execution_success and results and WORKFLOW_SERVICES_AVAILABLE:
         try:
             # Get the first DataFrame result for profiling
             first_result = results[0]

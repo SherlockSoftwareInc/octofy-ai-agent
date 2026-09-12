@@ -214,9 +214,9 @@ def run_attempt_loop(
                         BuiltInAttemptReport(attempt_number=attempt, stage="semantic_compilation", what_was_tried="parse SMQ", why_it_failed="missing payload")
                     )
                     continue
-                from app.core.constants import SemanticCompilationFallbackToRawSql
+                from app.core.constants import semantic_compilation_fallback_to_raw_sql
 
-                if not SemanticCompilationFallbackToRawSql:
+                if not semantic_compilation_fallback_to_raw_sql():
                     return _fail(
                         "semantic_compilation",
                         "Missing SMQ payload",
