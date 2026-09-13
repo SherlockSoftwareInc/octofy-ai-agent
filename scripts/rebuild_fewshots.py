@@ -18,7 +18,7 @@ def rebuild_fewshots():
 
     vector_store = refresh_vector_store()
     vector_store.clear_fewshots_collection()
-    print("Cleared few_shots and few_shots_meta.")
+    print("Cleared few_shots.")
     print("Done!")
 
 

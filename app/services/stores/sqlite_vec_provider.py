@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence
 
 from app.core.config import settings
-from app.services.stores.schema_contracts import COLLECTIONS, sqlite_ddl
+from app.services.stores.schema_contracts import COLLECTIONS, RETIRED_COLLECTIONS, sqlite_ddl
 from app.services.stores.score_utils import cosine_distance, dumps_vector, loads_vector
 
 
@@ -33,10 +33,13 @@ class SqliteVecProvider:
             cur = self._conn.cursor()
             for spec in COLLECTIONS:
                 cur.execute(sqlite_ddl(spec))
-            cur.execute(
-                "CREATE INDEX IF NOT EXISTS idx_few_shots_meta_q "
-                "ON few_shots_meta (data_source_id, question)"
-            )
+            for retired in RETIRED_COLLECTIONS:
+                cur.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+                    (retired,),
+                )
+                if cur.fetchone():
+                    cur.execute(f'DROP TABLE IF EXISTS "{retired}"')
             cur.execute(
                 "CREATE INDEX IF NOT EXISTS idx_value_plain "
                 "ON value_index (data_source_id, plain_value)"
@@ -46,6 +49,22 @@ class SqliteVecProvider:
                 "ON embedding_cache (data_source_id, last_accessed_utc)"
             )
             self._conn.commit()
+
+    def has_collection(self, name: str) -> bool:
+        with self._lock:
+            cur = self._conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+                (name,),
+            )
+            return cur.fetchone() is not None
+
+    def drop_collection_if_exists(self, name: str) -> bool:
+        if not self.has_collection(name):
+            return False
+        with self._lock:
+            self._conn.execute(f'DROP TABLE IF EXISTS "{name}"')
+            self._conn.commit()
+        return True
 
     def close(self) -> None:
         with self._lock:

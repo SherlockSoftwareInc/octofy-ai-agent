@@ -60,16 +60,13 @@ def _live_embed(text: str) -> Optional[List[float]]:
         return None
 
 
-def embed_text(text: str, provider, data_source_id: str, model: Optional[str] = None) -> List[float]:
-    model_name = model or settings.EMBEDDING_MODEL
+def _cache_lookup(text: str, provider, data_source_id: str, model_name: str) -> Optional[List[float]]:
     text_hash = sha256_text(f"{model_name}|{text}")
     l1_key = (data_source_id, text_hash)
     with _l1_lock:
         cached = _l1.get(l1_key)
         if cached is not None:
             return cached
-
-    row = None
     try:
         row = provider.fetch_one("embedding_cache", data_source_id, "text_hash", text_hash)
     except Exception:
@@ -89,6 +86,25 @@ def embed_text(text: str, provider, data_source_id: str, model: Optional[str] = 
         except Exception:
             pass
         return vec
+    return None
+
+
+def try_embed_text(text: str, provider, data_source_id: str, model: Optional[str] = None) -> Optional[List[float]]:
+    """Cache or live embed only. Returns None when no provider vector is available (no hash fallback)."""
+    model_name = model or settings.EMBEDDING_MODEL
+    cached = _cache_lookup(text, provider, data_source_id, model_name)
+    if cached is not None:
+        return cached
+    return _live_embed(text)
+
+
+def embed_text(text: str, provider, data_source_id: str, model: Optional[str] = None) -> List[float]:
+    model_name = model or settings.EMBEDDING_MODEL
+    text_hash = sha256_text(f"{model_name}|{text}")
+    l1_key = (data_source_id, text_hash)
+    cached = _cache_lookup(text, provider, data_source_id, model_name)
+    if cached is not None:
+        return cached
 
     vec = _live_embed(text) or _hash_embed(text)
     _store_l1(l1_key, vec)

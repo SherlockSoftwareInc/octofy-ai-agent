@@ -35,11 +35,11 @@ def test_every_milvus_table_includes_data_source_id():
 
 
 def test_prepare_requires_data_source_id():
-    spec = COLLECTION_BY_NAME["few_shots_meta"]
-    assert prepare_milvus_row(spec, {"key": "1", "question": "q", "sql": "SELECT 1", "created_at": "t"}) is None
+    spec = COLLECTION_BY_NAME["contribution_library"]
+    assert prepare_milvus_row(spec, {"key": "1", "question": "q", "sql_query": "SELECT 1", "knowledge_type": "sql_query", "status": "pending"}) is None
     from_alias = prepare_milvus_row(
         spec,
-        {"source_guid": "src-9", "key": "1", "question": "q", "sql": "SELECT 1", "created_at": "t"},
+        {"source_guid": "src-9", "key": "1", "question": "q", "sql_query": "SELECT 1", "knowledge_type": "sql_query", "status": "pending"},
     )
     assert from_alias is not None
     assert from_alias["data_source_id"] == "src-9"
@@ -50,13 +50,13 @@ def test_prepare_requires_data_source_id():
 def test_replicate_writes_data_source_id_on_every_row(tmp_path):
     sqlite = SqliteVecProvider(tmp_path / "v.sqlite")
     sqlite.upsert(
-        "few_shots_meta",
-        [{"data_source_id": "A", "key": "1", "question": "q", "sql": "SELECT 1", "created_at": "t"}],
+        "contribution_library",
+        [{"data_source_id": "A", "key": "1", "question": "q", "sql_query": "SELECT 1", "knowledge_type": "sql_query", "status": "pending"}],
     )
     milvus = _FakeMilvus()
     replicate_sqlite_to_milvus(sqlite, milvus)
-    meta = next(rows for name, rows in milvus.upserts if name == "few_shots_meta")
-    assert all(row.get("data_source_id") == "A" for row in meta)
+    rows = next(recs for name, recs in milvus.upserts if name == "contribution_library")
+    assert all(row.get("data_source_id") == "A" for row in rows)
 
 
 def test_native_vector_only_for_single_float_field():
@@ -130,8 +130,8 @@ def test_scalar_pk_from_unique_with_source():
 def test_replicate_copies_every_populated_table(tmp_path):
     sqlite = SqliteVecProvider(tmp_path / "v.sqlite")
     sqlite.upsert(
-        "few_shots_meta",
-        [{"data_source_id": "A", "key": "1", "question": "q", "sql": "SELECT 1", "created_at": "t"}],
+        "contribution_library",
+        [{"data_source_id": "A", "key": "1", "question": "q", "sql_query": "SELECT 1", "knowledge_type": "sql_query", "status": "pending"}],
     )
     sqlite.upsert(
         "data_group_metadata",
@@ -147,14 +147,14 @@ def test_replicate_copies_every_populated_table(tmp_path):
     )
     milvus = _FakeMilvus()
     counts = replicate_sqlite_to_milvus(sqlite, milvus)
-    assert counts["few_shots_meta"] == 1
+    assert counts["contribution_library"] == 1
     assert counts["data_group_metadata"] == 1
     names = {name for name, _ in milvus.upserts}
-    assert "few_shots_meta" in names
+    assert "contribution_library" in names
     assert "data_group_metadata" in names
-    meta = next(rows for name, rows in milvus.upserts if name == "few_shots_meta")
-    assert meta[0]["question"] == "q"
-    assert meta[0]["pk"] == "A|1"
+    contrib = next(rows for name, rows in milvus.upserts if name == "contribution_library")
+    assert contrib[0]["question"] == "q"
+    assert contrib[0]["pk"] == "A|1"
 
 
 def test_sqlite_fetch_all_rows_and_source_ids(tmp_path):

@@ -188,7 +188,7 @@ Preserve field semantics even if Python names differ; keep JSON names identical 
 |---|---|---|
 | `schema_index_service` | `SchemaIndexService` | Object/column keyword discovery, schema filtering, normalization, data-group keyword scoring |
 | `vector_search_service` | `VectorSearchService` | Object/column vector retrieval + precomputed exact pre-check + column-row search with `minScore` |
-| `fewshot_vector_service` | `FewShotVectorService` | Question→SQL retrieval + deterministic exact pre-check (`few_shots_meta`) |
+| `fewshot_vector_service` | `FewShotVectorService` | Question→SQL retrieval + deterministic exact pre-check (`few_shots` data table) |
 | `value_index_service` | `ValueIndexVectorService` | Value→table/column linkage |
 | `bm25_service` | BM25 (feature-flagged) | Lexical rerank signal |
 | `sql_context_hydrator` | `SqlContextHydrator` | Object context assembly under token budget, column pruning, `MatchedColumns` propagation |
@@ -279,16 +279,7 @@ created_at_utc   TEXT                   -- ISO-8601 ("o")
 vector           FLOAT_VECTOR(1536)     -- cosine distance
 ```
 
-**`few_shots_meta`** — plain SQLite shadow table (not a vector collection) used by the deterministic exact-question pre-check (`TryGetExactQuestionSqlAsync`): case-insensitive, whitespace-normalized question lookup **before any vector search**, bypassing `KbExactMatchThreshold`. In a vector-only backend this maps to a scalar collection/table (or a key-value side store) that is kept **in sync on every few-shot write**.
-
-```text
-data_source_id   TEXT NOT NULL          -- ADDED; partition key
-key              TEXT PRIMARY KEY
-question         TEXT NOT NULL          -- raw question; matching normalizes both
-                                        -- sides (case-insensitive, whitespace-collapsed)
-sql              TEXT NOT NULL
-created_at       TEXT NOT NULL
-```
+The exact-question pre-check scans this same table (case-insensitive, whitespace-normalized `question`) **before any vector search**, bypassing `KbExactMatchThreshold`. There is no scalar side store: `few_shots_meta` was retired.
 
 **`value_index`** — representative categorical *data values* (not schema rows), e.g. Status='Active', Country='USA'. Field names mirror `ValueIndexRecord`.
 
@@ -559,7 +550,7 @@ Then build the combined conversational query: masked query + `Q: … | A: …` h
 
 ### Stage C — Two-phase pre-analysis (`preanalysis`)
 **Phase 1 (parallel, can short-circuit the whole pipeline):**
-- KB exact pre-check: deterministic case-insensitive, whitespace-normalized question match over the plain `few_shots_meta` shadow table → return stored SQL immediately (`kb_exact`, 0 attempts, no vector search and no cosine threshold involved). Only on a deterministic miss does the top-1 few-shot vector search run; its `KbExactMatchThreshold` (0.05) check applies only to that vector path.
+- KB exact pre-check: deterministic case-insensitive, whitespace-normalized question match over the plain `few_shots` data table → return stored SQL immediately (`kb_exact`, 0 attempts, no vector search and no cosine threshold involved). Only on a deterministic miss does the top-1 few-shot vector search run; its `KbExactMatchThreshold` (0.05) check applies only to that vector path.
 - Precomputed exact pre-check: same normalization over Approved/Modified rows of the precomputed metadata table → single result `Score = 1.0`, `IsExactMatch = true`; deterministic hit always clears the 0.93 direct-match threshold (`precomputed_exact`, 0 attempts; SMQ-compiled in semantic mode). On miss, vector search (top 3) with 0.93 direct-match / 0.82 few-shot thresholds.
 
 If neither fast path fires, **Phase 2 (parallel):**
@@ -613,7 +604,7 @@ Unexpected loop exit → structured failure via `BuildDetailedFailureResult`: fi
 - `FilterObjectsByAllowedSchemas` — keep objects whose `dataSource|schemaName` key is in the allowed set; no-op when set empty.
 - `MergeAndDedup` — unique key `dataSource|schemaName|strippedObjectName`; strip ` (Segment N/M)` suffixes for dedup while retaining segments for the hydrator.
 - `RrfMerge` — positional `weight × 1/(RrfK + rank + 1)` over the five ranked lists.
-- Deterministic exact pre-checks for KB and precomputed fast paths (shadow metadata tables kept in sync on writes; case/whitespace-insensitive).
+- Deterministic exact pre-checks for KB and precomputed fast paths (KB reads the `few_shots` data table; case/whitespace-insensitive). No KB side store.
 - Cache semantics and keys as in "Caches that must exist."
 
 ---
@@ -768,7 +759,7 @@ Emit per request: branch, attempts, token usage, processing time, hallucination 
 33. Every collection/table in the schema contract carries `data_source_id` as the partition field, and only that field is added to the built-in schema (golden schema diff test vs. `VECTOR_DATABASE_RAG_SUMMARY.md`).
 34. Field names, types, vector dimensions (1536) and cosine semantics match the built-in records (`TableSchemaRecord`, `FewShotRecord`, `ValueIndexRecord`) and side-table DDL.
 35. Records from two `data_source_id` values can coexist in one collection with no cross-source leakage in search, delete, or upsert by key.
-36. `few_shots_meta` stays byte-synced with `few_shots` on every write (deterministic exact pre-check path).
+36. No `few_shots_meta` side table: the deterministic exact pre-check scans the `few_shots` data table.
 37. Only `status = 'Approved'` precomputed rows are vector-searchable; the deterministic exact pre-check additionally reads `Modified` rows (matching built-in commit `eeb19de9` semantics).
 
 ### Skills folder parity (migration by copy)

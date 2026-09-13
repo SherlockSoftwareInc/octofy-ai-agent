@@ -14,7 +14,12 @@ from app.services.stores.milvus_replicate import (
     prepare_milvus_row,
     uses_native_vector,
 )
-from app.services.stores.schema_contracts import COLLECTIONS, COLLECTION_BY_NAME, PARTITION_FIELD
+from app.services.stores.schema_contracts import (
+    COLLECTIONS,
+    COLLECTION_BY_NAME,
+    PARTITION_FIELD,
+    RETIRED_COLLECTIONS,
+)
 from app.services.stores.score_utils import milvus_score_to_cosine_distance
 
 logger = logging.getLogger(__name__)
@@ -55,17 +60,18 @@ class MilvusProvider:
             return dropped
         utility = self._pymilvus["utility"]
         existing = set(utility.list_collections() or [])
-        for spec in COLLECTIONS:
-            if spec.name not in existing:
+        drop_names = [spec.name for spec in COLLECTIONS] + list(RETIRED_COLLECTIONS)
+        for name in drop_names:
+            if name not in existing:
                 continue
-            if not self._is_contract_collection(spec.name):
-                logger.info("skip drop of legacy collection %s", spec.name)
+            if name not in RETIRED_COLLECTIONS and not self._is_contract_collection(name):
+                logger.info("skip drop of legacy collection %s", name)
                 continue
             try:
-                utility.drop_collection(spec.name)
-                dropped.append(spec.name)
+                utility.drop_collection(name)
+                dropped.append(name)
             except Exception as exc:
-                logger.warning("drop %s failed: %s", spec.name, exc)
+                logger.warning("drop %s failed: %s", name, exc)
         self.ensure_schema()
         return dropped
 
@@ -108,6 +114,7 @@ class MilvusProvider:
         CollectionSchema = self._pymilvus["CollectionSchema"]
         Collection = self._pymilvus["Collection"]
         utility = self._pymilvus["utility"]
+        self._drop_retired_collections()
         for spec in COLLECTIONS:
             try:
                 if utility.has_collection(spec.name) and self._collection_needs_recreate(spec.name):
@@ -161,6 +168,29 @@ class MilvusProvider:
                     pass
             except Exception as exc:
                 logger.warning("ensure_schema %s failed: %s", spec.name, exc)
+
+    def has_collection(self, name: str) -> bool:
+        if not self._connected:
+            return False
+        try:
+            return bool(self._pymilvus["utility"].has_collection(name))
+        except Exception:
+            return False
+
+    def drop_collection_if_exists(self, name: str) -> bool:
+        if not self.has_collection(name):
+            return False
+        try:
+            self._pymilvus["utility"].drop_collection(name)
+            return True
+        except Exception as exc:
+            logger.warning("drop %s failed: %s", name, exc)
+            return False
+
+    def _drop_retired_collections(self) -> None:
+        for name in RETIRED_COLLECTIONS:
+            if self.drop_collection_if_exists(name):
+                logger.info("dropped retired collection %s", name)
 
     def upsert(self, collection: str, records: List[Dict[str, Any]]) -> None:
         if not self._connected or not records:

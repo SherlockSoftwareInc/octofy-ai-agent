@@ -71,7 +71,7 @@ SimplePreAnalysisMaxCollapsedChars = 180
 SimplePreAnalysisMaxWords = 40
 LikelyDbQueryMaxWords = 50
 
-VECTOR_SCHEMA_VERSION = "1.0.0"
+VECTOR_SCHEMA_VERSION = "1.1.0"
 
 
 def effective_object_search_threshold(override: Optional[float] = None) -> float:

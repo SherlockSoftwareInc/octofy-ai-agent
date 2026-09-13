@@ -67,18 +67,6 @@ COLLECTIONS: List[CollectionSpec] = [
         unique_with_source=["key"],
     ),
     CollectionSpec(
-        name="few_shots_meta",
-        kind="scalar",
-        fields=[
-            _ds(),
-            FieldSpec("key", "TEXT", primary=True),
-            FieldSpec("question", "TEXT", not_null=True),
-            FieldSpec("sql", "TEXT", not_null=True),
-            FieldSpec("created_at", "TEXT", not_null=True),
-        ],
-        unique_with_source=["key"],
-    ),
-    CollectionSpec(
         name="contribution_library",
         kind="scalar",
         fields=[
@@ -279,10 +267,12 @@ COLLECTION_BY_NAME: Dict[str, CollectionSpec] = {c.name: c for c in COLLECTIONS}
 RUNTIME_VECTOR_COLLECTIONS = (
     "schemas",
     "few_shots",
-    "few_shots_meta",
     "value_index",
     "contribution_library",
 )
+
+# Dropped from the contract; providers remove leftover tables/collections on ensure_schema.
+RETIRED_COLLECTIONS = ("few_shots_meta",)
 
 ADDED_FIELDS_VS_BUILTIN = (PARTITION_FIELD,)
 

@@ -494,14 +494,12 @@ class MilvusVectorStore(VectorStoreBase):
             return
         if source_id:
             self.provider.delete_source("few_shots", source_id)
-            self.provider.delete_source("few_shots_meta", source_id)
             return
         rows = self.provider.fetch_all_rows("few_shots") if hasattr(self.provider, "fetch_all_rows") else []
         for row in rows:
             sid = row.get("data_source_id")
             if sid:
                 self.provider.delete_source("few_shots", sid)
-                self.provider.delete_source("few_shots_meta", sid)
 
     def get_all_values(self) -> List[Dict[str, Any]]:
         if not self._connected:
