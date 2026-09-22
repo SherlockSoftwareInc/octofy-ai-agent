@@ -4,7 +4,7 @@
 
 The Value Index feature enables the AI Agent to accurately map user-provided natural language terms (e.g., "North America") to exact database values (e.g., "NA") and their corresponding locations (schema.table.column) using a pre-indexed Excel manifest.
 
-This feature improves SQL generation accuracy by providing the LLM with verified, ground-truth data mappings during the query generation phase.
+This feature improves SQL generation accuracy by providing the LLM with verified, ground-truth data mappings during the query generation phase. Collection fields and `data_source_id` partitioning are defined in [VECTOR_SCHEMA.md](VECTOR_SCHEMA.md). Discovery uses a case-insensitive substring match on `plain_value`, then seeds parent tables into RRF (see [DISCOVERY_STRATEGY_IMPLEMENTATION.md](DISCOVERY_STRATEGY_IMPLEMENTATION.md)).
 
 ## Architecture
 
@@ -35,13 +35,13 @@ Backend Parses File (pandas)
     ↓
 Values Embedded (OpenAI text-embedding-3-small)
     ↓
-Stored in Milvus (value_index collection)
+Stored in the `value_index` collection (partitioned by `data_source_id`)
     ↓
 Query Received by Agent
     ↓
-Value Lookup (semantic search)
+Value Lookup (case-insensitive substring on `plain_value`)
     ↓
-Values Injected into LLM Prompt
+Parent tables seeded into discovery + mappings injected into the prompt
     ↓
 LLM Generates Better SQL
 ```

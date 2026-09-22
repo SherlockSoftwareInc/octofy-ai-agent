@@ -1,341 +1,162 @@
-# Three-Pronged Discovery Strategy - Implementation Complete
+# Discovery Strategy
 
-## 🎯 Overview
+How the built-in generator finds tables, views, functions, and columns for a request. This replaces the older three-pronged / user-selection write-up.
 
-Successfully refactored `perform_three_pronged_discovery()` to implement a new sequential discovery strategy with early exit optimization and user selection flow.
+Canonical process: [AGENT_PROCESS.md](AGENT_PROCESS.md). Index layout: [VECTOR_SCHEMA.md](VECTOR_SCHEMA.md).
+
+**Implementation:** `app/core/orchestrator/discovery_engine.py`, `app/utils/rrf.py`, `app/services/vector_search_service.py`.
 
 ---
 
-## ✅ Implementation Summary
+## Goals
 
-### **New Discovery Flow**
+1. Prefer a known-good SQL example (knowledge base or precomputed question) over a cold schema search.
+2. Use column-level evidence so filter values and mentioned column names pull in the right parents.
+3. Merge competing signals with Reciprocal Rank Fusion instead of ad-hoc integer scores.
+4. Keep the prompt small: 8 objects, 6,400-token markdown budget.
+
+---
+
+## Inputs
+
+`DiscoveryEngine.discover(query, analysis, pins, table_override, top_k)`:
+
+- `query` — combined / masked user text (or existing SQL when recovering)
+- `analysis` — `QueryAnalysis` (keywords, entities, filter values, extracted columns, complexity)
+- `pins` — user-selected objects (required after catalog resolve)
+- `table_override` — exclusive set; skips retrieval
+- `top_k` — default 8 (`MaxRerankTables`)
+
+Stores (all scoped by `source_id`): few-shots, `schemas` vectors, `value_index`, data groups, precomputed questions, optional BM25.
+
+---
+
+## Decision tree
 
 ```
-┌──────────────────────────────────────────────────────────┐
-│ Stage 1: Knowledge Base Exact Match (Priority)          │
-│ - Search similar queries (L2 distance < 0.1)            │
-│ - LLM validates if SQL can be reused                    │
-│ - If YES: Return immediately with SQL + tables          │
-│ - If NO: Proceed to Stage 2                             │
-└──────────────────────────────────────────────────────────┘
-                         ↓ (No exact match)
-┌──────────────────────────────────────────────────────────┐
-│ Stage 2: Skills-Based Discovery                         │
-│ - Keyword matching on data groups                       │
-│ - Check if any tables have score ≥ 15                   │
-│ - If YES: Present top 20 to user for selection          │
-│ - If NO: Proceed to Stage 3                             │
-└──────────────────────────────────────────────────────────┘
-                         ↓ (Low scores)
-┌──────────────────────────────────────────────────────────┐
-│ Stage 3: Value Index Fallback + Merge                   │
-│ - Run value index search                                │
-│ - Merge with low-score skills results                   │
-│ - Re-rank combined candidates                           │
-│ - Present top 20 merged results to user                 │
-└──────────────────────────────────────────────────────────┘
+table_override present?
+    yes → branch table_override (those objects only)
+    no
+      KB search (few_shots, top_k=3, max distance 0.35)
+          best confidence ≥ 0.70 → kb_direct
+              objects = tables parsed from the matched SQL
+              fallback = column-evidence objects
+          KB hit, lower confidence → kb_gap_fill
+              objects = SQL tables ∪ column evidence
+          no KB hit → dual_prong (RRF)
+              lists: schema_vector, value_index, few_shot, data_group, bm25
+              if any merged object is a member of an active data group
+                  → group_anchored
+      if a precomputed question scores ≥ 0.82 and is not exact
+          → precomputed_related/<base-branch>
+      pins, if any, are prepended as required
 ```
 
----
-
-## 📦 Files Modified
-
-### 1. **app/models/schemas.py**
-   - **Updated**: `ThreeProngedResult` class
-   - **Added Fields**:
-     - `exact_match_found: bool = False` - Indicates if KB exact match was found
-     - `exact_match_query: Optional[Dict[str, Any]] = None` - Contains matched query details
-     - `requires_user_selection: bool = False` - Indicates if user must select tables
-     - `selection_candidates: List[RankedTable] = []` - Top N candidates for user selection
-
-### 2. **app/services/discovery_service.py**
-   - **Updated**: Module docstring and imports
-   - **Added Constants**:
-     - `KNOWLEDGE_BASE_EXACT_MATCH_THRESHOLD = 0.1` - L2 distance threshold
-     - `SKILLS_HIGH_SCORE_THRESHOLD = 15` - Minimum score for high-confidence match
-     - `USER_SELECTION_TOP_K = 20` - Number of candidates to show user
-   
-   - **New Functions**:
-     - `check_knowledge_base_exact_match()` - Stage 1: KB exact match detection
-     - `extract_tables_from_match()` - Helper to extract tables from matched SQL
-   
-   - **Refactored**: `perform_three_pronged_discovery()` - Complete rewrite with new strategy
-
-### 3. **test_skills_quick.py**
-   - **Updated**: `test_three_pronged_discovery()` function
-   - **Added**: Multi-query testing with detailed output for each discovery stage
-   - **Fixed**: Removed emoji characters for Windows compatibility
-
-### 4. **test_discovery_new_strategy.py** (NEW)
-   - **Created**: Comprehensive unit test suite
-   - **Tests**:
-     - Configuration constants validation
-     - Schema field presence and defaults
-     - Exact match scenario
-     - High-score skills match scenario
-     - Low-score with value index merge scenario
-     - Top K limiting behavior
+Exact KB / precomputed exits happen **before** this function (Stage C in the orchestrator). Those branches are `kb_exact` and `precomputed_exact`.
 
 ---
 
-## 🔧 Configuration
+## Branch reference
 
-### Adjustable Thresholds
+| Branch | When | Typical objects |
+|---|---|---|
+| `kb_exact` | Canonical question or vector distance ≤ 0.05 | Not discovery — SQL returned immediately |
+| `precomputed_exact` | Approved/modified precomputed question key match | Immediate SQL / compiled SMQ |
+| `table_override` | Request listed exclusive tables | Those names only |
+| `kb_direct` | Strong KB example | Tables referenced in that SQL |
+| `kb_gap_fill` | Weaker KB example | SQL tables plus column evidence |
+| `dual_prong` | No usable KB hit | RRF merge, cap 8 |
+| `group_anchored` | RRF result intersects an active data group | Same merge, analytics label |
+| `precomputed_related/<base>` | Related approved question ≥ 0.82 similarity | Same objects; examples injected |
+| `no_discovery` | Provided-code optimize/rewrite | None |
+| `priority_validation_failed` | A pin could not be resolved | Failure candidates only |
 
-Edit these constants in `app/services/discovery_service.py`:
+---
 
-```python
-KNOWLEDGE_BASE_EXACT_MATCH_THRESHOLD = 0.1  # Lower = stricter match
-SKILLS_HIGH_SCORE_THRESHOLD = 15            # Higher = require stronger signals
-USER_SELECTION_TOP_K = 20                   # More = more options for user
+## Column evidence
+
+`discover_with_column_evidence()`:
+
+1. For each `analysis.filter_values`, search `value_index` by lowercase substring on `plain_value`. Each hit seeds the parent table (score 0.80) and records the column as matched / required.
+2. If `extracted_columns` is non-empty, search `schemas` for each column name (`entity_type=Column`). Otherwise search once with the full query (`top_k=100`).
+3. Hits below `OBJECT_SEARCH_VECTOR_SCORE_THRESHOLD` (default 0.50) are dropped.
+4. Per parent object, keep columns whose score is at least 85% of that object's best column (`RelativeColumnScoreThreshold`).
+5. Objects with any matched column receive +0.15 (cap 1.0) and `required=true`.
+
+`VectorSearchService.search_objects()` also rolls column hits up to parents, so the schema-vector RRF list already carries `matched_columns`.
+
+---
+
+## Reciprocal Rank Fusion
+
+```
+score(object) = Σ  weight(list) / (60 + rank + 1)
 ```
 
----
+| List | Weight | Source |
+|---|---|---|
+| `data_group` | 2.0 | Top 3 data-group members |
+| `value_index` | 1.0 | Filter-value seeds |
+| `few_shot` | 1.0 | Tables extracted from KB SQL |
+| `schema_vector` | 1.0 | `schemas` collection search |
+| `bm25` | 0.5 | Optional lexical rank of schema + column objects |
 
-## 🎬 How to Use
+Dedup key: `data_source|schema|object` (segment suffix stripped). Matched columns, `priority`, and `required` are unioned. Result length ≤ 8.
 
-### Scenario 1: Exact Knowledge Base Match
-
-```python
-from app.services.discovery_service import perform_three_pronged_discovery
-from app.services.llm_service import get_llm_service
-
-llm = get_llm_service()
-result = perform_three_pronged_discovery("Show me all customers", llm)
-
-if result.exact_match_found:
-    print(f"Found exact match!")
-    print(f"SQL: {result.exact_match_query['sql_query']}")
-    print(f"Tables: {result.exact_match_query['tables']}")
-    # Use the matched SQL as reference or template
-```
-
-### Scenario 2: High-Score Skills Match (User Selection Required)
-
-```python
-result = perform_three_pronged_discovery("customer orders by region", llm)
-
-if result.requires_user_selection:
-    print(f"Please select from {len(result.selection_candidates)} candidates:")
-    for i, table in enumerate(result.selection_candidates, 1):
-        print(f"{i}. {table.schema_name}.{table.table_name} (score: {table.score})")
-    
-    # Frontend presents checkboxes to user
-    # User selects tables → backend proceeds with selected tables
-```
-
-### Scenario 3: Low-Score + Value Index Merge (User Selection Required)
-
-```python
-result = perform_three_pronged_discovery("data from Q3 2024", llm)
-
-if result.requires_user_selection:
-    print(f"Merged {len(result.skills_tables)} skills + {len(result.value_tables)} value index")
-    print(f"Top {len(result.selection_candidates)} candidates:")
-    for table in result.selection_candidates:
-        print(f"  {table.schema_name}.{table.table_name}")
-        print(f"    Matched by: {', '.join(table.matched_by)}")
-```
+BM25 is off unless `ENABLE_BM25_RETRIEVAL=true`. Weight follows `BM25_WEIGHT`.
 
 ---
 
-## 🧪 Testing
+## Data groups
 
-### Run Unit Tests
+`resolve_active_data_groups(query)`:
 
-```bash
-python test_discovery_new_strategy.py
-```
+1. Vector search of group embeddings, top 3.
+2. If empty, score group keywords against the query and keep overlapping groups.
+3. Build `member_groups` (object name → group names) and a one-line summary for the prompt.
 
-**Expected Output:**
-```
-============================================================
-TEST 1: Configuration Constants
-============================================================
-[SUCCESS] All constants properly configured
-
-============================================================
-TEST 2: ThreeProngedResult Schema
-============================================================
-[SUCCESS] All schema fields present with correct defaults
-
-... (6 tests total)
-
-============================================================
-[SUCCESS] All tests passed!
-============================================================
-```
-
-### Run Integration Tests (Requires Milvus)
-
-```bash
-# Start Milvus
-docker compose up -d
-
-# Run full test suite
-python test_skills_quick.py
-```
+If any RRF object is a member, the branch becomes `group_anchored`.
 
 ---
 
-## 🔍 Key Features
+## Precomputed questions
 
-### 1. **Early Exit Optimization**
-   - If exact match found in KB → return immediately (fastest path)
-   - Avoids unnecessary searches when answer is already known
+After merge, `search_precomputed()` ranks approved questions by cosine **similarity** of cached question vectors.
 
-### 2. **Smart Thresholds**
-   - L2 distance < 0.1 for KB exact match
-   - Score ≥ 15 for high-confidence skills match
-   - Top 20 candidates maximum to avoid overwhelming user
-
-### 3. **User Selection Flow**
-   - `requires_user_selection = True` → Frontend shows selection UI
-   - Backend waits for user choice before proceeding
-   - Supports multi-select checkboxes
-
-### 4. **Intelligent Merging**
-   - Low-score skills results merge with value index
-   - Cumulative scoring: skills + value + knowledge base
-   - Deduplication by normalized table name
-
-### 5. **Full Transparency**
-   - Each table tracks `matched_by` sources
-   - Scores indicate confidence level
-   - Metadata preserved for debugging
+- ≥ 0.93 and exact key match already exited in Stage C.
+- ≥ 0.82 and not exact → inject up to 3 examples and prefix the branch with `precomputed_related/`.
 
 ---
 
-## 📊 Response Structure
+## Hydration (after ranking)
 
-### Exact Match Found
+`SqlContextHydrator`:
 
-```json
-{
-  "exact_match_found": true,
-  "exact_match_query": {
-    "question": "Show me all customers",
-    "sql_query": "SELECT * FROM dbo.Customers",
-    "tables": ["dbo.Customers"],
-    "score": 0.05
-  },
-  "merged_candidates": [
-    {
-      "schema_name": "dbo",
-      "table_name": "Customers",
-      "score": 100,
-      "matched_by": ["knowledge_base_exact_match"]
-    }
-  ],
-  "requires_user_selection": false
-}
-```
-
-### User Selection Required
-
-```json
-{
-  "exact_match_found": false,
-  "requires_user_selection": true,
-  "selection_candidates": [
-    {
-      "schema_name": "dbo",
-      "table_name": "Customers",
-      "score": 18,
-      "matched_by": ["skills", "value_index"]
-    },
-    {
-      "schema_name": "dbo",
-      "table_name": "Orders",
-      "score": 16,
-      "matched_by": ["skills"]
-    }
-  ],
-  "skills_tables": [...],
-  "value_tables": [...]
-}
-```
+1. Keep required / priority / matched-column / semantic-model objects.
+2. Drop other objects below 5% of the best remaining score.
+3. Cap at 8.
+4. Load skills-folder markdown per object.
+5. Fill `selected_object_context`, `supplementary_objects`, `schema_context`, and `schema_context_for_validation` under a 6,400-token budget. Over-budget files are pruned to matched columns.
 
 ---
 
-## 🚨 Edge Cases Handled
+## Recovery expansion
 
-1. ✅ No matches from any source → Returns empty with helpful logging
-2. ✅ KB match but LLM says "not reusable" → Proceeds to Stage 2
-3. ✅ Skills + value index < 20 total → Shows all available
-4. ✅ More than 20 candidates → Limited to top 20 by score
-5. ✅ Milvus not connected → Gracefully handled (returns empty results)
+The attempt loop calls `_expand_missing()` when validation names a missing object: schema search (`top_k=5`) plus optional column searches and semantic-model hits. New objects are merged with `merge_and_dedup`. The same missing name twice trips `deterministic_missing_object`.
 
 ---
 
-## 🔄 Backend Integration Points
+## Caches
 
-### Generation Service Integration
+| Cache | Cap | Key |
+|---|---|---|
+| Query analysis | 100 | Combined query + existing code |
+| Discovery result | 256 | Entities + complexity + top_k + extracted columns |
 
-The generation service should check the discovery result:
-
-```python
-result = perform_three_pronged_discovery(query, llm)
-
-if result.exact_match_found:
-    # Use matched SQL as reference/template
-    reference_sql = result.exact_match_query['sql_query']
-    # Ask LLM: "Based on this SQL, generate query for: {query}"
-    
-elif result.requires_user_selection:
-    # Return selection prompt to frontend
-    # Wait for user's selected tables
-    # Then proceed with SQL generation using selected tables
-    
-else:
-    # Standard flow with merged_candidates
-    tables = result.merged_candidates
-    # Proceed with SQL generation
-```
+The orchestrator clears the analysis cache at the start of each request.
 
 ---
 
-## 📈 Performance Improvements
+## What was removed
 
-- **Early Exit**: Exact matches skip 2 additional searches (~200ms saved)
-- **Sequential Logic**: Only runs value index if needed (conditional execution)
-- **Top K Limiting**: Reduces payload size and frontend rendering time
-- **Smart Caching**: LLM extracts tables once per matched query
-
----
-
-## 🎯 Success Metrics
-
-All implementation tasks completed:
-- ✅ Schema updates
-- ✅ Configuration constants
-- ✅ Helper functions created
-- ✅ Main discovery function refactored
-- ✅ Test suite updated
-- ✅ Unit tests passing (6/6)
-- ✅ Integration test ready (requires Milvus)
-
----
-
-## 🔮 Future Enhancements
-
-1. **Cache Exact Matches**: Store recent KB matches in Redis for instant retrieval
-2. **Learning System**: Track user selections to improve scoring weights
-3. **Confidence Scores**: Add LLM confidence estimation for each stage
-4. **Parallel Execution**: Run skills + value index in parallel when no exact match
-5. **Timeout Handling**: Auto-select recommended tables if user doesn't respond
-
----
-
-## 📝 Notes
-
-- All changes are backward compatible (new fields are optional)
-- Existing code continues to work unchanged
-- Frontend needs updates to handle `requires_user_selection` flag
-- Logging added throughout for debugging and monitoring
-
----
-
-**Implementation Date**: January 30, 2026  
-**Status**: ✅ Complete and Tested  
-**Test Results**: 6/6 unit tests passing
+The previous sequential flow (KB exact → skills score ≥ 15 → user-selection of 20 candidates → value-index merge) is no longer the generate path. User table choice is now **pins** / `table_override` on the request, not an in-pipeline selection prompt. The old helpers in `discovery_service.py` remain only for the legacy wrapper when `BUILTIN_SQL_GENERATOR=false`.

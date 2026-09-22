@@ -4,7 +4,52 @@ from __future__ import annotations
 
 from typing import List, Optional
 
+from app.core.branch_taxonomy import GenerationMode, is_refinement_scenario
 from app.models.pipeline import AgentContext, DiscoveryResult, FewShotExample, QueryAnalysis
+
+# Phase 3.1 — strict, schema-free rule for the optimization scenario.
+OPTIMIZATION_INSTRUCTIONS = """### OPTIMIZATION INSTRUCTIONS
+You MUST work exclusively from the SQL shown below. Do NOT consult any catalog, schema, or knowledge base.
+Do NOT invent, add, or remove tables or columns that are not already present in the provided SQL.
+Preserve every filter, join, entity and the output grain exactly as written.
+Change only syntax, structure, formatting or performance characteristics."""
+
+# Phase 3.2 — refinement scenario: scope expansion is authorized, filters must survive.
+REFINEMENT_INSTRUCTIONS = """### REFINEMENT INSTRUCTIONS
+1. Base Context: Build upon the query logic, filters, and entities established in the editor SQL and conversation history.
+2. Scope Expansion: If the user requests deeper granularity (e.g., transaction-level line items vs. summary views), you are authorized to query base tables and establish appropriate foreign key joins.
+3. Filter Preservation: Ensure established domain filters (e.g., specific products, categories, or date ranges) are maintained in the new query structure."""
+
+SCOPE_GUARD = """### SCOPE GUARD
+Preserve all active filters from preceding turns unless the user explicitly requests their removal."""
+
+
+def scenario_rules(context: AgentContext) -> str:
+    """Scenario-specific rule block injected into every system prompt (Phase 3)."""
+    mode = context.generation_mode
+    if mode == GenerationMode.OPTIMIZATION:
+        return OPTIMIZATION_INSTRUCTIONS
+    if is_refinement_scenario(mode):
+        return REFINEMENT_INSTRUCTIONS
+    return ""
+
+
+def _filter_block(context: AgentContext) -> str:
+    lines = context.filter_state_text or "(none)"
+    blocks = [f"ACTIVE SESSION FILTERS (inherited from preceding turns)\n{lines}"]
+    if context.filter_state_text and context.filter_state_text != "(none)":
+        blocks.append(SCOPE_GUARD)
+    return "\n\n".join(blocks)
+
+
+def _scenario_section(context: AgentContext) -> str:
+    rules = scenario_rules(context)
+    parts = [f"GENERATION MODE\n{context.generation_mode.value}"]
+    if rules:
+        parts.append(rules)
+    if context.filter_state_text and context.filter_state_text != "(none)":
+        parts.append(_filter_block(context))
+    return "\n\n".join(parts)
 
 
 def build_system_prompt(
@@ -16,9 +61,14 @@ def build_system_prompt(
 ) -> str:
     dbms = context.dbms_type or "SQL Server"
     if semantic:
+        semantic_blocks = [f"GENERATION MODE\n{context.generation_mode.value}"]
+        if context.filter_state_text and context.filter_state_text != "(none)":
+            semantic_blocks.append(_filter_block(context))
+        semantic_extra = "\n\n".join(semantic_blocks)
         return (
             f"DBMS CONTEXT (SEMANTIC MODE)\nYou compile Semantic Model Queries for {dbms}.\n"
             f"AVAILABLE SEMANTIC MODELS (JSON)\n{semantic_models_json}\n"
+            f"{semantic_extra}\n"
             "SEMANTIC OUTPUT FORMAT (STRICT)\n"
             "Reply with a fenced ```smq block containing "
             '{"metrics":[],"dimensions":[],"filters":[],"timeframes":[]}. '
@@ -34,8 +84,7 @@ def build_system_prompt(
 Target dialect: {dbms}. Use dialect-specific identifier quoting. Do not emit cross-dialect syntax.
 PostgreSQL: LIMIT not TOP; CASE not IF(); explicit casts; schema-qualify objects.
 
-GENERATION MODE
-{context.generation_mode.value}
+{_scenario_section(context)}
 
 QUERY ANALYSIS
 complexity={analysis.complexity}; keywords={', '.join(analysis.keywords)}; entities={', '.join(analysis.entities)}
@@ -61,6 +110,59 @@ ATTEMPT HISTORY
 OUTPUT FORMAT
 Optionally include a /* reasoning */ block, then fenced SQL. Return a single valid {dbms} statement.
 """
+
+
+def build_refinement_system_prompt(
+    context: AgentContext,
+    discovery: DiscoveryResult,
+    attempt_history: str = "",
+) -> str:
+    """Refinement prompt: anchored on the editor SQL, authorized to expand scope."""
+    return build_system_prompt(context, discovery, attempt_history=attempt_history)
+
+
+def build_optimization_system_prompt(
+    context: AgentContext,
+    existing_code: str,
+    error_message: Optional[str] = None,
+    target_language: str = "sql",
+) -> str:
+    """Schema-free rewrite prompt used by the no-discovery optimization path.
+
+    Mirrors the built-in engine contract: the editor code is the *only* input allowed, so
+    the model may not widen scope, consult the catalog, or change the result grain.
+    """
+    language = {"python": "Python", "r": "R", "sas": "SAS", "sql": (context.dbms_type or "SQL Server")}.get(
+        target_language, "SQL"
+    )
+    error_block = f"\nERROR TO FIX\n{error_message}\n" if error_message else ""
+    return f"""DBMS CONTEXT (STRICT)
+Target dialect: {context.dbms_type or "SQL Server"}.
+
+{scenario_rules(context) or OPTIMIZATION_INSTRUCTIONS}
+
+GENERATION MODE
+{context.generation_mode.value}
+
+EDITOR {language.upper()} (the only permitted source of tables, columns and filters)
+{existing_code}
+{error_block}
+OUTPUT FORMAT
+Return only the rewritten {language} code. No commentary, no catalog lookups, no new objects.
+"""
+
+
+def build_optimization_user_prompt(
+    context: AgentContext,
+    existing_code: str,
+    error_message: Optional[str] = None,
+) -> str:
+    parts = [f"User request:\n{context.combined_query or context.request.query}"]
+    if error_message:
+        parts.append(f"Error to fix:\n{error_message}")
+    parts.append(f"Rewrite this code in place:\n{existing_code}")
+    return "\n\n".join(parts)
+
 
 
 def build_user_prompt(context: AgentContext) -> str:
@@ -133,8 +235,7 @@ Generate production-ready Python that answers the user request against the targe
 DBMS CONTEXT
 Target dialect: {context.dbms_type or "SQL Server"}. Embedded SQL must use this dialect.
 
-GENERATION MODE
-{context.generation_mode.value}
+{_scenario_section(context)}
 
 QUERY ANALYSIS
 complexity={analysis.complexity}; keywords={', '.join(analysis.keywords)}; entities={', '.join(analysis.entities)}
@@ -245,8 +346,7 @@ Generate production-ready R that answers the user request against the target dat
 DBMS CONTEXT
 Target dialect: {context.dbms_type or "SQL Server"}. Embedded SQL must use this dialect.
 
-GENERATION MODE
-{context.generation_mode.value}
+{_scenario_section(context)}
 
 QUERY ANALYSIS
 complexity={analysis.complexity}; keywords={', '.join(analysis.keywords)}; entities={', '.join(analysis.entities)}
@@ -353,8 +453,7 @@ Generate production-ready SAS that answers the user request against the target d
 DBMS CONTEXT
 Target dialect: {context.dbms_type or "SQL Server"}. Embedded SQL must use this dialect.
 
-GENERATION MODE
-{context.generation_mode.value}
+{_scenario_section(context)}
 
 QUERY ANALYSIS
 complexity={analysis.complexity}; keywords={', '.join(analysis.keywords)}; entities={', '.join(analysis.entities)}

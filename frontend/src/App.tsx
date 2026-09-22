@@ -99,7 +99,9 @@ function AuthenticatedApp() {
       return '';
     }
   });
-  const [planningContext, setPlanningContext] = useState<Record<string, unknown> | null>(null);
+  // Value is intentionally unused: Ask mode replaced Plan mode, so planning context is only
+  // restored/cleared for conversation metadata. The setter is kept for that bookkeeping.
+  const [, setPlanningContext] = useState<Record<string, unknown> | null>(null);
   const [planningSummary, setPlanningSummary] = useState<string | null>(null);
   const [isSchemaModalOpen, setIsSchemaModalOpen] = useState(false);
   const [schemaPreviewName, setSchemaPreviewName] = useState<string | null>(null);

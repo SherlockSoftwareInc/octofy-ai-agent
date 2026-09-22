@@ -2,6 +2,8 @@
 
 ## Overview
 
+This document describes the **skills-folder JSON indexes** (`.schema-index.json` / `.object-index.json`) used for admin listing, keyword object search, and markdown hydration. Generate-time retrieval uses the vector collection `schemas` (parent + column entities). See [VECTOR_SCHEMA.md](VECTOR_SCHEMA.md) and [DISCOVERY_STRATEGY_IMPLEMENTATION.md](DISCOVERY_STRATEGY_IMPLEMENTATION.md).
+
 Schema discovery uses prebuilt index files so searches do not scan the filesystem. The indexes are loaded once, cached in memory, and reused for search, listing, lookups, and statistics.
 
 ## How It Works (End-to-End)

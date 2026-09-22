@@ -6,58 +6,42 @@ This is a **Natural Language to SQL** agent with RAG-based discovery and iterati
 
 - **Backend**: FastAPI (Python) at [app/](../app) - exposes `/api/v1/discovery`, `/api/v1/generate-sql`, `/api/v1/contributions`, `/api/v1/admin/*`
 - **Frontend**: React + TypeScript at [frontend/src/](../frontend/src) - chat interface with admin panel for schema/knowledge base management
-- **Vector Store**: Milvus v2.3.13 with 4 collections: `schema_index` (table metadata), `fewshot_index` (knowledge base - query examples), `value_index` (lookup values), `contribution_library` (user-submitted examples pending review)
+- **Vector Store**: Milvus or sqlite-vec. Contract collections include `schemas` (table/view/function **and** column entities), `few_shots` (vector + exact-question lookup), `value_index`, data groups, precomputed queries, `contribution_library`. See [docs/VECTOR_SCHEMA.md](../docs/VECTOR_SCHEMA.md).
 - **Database**: Microsoft SQL Server (Northwind sample database) accessed via SQLAlchemy + pyodbc
 
 ## Critical Data Flow: Query → SQL Generation
 
-### Stage 1: Query Analysis & Intent
-- **Query Classification** ([generation_service.py](../app/services/generation_service.py)): `classify_query_type()` determines if query is `database`, `general`, or `uncertain`
-- **Entity Extraction**: For database queries, extract key nouns and date ranges to seed semantic metadata search
-- **Complexity Scoring**: Determine if query requires multi-table joins, aggregations, or CTEs to adjust generation strategy
+Canonical write-up: [docs/AGENT_PROCESS.md](../docs/AGENT_PROCESS.md).
+
+### Stage 1: Wrapper + route
+- `generation_service.generate_sql_for_request()` owns `plan`/`ask` (discuss), `search`, `off_topic`, and `system_metadata`
+- `queryMode=generate` calls `generate_sql_builtin()` (`app/core/orchestrator/`)
+- Router sets `fresh_start` / `optimization` / `debugging` and may skip discovery or query analysis
 
 ### Stage 2: Discovery & Context Synthesis
-- **Semantic Search** ([discovery_service.py](../app/services/discovery_service.py)): 
-  - Embeds user query + extracted entities with OpenAI `text-embedding-3-small` (1536 dim)
-  - Vector searches Milvus for relevant tables (top 5) and similar queries (top 3)
-  - Returns `DiscoveryContext` with `TableSchema[]` and knowledge base examples
-- **Sample Values Injection**: Include categorical column values (e.g., Status: `['A', 'P']`) and data types to prevent type-mismatch errors
-- **Knowledge Base Selection**: Inject examples specifically mapped to detected query complexity
+- KB-first (`DiscoveryEngine`): exact few-shot / precomputed exits, then `kb_direct` / `kb_gap_fill` / RRF `dual_prong`
+- `schemas` collection holds parent objects **and** `entity_type=Column` rows; value-index seeds use `plain_value` substring match
+- Hydrator loads skills-folder markdown under a 6,400-token budget (cap 8 objects)
 
-### Stage 3: Reasoning-First Generation & Iterative Validation
-- **Chain-of-Thought** ([llm_service.py](../app/services/llm_service.py)): LLM explains join logic and column selection before writing SQL
-- **Mandatory Table Aliasing**: Enforce alias usage in all generated queries to prevent column ambiguity
-- **Iterative Loop** (max 5 attempts):
-  1. Build prompt with schema descriptions (NOT full column lists), knowledge base examples, previous SQL, and attempt history
-  2. LLM generates T-SQL via `generate_sql_with_context()`
-  3. **Database Validation** ([validation_service.py](../app/services/validation_service.py)): `validate_sql_with_db()` uses `SET NOEXEC ON` to parse-check syntax/permissions
-  4. **Optional Execution Plan Check**: Analyze estimated query cost to warn against heavy queries
-  5. **Intelligent Recovery**: If validation fails, `error_parser()` categorizes failure:
-     - **Missing Object**: Extract object → re-run discovery with `{query} + {missing_object}` → update context → retry
-     - **Ambiguity/Logic Error**: Feed specific T-SQL error + "Self-Correction" instruction back to LLM
-     - **Type Mismatch**: Provide column definitions (VARCHAR vs INT) to LLM for correction
+### Stage 3: Attempt loop (`attempts.py`)
+- Max 5 attempts / 120 s. Frozen order: safety interceptor → sentinels → structural hash → critic → `SET NOEXEC ON`
+- Missing objects expand discovery (cap 5); the same miss twice trips `deterministic_missing_object`
+- Repeated structural hash exits as a hallucination loop
+- Prompts are built in `app/core/orchestrator/prompts.py` (dialect, analysis, examples, mappings, schemas, history)
 
 ### Stage 4: Final Output
-- Returns optimized, validated T-SQL with explanation of logic used, or structured error report after 5 attempts
-- Returns `(is_valid, error_message, missing_objects[])` tuple with detailed failure categorization
+- `GenerateSQLResponse` with `sql`, `discovery_branch`, `success`, attempt/token/timing fields, optional `failure_report`
 
 ## Key Patterns & Conventions
 
 ### Schema Embedding Strategy
-- Tables are indexed using **natural language descriptions** only (see [ingest_service.py](../app/services/ingest_service.py))
-- `TableSchema.description` should be human-readable and searchable (e.g., "Customers table containing client contact and address information")
-- Columns stored as JSON in Milvus `columns_json` field but excluded from embeddings for better semantic search
+- `schemas` stores **parent** rows (`entity_type` = Table/View/Function) and **column** rows (`entity_type=Column`)
+- Embedding text is built in `schema_rows.py` / `schema_contracts.py` (`parent_embedding_text`, `column_embedding_text`)
+- Hydration uses skills-folder markdown, not the embedding payload
+- Change the contract in `schema_contracts.py`, both providers, ingest, and `tests/unit/test_schema_contract.py`
 
 ### Prompt Engineering
-- System prompts in `generation_service.py` use a structured format:
-  ```
-  Northwind Database Header
-  ### KNOWLEDGE BASE EXAMPLES (previous SQL + similar queries)
-  ### DATABASE SCHEMA (descriptions only, NOT columns)
-  ### ATTEMPT HISTORY (previous validation errors)
-  CRITICAL RULES: Only use provided tables/columns
-  ```
-- LLM context logs written to `F:\sql-agent2\llm_context.log` (hardcoded path for debugging)
+- System prompts live in `app/core/orchestrator/prompts.py`: dialect, generation mode, query analysis, data groups, examples, value mappings, selected + supplementary schemas, attempt history
 
 ### Error Handling
 - LLM can return validation error strings like `"COLUMN_VALIDATION_ERROR: Cannot find column [X]"` which triggers re-discovery
@@ -136,9 +120,9 @@ MILVUS_PORT=19530
 
 ## When Modifying Core Logic
 
-- **Adding new discovery features**: Update `discovery_service.py` → modify `DiscoveryContext` schema in [schemas.py](../app/models/schemas.py) → update LLM prompt in `generation_service.py`
-- **Changing validation logic**: Edit `validation_service.py` but ensure regex patterns in `generation_service.py::parse_validation_error()` match new error formats
-- **New vector collections**: Add schema in `ingest_service.py`, create collection methods in `vector_store.py`, update config in [config.py](../app/core/config.py)
+- **Adding new discovery features**: Update `discovery_engine.py` and pipeline models in [pipeline.py](../app/models/pipeline.py); keep RRF weights/thresholds in `constants.py` unless the product change is explicit
+- **Changing validation logic**: Edit `attempts.py` / `sql_validator.py`; do not reorder the frozen validation stack
+- **New vector collections**: Add the spec to `schema_contracts.py`, both providers, ingest, and `tests/unit/test_schema_contract.py`
 
 ## API Endpoints Quick Reference
 - `POST /api/v1/discovery` - Get relevant schemas for query

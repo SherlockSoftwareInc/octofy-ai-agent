@@ -7,7 +7,7 @@
 ## 🛠 Tech Stack
 - **Backend:** FastAPI (Python 3.x) with Pydantic models
 - **Frontend:** React + TypeScript (strict mode) + Vite
-- **Vector Store:** Milvus v2.3.13 (`schema_index`, `fewshot_index`, `value_index`)
+- **Vector Store:** Milvus or sqlite-vec. Contract collections: `schemas` (object + column entities), `few_shots` (vector + exact-question lookup), `value_index`, data groups, precomputed queries. See `docs/VECTOR_SCHEMA.md`.
 - **Database:** Microsoft SQL Server via SQLAlchemy + pyodbc
 - **LLM:** OpenAI GPT-4o for T-SQL generation
 
@@ -15,7 +15,7 @@
 - **File Length:** Maximum 400 lines per file. Split large services into focused modules.
 - **Services:** Single-responsibility pattern in `app/services/`. Each service handles one domain.
 - **Exports:** Use named exports in TypeScript. Use module-level functions in Python.
-- **Query Flow:** Classification → Discovery → Generation → Validation → Retry (max 5 attempts)
+- **Query Flow:** Wrapper gate → route → KB/precomputed fast path → KB-first discovery + RRF → attempt loop (safety → critic → SET NOEXEC ON, max 5 / 120 s). See `docs/AGENT_PROCESS.md`.
 
 ## 📝 Coding Guidelines
 - **No Artifacts:** Do not generate boilerplate comments or placeholder code.
@@ -59,5 +59,5 @@ cd frontend && npm run dev
 - Use `LIMIT` clause (T-SQL uses `TOP`)
 - Generate DDL/DML statements (SELECT only)
 - Hardcode credentials in source code
-- Modify vector store schema without updating both `ingest_service.py` AND `vector_store.py`
+- Modify vector store schema without updating `schema_contracts.py`, both providers, ingest (`schema_rows.py`), and `tests/unit/test_schema_contract.py`
 - Skip validation step when modifying SQL generation logic

@@ -388,13 +388,18 @@ Common fields used by generation endpoints:
 - `is_user_code` (optional, default false)
 - `forceGeneral`, `queryMode`
 - `table_override`, `chart_type_override`
+- `semantic_mode` (optional per-request semantic-layer override)
+- `session_id` (optional chat section / conversation id; enables cross-turn filter inheritance)
 
 #### Unified Generation Scenarios
 
 Generation endpoints route behavior based on these fields:
 - **Debugging**: `error_message` present → fixes `existing_code` using error feedback.
-- **Optimization**: `existing_code` present with no error → improves/extends code.
-- **Fresh Start**: neither present → standard NL-to-code generation.
+- **Optimization**: `existing_code` present and the request only changes syntax/structure/performance/formatting (e.g. *"format this"*, *"add indexing"*, *"convert to a CTE"*) → rewrites the editor code without schema lookup, preserving filters, joins and output grain.
+- **Refinement / drill-down**: `existing_code` present and the request changes the output grain, adds/removes attributes, or replaces/negates a filter (e.g. *"I need all order details"*, *"add shipping date"*, *"now do this for coffee"*) → discovery stays enabled, the editor SQL's tables are kept as required context, and the active filters carry forward.
+- **Fresh Start**: neither present, or the user explicitly resets (*"start over"*, *"new query"*) → standard NL-to-code generation.
+
+`session_id` is optional: when provided, the pipeline keeps a per-section `active_filters` block (inheritance / replacement / clear rules) and resolves vague follow-ups against it (*"I need all order details"* → *"I need all order details for chocolate Products"*). Without it, the same filter rules still apply to the filters parsed from `existing_code`.
 
 `database_objects` are treated as high-priority context and are boosted ahead of general discovery.
 

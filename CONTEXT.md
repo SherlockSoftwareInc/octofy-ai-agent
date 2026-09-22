@@ -29,11 +29,11 @@
       ┌────────────────────────┼────────────────────┐
       ▼                        ▼                    ▼
 ┌──────────────┐  ┌─────────────────┐  ┌─────────────────┐
-│ PostgreSQL   │  │   Milvus v2.3   │  │  SQL Server     │
-│ (Users &     │  │  Vector Store   │  │  (Data Source)  │
-│ Convos)      │  │  - schema_index │  │                 │
-│              │  │  - fewshot_index│  │                 │
-│              │  │  - value_index  │  │                 │
+│ PostgreSQL   │  │ Vector store    │  │  SQL Server     │
+│ (Users &     │  │ Milvus or       │  │  (Data Source)  │
+│ Convos)      │  │ sqlite-vec      │  │                 │
+│              │  │ partitioned by  │  │                 │
+│              │  │ data_source_id  │  │                 │
 └──────────────┘  └─────────────────┘  └─────────────────┘
                          │
                          ▼
@@ -66,35 +66,32 @@
 
 ## Data Flow: Query → SQL Generation
 
-### Stage 1: Query Analysis & Intent
-- **Classification**: Determines if query is `database`, `general`, or `uncertain`
-- **Entity Extraction**: Extracts key nouns and date ranges
-- **Complexity Scoring**: Determines if query requires joins, aggregations, or CTEs
+The generate path is the built-in orchestrator (`app/core/orchestrator/`). Full write-up: [docs/AGENT_PROCESS.md](docs/AGENT_PROCESS.md).
 
-### Stage 2: Discovery & Context Synthesis
-- **Semantic Search**: Embeds query with llm `text-embedding-3-small` (1536 dim)
-- **Vector Search**: Searches Milvus for relevant tables (top 5) and similar queries (top 3)
-- **Value Lookup**: Includes categorical column values and data types
-- **Path Finding**: LLM suggests intermediate tables for multi-table joins
+### Stage 1: Wrapper gate
+- `plan` / `ask` → discuss service (no SQL)
+- `search` → object list
+- Intent `off_topic` / `forceGeneral` → conversational reply
+- Intent `system_metadata` → catalog-view SQL
+- `generate` → hand off to `generate_sql_builtin()` for a resolved `source_id`
 
-### Stage 3: SQL Generation & Validation
-- **Chain-of-Thought**: LLM explains join logic before writing SQL
-- **Iterative Loop** (max 5 attempts):
-  1. Build prompt with schema descriptions and knowledge base examples
-  2. LLM generates T-SQL via `generate_sql_with_context()`
-  3. Database validation using `SET NOEXEC ON`
-  4. Intelligent recovery on failure (re-discovery, self-correction)
+### Stage 2: Route, fast path, discovery
+- Conversational context: coreference rewrite of vague follow-ups + session filter inheritance (`session_id`), before classification
+- Deterministic route scenarios (`fresh_start` / `optimization` / `refinement` / `drill_down` / `debugging`) plus LLM intent (`db_query` / `optimize_code` / `refine_query` / `app_feature` / `off_topic`)
+- Exact exits: few-shot key, precomputed question, or KB vector distance ≤ 0.05 (bypassed on refinement turns that carry active filters)
+- Otherwise KB-first discovery, then RRF of schema vectors (table **and** column entities), value-index seeds, data groups, optional BM25
+- Refinement/drill-down keeps discovery enabled, anchors the editor SQL's tables as required, and preserves active filters
+- Hydrate skills-folder markdown under a token budget (12-object cap on refinement turns)
 
-### Stage 4: SQL Execution & Analysis ⭐ NEW
-- **Actual Execution**: Runs validated SQL against database
-- **Auto-Retry Loop** (max 5 attempts):
-  1. Execute SQL with configurable timeout and row limit
-  2. On error: regenerate SQL with error feedback using LLM
-  3. Re-execute until success or max attempts
-- **Data Profiling**: Statistical analysis of result sets (row counts, distributions, correlations)
-- **AI Insights**: Automatically detects trends, outliers, correlations, and generates recommendations
-- **Chart Recommendations**: Suggests optimal visualization type (bar, line, pie, etc.) based on data structure
-- **Full Transparency**: Response includes auto-fix metadata when retry occurs
+### Stage 3: Attempt loop (max 5, 120 s)
+1. Build dialect prompt (or SMQ payload in semantic mode)
+2. Frozen validation: safety → sentinels → structural hash → critic → `SET NOEXEC ON`
+3. Missing-object expansion and hallucination breaker
+
+### Stage 4: SQL Execution & Analysis
+- Separate `POST /api/v1/execute-sql` (not the generate loop)
+- Auto-retry on runtime errors (max 5)
+- Optional profiling, insights, and chart recommendation when `ENABLE_AI_DATA_ANALYSIS` is true
 
 ---
 
@@ -105,22 +102,28 @@
 | **Frontend** | React + TypeScript, Vite, TailwindCSS |
 | **Backend** | FastAPI (Python), SQLAlchemy, pyodbc |
 | **User Database** | PostgreSQL 15+ |
-| **Vector Store** | Milvus v2.3.13 |
+| **Vector Store** | Milvus (default) or sqlite-vec; same contract |
 | **Data Warehouse** | Microsoft SQL Server |
 | **LLM** | OpenAI GPT-4o (configurable) |
-| **Embeddings** | OpenAI text-embedding-3-small |
+| **Embeddings** | OpenAI text-embedding-3-small (1536-d) |
 | **Authentication** | JWT (python-jose), Bcrypt (passlib) |
 
 ---
 
-## Milvus Collections
+## Vector Collections
+
+Contract version `1.1.0`. Every row is partitioned by `data_source_id`. Full field list: [docs/VECTOR_SCHEMA.md](docs/VECTOR_SCHEMA.md).
 
 | Collection | Purpose |
 |------------|---------|
-| `schema_index` | Table metadata with Markdown descriptions |
-| `fewshot_index` | Knowledge base - query examples (SQL, R, SAS) |
-| `value_index` | Lookup values for categorical columns |
+| `schemas` | Table / view / function **and** column entities (1536-d cosine) |
+| `few_shots` | Knowledge-base examples (vector + exact-question lookup) |
+| `value_index` | Categorical values; query-time substring on `plain_value` |
+| `data_group_*` | Business groups, members, and cached embeddings |
+| `vec_data_group_queries` | Precomputed approved questions (optional SMQ) |
+| `semantic_*` | Semantic models, measures, dimensions, joins |
 | `contribution_library` | User-submitted examples pending review |
+| `embedding_cache` | Shared embedding cache |
 
 ---
 
@@ -174,8 +177,13 @@ cd frontend && npm run dev
 
 | Document | Description |
 |----------|-------------|
-| [USER_MANAGEMENT.md](USER_MANAGEMENT.md) | ⭐ NEW: Complete user management and authentication guide |
-| [GENERATE_SQL.md](GENERATE_SQL.md) | Complete SQL generation & execution process guide |
+| [docs/SQL_GENERATION_BACKEND_BLUEPRINT.md](docs/SQL_GENERATION_BACKEND_BLUEPRINT.md) | End-to-end build specification of the backend SQL-generation process (for re-implementing the agent, e.g. via vibe coding) |
+| [docs/AGENT_PROCESS.md](docs/AGENT_PROCESS.md) | Canonical generate pipeline |
+| [docs/plans/2026-09-20-conversational-context-and-refinement.md](docs/plans/2026-09-20-conversational-context-and-refinement.md) | Scenario routing, coreference, session filters, prompt split |
+| [docs/VECTOR_SCHEMA.md](docs/VECTOR_SCHEMA.md) | Vector collection contract |
+| [docs/GENERATE_SQL.md](docs/GENERATE_SQL.md) | Generate + execute process |
+| [docs/REQUEST_TO_CODE_FLOW.md](docs/REQUEST_TO_CODE_FLOW.md) | HTTP/SSE path into the orchestrator |
+| [USER_MANAGEMENT.md](USER_MANAGEMENT.md) | User management and authentication |
 | [SQL_EXECUTION_AUTO_RETRY_FEATURE.md](SQL_EXECUTION_AUTO_RETRY_FEATURE.md) | SQL execution with auto-retry feature details |
 | [BACKEND_API.md](BACKEND_API.md) | Complete API reference |
 | [FRONTEND.md](FRONTEND.md) | Frontend architecture and components |
@@ -221,20 +229,22 @@ octofy-ai-agent/
 │   │   ├── conversations.py       # ⭐ NEW: Conversation history endpoints
 │   │   ├── generation.py          # SQL generation endpoints
 │   │   └── admin.py              # Admin panel endpoints
-│   ├── core/               # Config, auth, database
-│   │   ├── auth.py                # ⭐ UPDATED: JWT + API key authentication
-│   │   ├── user_database.py       # ⭐ NEW: PostgreSQL connection
-│   │   └── config.py              # ⭐ UPDATED: JWT + PostgreSQL config
+│   ├── core/               # Config, auth, orchestrator
+│   │   ├── auth.py
+│   │   ├── user_database.py
+│   │   ├── config.py
+│   │   ├── constants.py           # Built-in thresholds (do not retune)
+│   │   └── orchestrator/          # generate_sql_builtin pipeline
 │   ├── models/             # Pydantic schemas
-│   │   ├── user_models.py         # ⭐ NEW: User & Conversation models
-│   │   ├── user_schemas.py        # ⭐ NEW: User API schemas
-│   │   └── schemas.py             # SQL generation schemas
+│   │   ├── pipeline.py            # AgentRequest, DiscoveryResult, ...
+│   │   ├── user_models.py
+│   │   ├── user_schemas.py
+│   │   └── schemas.py
 │   ├── services/           # Business logic
-│   │   ├── user_service.py        # ⭐ NEW: User CRUD operations
-│   │   ├── auth_service.py        # ⭐ NEW: JWT & password hashing
-│   │   ├── generation_service.py  # SQL generation logic
-│   │   ├── validation_service.py  # SQL validation & execution
-│   │   └── execution_service.py   # Python code execution
+│   │   ├── generation_service.py  # Wrapper + non-generate modes
+│   │   ├── stores/                # Vector contract + providers
+│   │   ├── validation_service.py
+│   │   └── execution_service.py
 │   └── utils/              # Utilities
 ├── frontend/               # React frontend
 │   ├── src/

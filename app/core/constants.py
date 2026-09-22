@@ -32,6 +32,9 @@ MaxRerankTables = 8
 ActiveDataGroupTopN = 3
 SchemaContextTokenBudget = 6_400
 PromptContextDiscoveryCap = 8
+# Refinement/drill-down turns must carry the editor SQL's base tables *and* the newly
+# discovered objects for the requested grain, so the prompt cap is widened for them only.
+RefinementPromptContextCap = 12
 MissingObjectBreakThreshold = 2
 MissingGroupMemberValidationStatus = "MISSING_GROUP_MEMBER"
 FuzzyMatchMinConfidence = 0.85

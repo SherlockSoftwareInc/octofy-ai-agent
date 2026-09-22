@@ -1,5 +1,7 @@
 # Planning Mode Chat Flow Summary
 
+`queryMode` values `plan` and `ask` do **not** enter the built-in SQL orchestrator. They are handled by `app/services/discuss_service.py` (`discuss_conversation`). SQL generation starts only when the client later sends `queryMode=generate`. See [AGENT_PROCESS.md](AGENT_PROCESS.md).
+
 Based on the codebase, here's the comprehensive chat flow logic for **Plan Mode**:
 
 ## Frontend Flow (App.tsx)

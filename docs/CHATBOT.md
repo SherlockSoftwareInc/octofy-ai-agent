@@ -25,8 +25,10 @@ The chatbot provides a conversational interface for natural language requests, t
 
 ## Related Documentation
 
-- Frontend chat UI: [docs/FRONTEND.md](FRONTEND.md)
-- SQL generation pipeline: [docs/GENERATE_SQL.md](GENERATE_SQL.md)
-- Request-to-code flow: [docs/REQUEST_TO_CODE_FLOW.md](REQUEST_TO_CODE_FLOW.md)
-- Planning mode chat flow: [docs/PLANNING_MODE_FLOW.md](PLANNING_MODE_FLOW.md)
-- User conversation storage: [docs/USER_MANAGEMENT.md](USER_MANAGEMENT.md)
+- Agent process: [AGENT_PROCESS.md](AGENT_PROCESS.md)
+- Vector schema: [VECTOR_SCHEMA.md](VECTOR_SCHEMA.md)
+- Frontend chat UI: [FRONTEND.md](FRONTEND.md)
+- SQL generation pipeline: [GENERATE_SQL.md](GENERATE_SQL.md)
+- Request-to-code flow: [REQUEST_TO_CODE_FLOW.md](REQUEST_TO_CODE_FLOW.md)
+- Planning / ask mode: [PLANNING_MODE_FLOW.md](PLANNING_MODE_FLOW.md)
+- User conversation storage: [USER_MANAGEMENT.md](USER_MANAGEMENT.md)

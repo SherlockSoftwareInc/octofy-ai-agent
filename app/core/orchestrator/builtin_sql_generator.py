@@ -6,18 +6,25 @@ import logging
 import time
 from typing import Any, Dict, Generator, Optional, Union
 
-from app.core.branch_taxonomy import DiscoveryBranch, PipelineStage, RouteKind
+from app.core.branch_taxonomy import DiscoveryBranch, GenerationMode, PipelineStage, RouteKind, scenario_branch
 from app.core.constants import (
     DefaultPrecomputedQueryDirectMatchThreshold,
     FuzzyMatchMinConfidence,
     MaxGenerationTimeMs,
     NoDiscoveryTimeBudgetMs,
+    RefinementPromptContextCap,
 )
 from app.core.errors import ErrorCategory, apply_language_result, build_detailed_failure_result, build_failure_report
 from app.core.orchestrator.attempts import run_attempt_loop
 from app.core.orchestrator.discovery_engine import DiscoveryEngine
 from app.core.orchestrator.preprocessing import build_agent_request, preprocess
+from app.core.orchestrator.prompts import build_optimization_system_prompt, build_optimization_user_prompt
 from app.core.orchestrator.router import route
+from app.core.orchestrator.session_context import (
+    apply_conversation_context,
+    prepare_conversation_context,
+    record_generation_outcome,
+)
 from app.models.pipeline import BuiltInGenerateResult, DiscoveryResult, ScoredObject
 from app.models.schemas import GenerateSQLRequest, GenerateSQLResponse
 from app.services.llm_client import LlmClient
@@ -26,6 +33,8 @@ from app.services.sql_context_hydrator import SqlContextHydrator
 from app.services.sql_validator import SqlValidator
 from app.services.stores.bundle import SourceStores, build_source_stores
 from app.services.stores.skills_folder import markdown_lookup_for_objects
+from app.utils.rrf import merge_and_dedup
+from app.utils.sql_normalization import extract_sql_object_refs
 from app.utils.python_normalization import (
     extract_python_body,
     extract_sql_from_python,
@@ -87,6 +96,16 @@ def generate_sql_builtin(
     yield emit(PipelineStage.ROUTING, "Validating and routing request")
     agent_req = build_agent_request(request, source_id)
     context = preprocess(agent_req, stores)
+
+    # Phase 1.2 / 2.2 — resolve coreference and inherit the session's active filters
+    # *before* intent classification and metadata retrieval.
+    conversation = prepare_conversation_context(context.request, llm=llm)
+    context = apply_conversation_context(context, conversation)
+    if conversation.was_rewritten:
+        yield emit(PipelineStage.ROUTING, f"Resolved follow-up context: {conversation.rewritten_query}")
+    elif conversation.active_filters:
+        yield emit(PipelineStage.ROUTING, f"Carried {len(conversation.active_filters)} active filter(s)")
+
     decision = route(context, llm)
     context = decision.context
 
@@ -158,9 +177,12 @@ def generate_sql_builtin(
         yield sse_done()
         return
 
-    # Stage C phase 1 fast paths
+    # Stage C phase 1 fast paths. A refinement turn with inherited filters must not be
+    # answered by a stored exact match that was authored without those filters.
     yield emit(PipelineStage.PREANALYSIS, "Running pre-analysis fast paths")
-    kb_exact = engine.kb_exact(context.request.query)
+    preserve_filters = context.is_refinement and bool(context.active_filters)
+    effective_query = context.effective_query
+    kb_exact = None if preserve_filters else engine.kb_exact(effective_query)
     if kb_exact:
         result = BuiltInGenerateResult(
             success=True,
@@ -172,11 +194,12 @@ def generate_sql_builtin(
             token_usage=llm.token_usage.as_dict(),
             source_id=source_id,
         )
+        record_generation_outcome(context, result.sql)
         yield sse_result(finalize(result))
         yield sse_done()
         return
 
-    pre_exact = engine.precomputed_exact(context.request.query)
+    pre_exact = None if preserve_filters else engine.precomputed_exact(effective_query)
     if pre_exact:
         sql = pre_exact.sql
         if semantic_mode and pre_exact.smq_query:
@@ -199,12 +222,13 @@ def generate_sql_builtin(
             token_usage=llm.token_usage.as_dict(),
             source_id=source_id,
         )
+        record_generation_outcome(context, result.sql)
         yield sse_result(finalize(result))
         yield sse_done()
         return
 
     # vector kb exact (0.05) after deterministic miss
-    kb_top = engine.kb_vector_top1(context.request.query)
+    kb_top = None if preserve_filters else engine.kb_vector_top1(effective_query)
     if kb_top and kb_top.score <= Kb_distance_exact():
         result = BuiltInGenerateResult(
             success=True,
@@ -216,6 +240,7 @@ def generate_sql_builtin(
             token_usage=llm.token_usage.as_dict(),
             source_id=source_id,
         )
+        record_generation_outcome(context, result.sql)
         yield sse_result(finalize(result))
         yield sse_done()
         return
@@ -237,9 +262,25 @@ def generate_sql_builtin(
         top_k=context.request.top_k,
         existing_sql=context.request.existing_code,
     )
+    # Phase 4 step 3 — refinement keeps the editor SQL's base objects as required and lets
+    # discovery add the tables/joins the deeper grain needs (Order Details, Orders, ...).
+    if context.is_refinement and context.request.existing_code:
+        base_objects = _base_objects_from_sql(context.request.existing_code)
+        if base_objects:
+            discovery.objects = merge_and_dedup(base_objects + discovery.objects)
+            yield emit(
+                PipelineStage.DISCOVERY,
+                "Refinement scope expansion: "
+                + ", ".join(f"{o.schema_name}.{o.object_name}" for o in base_objects),
+            )
+        discovery.branch = scenario_branch(discovery.branch, context.generation_mode)
     discovery.active_groups = groups
     discovery.query_analysis = analysis
-    hydrator = SqlContextHydrator()
+    hydrator = (
+        SqlContextHydrator(cap=RefinementPromptContextCap)
+        if context.is_refinement
+        else SqlContextHydrator()
+    )
     hydrator.set_value_mappings(discovery.value_mappings)
     markdown_lookup = markdown_lookup_for_objects(source_id, discovery.objects)
     selected, supp, schema, validation = hydrator.build_contexts(
@@ -261,11 +302,30 @@ def generate_sql_builtin(
         started_at=started,
         target_language=target_language,
     )
+    record_generation_outcome(context, result.sql if result.success else None)
     # re-emit attempt is inside loop without yield; emit a closing status
     yield emit(PipelineStage.ATTEMPT, f"Completed in {result.attempts} attempt(s)")
     payload = finalize(result)
     yield sse_result(payload, result.message or "")
     yield sse_done()
+
+
+def _base_objects_from_sql(sql: str) -> list:
+    """Editor-SQL tables promoted to required objects for a refinement turn."""
+    objects = []
+    for ref in extract_sql_object_refs(sql or ""):
+        cleaned = ref.replace("[", "").replace("]", "")
+        schema, _, name = cleaned.rpartition(".")
+        objects.append(
+            ScoredObject(
+                schema_name=schema or "dbo",
+                object_name=name or cleaned,
+                score=1.0,
+                priority=True,
+                required=True,
+            )
+        )
+    return objects
 
 
 def generate_python_builtin(
@@ -353,8 +413,13 @@ def _generate_from_provided_sql(context, stores, llm, emit, started, target_lang
         code = materialize_sas_code(existing)
     else:
         code = existing
+    # Phase 3.1 — an *optimization* turn is a modification request: even when the editor
+    # code already validates, the model must produce the optimized/rewritten code under the
+    # strict "editor code only" rules. Every other provided-code turn keeps the historical
+    # short-circuit (a valid script is returned unchanged).
+    optimization_scenario = context.generation_mode == GenerationMode.OPTIMIZATION
     ok, err = _validate(code)
-    if ok:
+    if ok and not optimization_scenario:
         return BuiltInGenerateResult(
             success=True,
             sql=code,
@@ -379,25 +444,21 @@ def _generate_from_provided_sql(context, stores, llm, emit, started, target_lang
             failure_report=report,
             source_id=context.request.source_id,
         )
-    if python_mode:
-        prompt = (
-            f"Fix this Python pandas/sqlalchemy script for dialect {context.dbms_type}. "
-            f"Error: {err}\nUser request: {context.combined_query}\nCode:\n{code}"
-        )
-    elif r_mode:
-        prompt = (
-            f"Fix this R tidyverse/DBI script for dialect {context.dbms_type}. "
-            f"Error: {err}\nUser request: {context.combined_query}\nCode:\n{code}"
-        )
-    elif sas_mode:
-        prompt = (
-            f"Fix this SAS PROC SQL script for dialect {context.dbms_type}. "
-            f"Error: {err}\nUser request: {context.combined_query}\nCode:\n{code}"
-        )
-    else:
-        prompt = f"Fix this SQL for dialect {context.dbms_type}. Error: {err}\nSQL:\n{code}"
+    system_prompt = build_optimization_system_prompt(
+        context,
+        code,
+        error_message=err if not ok else None,
+        target_language=target_language,
+    )
+    user_prompt = build_optimization_user_prompt(context, code, err if not ok else None)
+    original_code = code
     try:
-        raw = llm.complete([{"role": "user", "content": prompt}])
+        raw = llm.complete(
+            [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ]
+        )
         from app.utils.sql_normalization import extract_sql_body
 
         if python_mode:
@@ -417,6 +478,19 @@ def _generate_from_provided_sql(context, stores, llm, emit, started, target_lang
         return BuiltInGenerateResult(
             success=True,
             sql=code,
+            message="Optimized in place (editor SQL only)" if optimization_scenario else None,
+            discovery_branch=DiscoveryBranch.NO_DISCOVERY,
+            attempts=2,
+            processing_time_ms=int((time.time() - started) * 1000),
+            token_usage=llm.token_usage.as_dict(),
+            source_id=context.request.source_id,
+        )
+    if optimization_scenario:
+        # Never break a query the user already had: fall back to the editor SQL unchanged.
+        return BuiltInGenerateResult(
+            success=True,
+            sql=original_code,
+            message="Optimization rewrite did not validate; the original editor SQL was kept.",
             discovery_branch=DiscoveryBranch.NO_DISCOVERY,
             attempts=2,
             processing_time_ms=int((time.time() - started) * 1000),

@@ -27,6 +27,106 @@ class AgentRequest(BaseModel):
     table_override: List[str] = Field(default_factory=list)
     semantic_mode: Optional[bool] = None
     force_general: bool = False
+    session_id: Optional[str] = None
+
+
+class ActiveFilter(BaseModel):
+    """One filter carried across turns of the same chat section (Phase 2)."""
+
+    entity: str = ""
+    attribute: str
+    operator: str = "="
+    value: str
+    origin_turn: int = 1
+    source: str = "sql"  # sql | llm | session
+
+    def render(self) -> str:
+        return f"{self.attribute} {self.operator} {self.value}".strip()
+
+    def phrase(self) -> str:
+        """Human phrase used when folding a carried filter back into a vague follow-up.
+
+        Only value-like (quoted) equality/LIKE filters produce a phrase; date ranges and
+        numeric bounds are kept in the filter state but are not folded into the sentence.
+        """
+        raw = (self.value or "").strip()
+        is_quoted = raw.startswith("'") or raw[:2].lower() == "n'"
+        if not is_quoted or self.operator.upper() not in {"=", "LIKE"}:
+            return ""
+        value = raw.strip("'\"").strip("%").strip()
+        entity = (self.entity or self._entity_from_attribute()).strip()
+        if entity and value:
+            return f"{value} {_pluralize(entity)}"
+        return value or entity
+
+    def value_token(self) -> str:
+        return (self.value or "").strip("'\"").strip("%").strip().lower()
+
+    def _entity_from_attribute(self) -> str:
+        name = self.attribute or ""
+        for suffix in ("Name", "ID", "Id", "Code", "Title", "Date"):
+            if name.endswith(suffix) and len(name) > len(suffix):
+                return name[: -len(suffix)]
+        return ""
+
+
+class SessionSemanticContext(BaseModel):
+    """Session-level semantic state kept across requests of one chat section."""
+
+    session_id: str
+    source_id: Optional[str] = None
+    active_filters: List[ActiveFilter] = Field(default_factory=list)
+    active_domains: List[str] = Field(default_factory=list)
+    target_grain: Optional[str] = None
+    turn_index: int = 0
+    last_sql: Optional[str] = None
+    updated_at: float = 0.0
+
+
+class ConversationContextResult(BaseModel):
+    """Outcome of the coreference + filter-inheritance pass (Phases 1.2 / 2.2)."""
+
+    original_query: str
+    rewritten_query: str
+    was_rewritten: bool = False
+    carried_filters: List[ActiveFilter] = Field(default_factory=list)
+    active_filters: List[ActiveFilter] = Field(default_factory=list)
+    filters_cleared: bool = False
+    replacement_applied: bool = False
+    notes: List[str] = Field(default_factory=list)
+    session_id: Optional[str] = None
+    source: str = "deterministic"
+
+    def filter_state_text(self) -> str:
+        if not self.active_filters:
+            return "(none)"
+        return "\n".join(f"- {f.render()}" for f in self.active_filters)
+
+
+class ScenarioDecision(BaseModel):
+    """Deterministic/LLM scenario classification for the current turn."""
+
+    scenario: GenerationMode = GenerationMode.FRESH_START
+    confidence: float = 1.0
+    signals: List[str] = Field(default_factory=list)
+    source: str = "deterministic"
+
+    @property
+    def is_refinement(self) -> bool:
+        from app.core.branch_taxonomy import is_refinement_scenario
+
+        return is_refinement_scenario(self.scenario)
+
+
+def _pluralize(word: str) -> str:
+    cleaned = (word or "").strip()
+    if not cleaned:
+        return ""
+    if cleaned.lower().endswith(("s", "x", "ch", "sh")):
+        return cleaned
+    if cleaned.lower().endswith("y") and len(cleaned) > 1:
+        return cleaned[:-1] + "ies"
+    return cleaned + "s"
 
 
 class SchemaMetadata(BaseModel):
@@ -43,6 +143,25 @@ class AgentContext(BaseModel):
     is_error_recovery: bool = False
     combined_query: str = ""
     dbms_type: str = "SQL Server"
+    session_id: Optional[str] = None
+    rewritten_query: Optional[str] = None
+    coreference_notes: List[str] = Field(default_factory=list)
+    active_filters: List[ActiveFilter] = Field(default_factory=list)
+    filter_state_text: str = ""
+
+    @property
+    def scenario(self) -> GenerationMode:
+        return self.generation_mode
+
+    @property
+    def is_refinement(self) -> bool:
+        from app.core.branch_taxonomy import is_refinement_scenario
+
+        return is_refinement_scenario(self.generation_mode)
+
+    @property
+    def effective_query(self) -> str:
+        return self.rewritten_query or self.request.query
 
 
 class BuiltInAttemptReport(BaseModel):

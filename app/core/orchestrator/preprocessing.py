@@ -65,6 +65,7 @@ def build_agent_request(http: GenerateSQLRequest, source_id: Optional[str]) -> A
         table_override=override,
         semantic_mode=http.semantic_mode,
         force_general=bool(http.forceGeneral),
+        session_id=http.session_id,
     )
 
 

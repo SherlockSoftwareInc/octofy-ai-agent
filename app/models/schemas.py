@@ -117,6 +117,7 @@ class GenerateSQLRequest(BaseModel):
     source_id: Optional[str] = None  # Required by generate-sql/python/r/sas HTTP endpoints
     top_k: Optional[int] = None
     semantic_mode: Optional[bool] = None
+    session_id: Optional[str] = None  # Chat section / conversation id for cross-turn filter state
 
 
 # --- Turn-Type Classification Models ---
