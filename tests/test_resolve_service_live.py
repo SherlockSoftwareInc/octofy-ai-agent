@@ -1,22 +1,35 @@
 """
 Live integration test for the backend data source resolve service.
 
-This test uses the user-provided parameters:
-- Endpoint: http://localhost:8000/
-- API key: 2pXZdP9tmnlGAiAC-7rRgIiFSV4QPIBFIm4yDT0D72IoCDpmwruLy8Jp80HaNTKc
-- Server name: SSI01
-- Database name: NORTHWIND
+This test needs a running backend plus valid credentials, so both come from the
+environment (never hardcode them — this file is committed):
+
+- ``BASE_URL``      backend root, default ``http://localhost:8000``
+- ``API_KEY``       ``X-API-Key`` of an active user (required; the test skips without it)
+- ``SERVER_NAME``   default ``SSI01``
+- ``DATABASE_NAME`` default ``NORTHWIND``
+
+Run with::
+
+    API_KEY=<your-user-api-key> python -m pytest tests/test_resolve_service_live.py
 """
 
 from __future__ import annotations
 
 import os
+
+import pytest
 import requests
 
 BASE_URL = os.getenv("BASE_URL", "http://localhost:8000")
-API_KEY = "2pXZdP9tmnlGAiAC-7rRgIiFSV4QPIBFIm4yDT0D72IoCDpmwruLy8Jp80HaNTKc"
-SERVER_NAME = "SSI01"
-DATABASE_NAME = "NORTHWIND"
+API_KEY = os.getenv("API_KEY")
+SERVER_NAME = os.getenv("SERVER_NAME", "SSI01")
+DATABASE_NAME = os.getenv("DATABASE_NAME", "NORTHWIND")
+
+pytestmark = pytest.mark.skipif(
+    not API_KEY,
+    reason="API_KEY is not set; skipping the live resolve-service test",
+)
 
 
 def test_resolve_service_with_northwind_params() -> None:
@@ -45,5 +58,7 @@ def test_resolve_service_with_northwind_params() -> None:
 
 
 if __name__ == "__main__":
+    if not API_KEY:
+        raise SystemExit("API_KEY is not set; refusing to run the live test without credentials")
     test_resolve_service_with_northwind_params()
-    print("[PASS] Resolve service test succeeded for SSI01/NORTHWIND")
+    print(f"[PASS] Resolve service test succeeded for {SERVER_NAME}/{DATABASE_NAME}")

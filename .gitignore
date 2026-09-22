@@ -50,12 +50,32 @@ milvus_data/
 ### --- Secrets & Config --- ###
 # Environment variables (NEVER commit these)
 .env
+.env.*
+!.env.example
 .flaskenv
 secrets.json
 myenv/
 config/agent_settings.json
 skills/
 skills/**
+# Credential material and key files (never commit)
+*.pem
+*.key
+*.pfx
+*.p12
+*.jks
+credentials*.json
+credential*.json
+service-account*.json
+service_account*.json
+secrets*.json
+*_secret*.json
+# Generated/large artifacts that must not be committed
+repomix-output.xml
+*.tar.gz
+*.zip
+logs/
+*.log
 
 ### --- Docker --- ###
 # Ignore local data persistence for Docker containers

@@ -205,7 +205,7 @@ Authorization: Bearer <access_token>
 {
   "id": 1,
   "username": "admin",
-  "api_key": "Xr8mK3pT9vL2nH5wQ4jC6fN8yU1sA7bV3xZ0gD9eM2kR5tY7",
+  "api_key": "<your-user-api-key>",
   ...
 }
 ```
@@ -340,7 +340,7 @@ Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
 
 ### 2. User API Key (For Scripts/Integrations)
 ```http
-X-API-Key: Xr8mK3pT9vL2nH5wQ4jC6fN8yU1sA7bV3xZ0gD9eM2kR5tY7
+X-API-Key: <your-user-api-key>
 ```
 
 - Auto-generated per user

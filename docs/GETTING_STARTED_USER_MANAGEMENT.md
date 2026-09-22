@@ -90,7 +90,7 @@ DEFAULT ADMINISTRATOR ACCOUNT CREATED
 ================================================================================
 Username: admin
 Password: admin123
-API Key: Xr8mK3pT9vL2nH5wQ4jC6fN8yU1sA7bV3xZ0gD9eM2kR5tY7
+API Key: <generated-user-api-key>   # printed once at creation; never commit a real key
 ================================================================================
 ⚠️  WARNING: Change the default password immediately after first login!
 ================================================================================
@@ -159,7 +159,7 @@ curl -X GET http://localhost:8000/api/v1/auth/me \
   "id": 1,
   "username": "admin",
   "email": "admin@example.com",
-  "api_key": "Xr8mK3pT9vL2nH5wQ4jC6fN8yU1sA7bV3xZ0gD9eM2kR5tY7",
+  "api_key": "<your-user-api-key>",
   "role": "admin",
   ...
 }
@@ -185,7 +185,7 @@ curl -X POST http://localhost:8000/api/v1/admin/users \
 ```bash
 # Use the API key instead of JWT token
 curl -X GET http://localhost:8000/api/v1/auth/me \
-  -H "X-API-Key: Xr8mK3pT9vL2nH5wQ4jC6fN8yU1sA7bV3xZ0gD9eM2kR5tY7"
+  -H "X-API-Key: <your-user-api-key>"
 ```
 
 ### Test 5: Create a Conversation
