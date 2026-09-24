@@ -1,13 +1,13 @@
 # Octofy AI Agent
 
-**Octofy AI Agent is a blueprint — and a working reference implementation — for building agents that generate SQL, SAS, R, and Python code from natural language.**
+**Octofy AI Agent** is the backend API service for [Octofy Pro](https://sherlocksoftwareinc.com/). It turns natural-language questions into validated T-SQL (and Python, R, or SAS) using retrieval-augmented generation, semantic search, and an iterative attempt loop.
 
-The purpose of this project is to provide a reusable **blueprint for building agents capable of generating SQL, SAS, R, and Python code from natural-language requests**, together with the backend service that proves the blueprint out in production. The two belong together:
+**Octofy AI Agent is also a blueprint** for building agents capable of generating SQL, SAS, R, and Python code from natural-language requests. It is a reusable build specification paired with the working service that proves it out:
 
 | Deliverable | What it is |
 |---|---|
 | **The blueprint** | [`docs/SQL_GENERATION_BACKEND_BLUEPRINT.md`](docs/SQL_GENERATION_BACKEND_BLUEPRINT.md) — a code-derived build specification (§01–§16) that a developer *or an AI coding agent* can execute to build an equivalent agent from an empty repository: transport, storage, retrieval, prompts, validation loop, semantic layer, script targets. |
-| **The reference implementation** | This repository — the FastAPI backend service for [Octofy Pro](https://sherlocksoftwareinc.com/), with the full pipeline running end to end: ingestion, discovery, generation, validation, execution and analysis. |
+| **The reference implementation** | The running service itself, with the full pipeline exercised end to end: ingestion, discovery, generation, validation, execution and analysis. |
 
 The service is designed as a copilot: users ask questions in chat, the agent discovers the relevant schema and examples, generates dialect-correct code, parse-checks it against the warehouse, and optionally executes the statement with profiling and insights. The same pipeline serves four output targets — `sql` (T-SQL today), `python`, `r`, and `sas` — chosen per request with `target_language`.
 
