@@ -122,3 +122,14 @@ config/agent_settings.json
 # Git worktree directories (should never be committed)
 .worktrees/
 worktrees/
+
+### --- Local AI Agent & GitHub Tooling (never tracked) --- ###
+# Agent/editor scaffolding and GitHub automation kept on disk only.
+.agent/
+.claude/
+.github/
+.opencode/
+# Git metadata itself is never tracked; listed for completeness.
+.git
+# Pytest cache is also covered by the Unit Testing section above.
+.pytest_cache/
