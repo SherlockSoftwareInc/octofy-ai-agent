@@ -1,8 +1,17 @@
 # Octofy AI Agent
 
-**Octofy AI Agent** is the backend API service for [Octofy Pro](https://sherlocksoftwareinc.com/). It turns natural-language questions into validated T-SQL (and Python, R, or SAS) using retrieval-augmented generation, semantic search, and an iterative attempt loop.
+**Octofy AI Agent is a blueprint — and a working reference implementation — for building agents that generate SQL, SAS, R, and Python code from natural language.**
 
-The service is designed as a copilot: users ask questions in chat, the agent discovers relevant schema and examples, generates dialect-correct SQL, parse-checks it against the warehouse, and optionally executes the statement with profiling and insights.
+The purpose of this project is to provide a reusable **blueprint for building agents capable of generating SQL, SAS, R, and Python code from natural-language requests**, together with the backend service that proves the blueprint out in production. The two belong together:
+
+| Deliverable | What it is |
+|---|---|
+| **The blueprint** | [`docs/SQL_GENERATION_BACKEND_BLUEPRINT.md`](docs/SQL_GENERATION_BACKEND_BLUEPRINT.md) — a code-derived build specification (§01–§16) that a developer *or an AI coding agent* can execute to build an equivalent agent from an empty repository: transport, storage, retrieval, prompts, validation loop, semantic layer, script targets. |
+| **The reference implementation** | This repository — the FastAPI backend service for [Octofy Pro](https://sherlocksoftwareinc.com/), with the full pipeline running end to end: ingestion, discovery, generation, validation, execution and analysis. |
+
+The service is designed as a copilot: users ask questions in chat, the agent discovers the relevant schema and examples, generates dialect-correct code, parse-checks it against the warehouse, and optionally executes the statement with profiling and insights. The same pipeline serves four output targets — `sql` (T-SQL today), `python`, `r`, and `sas` — chosen per request with `target_language`.
+
+The blueprint is written to be *executed*, not skimmed: exact constants, a frozen validation order, verbatim prompts, field-by-field data contracts, and an acceptance test matrix. It is derived from this repository's code, so non-obvious claims cite `path/file.py:LINE` and can be cross-checked against the running implementation. The rule in both directions: change pipeline behaviour here, update the corresponding blueprint section in the same change.
 
 > **Note on the frontend.** The React app in [`frontend/`](frontend/) is **not a formal product** — it is a
 > demonstration harness used to showcase and exercise the backend (chat thread, streaming status steps,
@@ -17,6 +26,8 @@ The service is designed as a copilot: users ask questions in chat, the agent dis
 
 ## Contents
 
+- [Technologies employed](#technologies-employed) — RAG, semantic layers, prompt contracts, precomputed Q&A
+- [Why this approach](#why-this-approach) — the rationale and the problems this design solves
 - [Vibe-coding the agent](#vibe-coding-the-agent) — build a working agent from the blueprint
 - [Overview](#overview) — how a request flows
 - [Main features](#main-features)
@@ -32,6 +43,46 @@ The service is designed as a copilot: users ask questions in chat, the agent dis
 - [Docker](#docker)
 - [Security](#security)
 - [Documentation](#documentation)
+
+---
+
+## Technologies employed
+
+These are the techniques that make generation reliable, as opposed to a single "ask the model for SQL" prompt. The libraries and services they run on are listed under [Technology stack](#technology-stack).
+
+| Technology | How it is used here |
+|---|---|
+| **Retrieval-augmented generation (RAG)** | Evidence is retrieved *before* the model writes anything: schema objects and columns, few-shot examples, real stored values, and business data groups. Rankings from the knowledge base, value index, schema vectors, data groups and optional BM25 are combined with reciprocal rank fusion (k = 60) so no single signal dominates, and the retrieved evidence is hydrated into the prompt under a token budget. |
+| **Semantic layers** | For governed metrics, the model emits **SMQ** (Semantic Model Query) JSON — logical metrics, dimensions, filters and timeframes — and a deterministic `SemanticCompiler` translates it into physical SQL against the active `SemanticModel`. Business definitions live in the model, not in the prompt, and compilation errors (`UNKNOWN_METRIC`, `UNKNOWN_DIMENSION`, `INCOMPATIBLE_DIMENSIONS`, `MISSING_JOIN_PATH`) are structured and recoverable. |
+| **Prompt engineering as a contract** | Prompts are versioned artifacts, not ad-hoc strings. Assembly order, example payloads, dialect rules, scope guards and output formats are specified verbatim in §08 of the blueprint and locked by snapshot tests; the same scenario and guard text is injected into the SQL, Python, R and SAS prompts. Editing a prompt is a behaviour change, not a tweak. |
+| **Precomputed Q&A pairs** | Curated question → code pairs (few-shot knowledge base, precomputed data-group queries, and their SMQ form) answer recurring questions deterministically. An exact match short-circuits generation entirely; a near match (cosine similarity ≥ 0.82) is injected into the prompt as a worked example instead of being returned blindly. |
+| **Value index** | Maps everyday terms — "North America", a product line, a status word — to the exact literal stored in `schema.table.column`, so generated predicates use real values rather than plausible-looking guesses. |
+| **Iterative validation loop** | Up to 5 attempts / 120 s with a safety interceptor, structural-hash hallucination detection, an advisory LLM critic, and authoritative database parse validation (`SET NOEXEC ON`, dry run, `sys.dm_exec_describe_first_result_set`). Missing objects trigger discovery expansion; terminal failures return a structured report. |
+| **Deterministic front half** | Preprocessing, PII masking, history folding, conversational-context resolution, scenario classification, routing, pin validation and the fast paths all run in code before any model call, so routing and cache hits are reproducible. |
+| **Provider-agnostic model layer** | Any OpenAI-compatible endpoint (OpenAI, Azure, Anthropic, Google, DeepSeek, Ollama, local servers, …) via LiteLLM, with parameter naming, temperature omission and reasoning budgets decided centrally by the request-conventions module — never hardcoded per call site. |
+| **Per-source partitioning** | Every store read and write is partitioned by `source_id`, so one service can host many warehouses without cross-leakage of schemas, examples, values, data groups, semantic models or cached embeddings. |
+| **Multi-target code generation** | One pipeline, four outputs (`sql`, `python`, `r`, `sas`). Non-SQL targets reuse the same discovery, attempt loop and validation, and materialize stored SQL into runnable script code when a fast path answers the question. |
+
+---
+
+## Why this approach
+
+A capable language model given a bare question and a database connection will produce code that *looks* right and fails in specific, repeatable ways. This project's answer is to treat the model as one component in a pipeline — retrieval-first, deterministic where it can be, and validation-bound where it cannot — rather than as the whole system.
+
+| Problem it addresses | How this approach solves it |
+|---|---|
+| **Hallucinated schema** — invented tables, columns and joins that read plausibly but do not exist | Generation is grounded in the real catalog: object and column discovery, KB-first lookup, and database validation that rejects unknown identifiers before a result is ever reported as success. |
+| **Business language vs. physical schema** — "top customers in North America" names nothing that exists in the warehouse | The semantic layer and data groups translate business vocabulary into governed metrics and dimensions; the value index resolves terms to the literals actually stored in the data. |
+| **Dialect and target correctness** — T-SQL specifics such as `TOP`, `N'…'` literals and `SET NOEXEC ON`, plus Python/R/SAS targets | Dialect rules live in the prompt contracts and the compiler's quoting layer, and every statement is validated against the engine that will run it; script targets are executed the same way. |
+| **Cost and latency of generating every answer from scratch** | Precomputed Q&A and exact few-shot matches return a verified answer with zero generation attempts, while near matches become few-shot context instead of open-ended invention. |
+| **Non-determinism and answers nobody can audit** | The deterministic front half and the SMQ compiler produce reproducible plans: a governed metric is defined by a stored semantic model, not by sampling. |
+| **The model grading its own work** | The LLM critic is advisory; the database is authoritative. Success is a passed parse check (and, optionally, a real execution), and failure yields a structured report rather than a confident guess. |
+| **Follow-up turns that lose the thread** — "now just the ones from last quarter" | Coreference rewriting plus session filter inheritance, replacement and clearing keep multi-turn conversations coherent, including explicit "start over" resets. |
+| **Provider and model churn** | A provider-agnostic request layer keeps the agent working across OpenAI-compatible endpoints and reasoning vs. non-reasoning models without per-endpoint special cases. |
+| **Multi-tenant safety** | `source_id` partitioning of every store prevents one warehouse's schema, examples, values or semantic definitions from leaking into another's answers. |
+| **Knowledge that is hard to hand over or rebuild** | The blueprint captures thresholds, orderings, prompts and contracts so the system can be rebuilt, reviewed or ported without reverse-engineering it, and the human-curated knowledge (few-shots, data groups, value index, semantic models) lives in stores rather than in someone's head. |
+
+The trade-off is deliberate: more ingestion and curation up front — schema metadata, values, example pairs, semantic models — in exchange for answers that are repeatable, explainable and verified against a real database. A reduced build is possible when that trade is not worth it: [§13 of the blueprint](docs/SQL_GENERATION_BACKEND_BLUEPRINT.md) describes a SQL-only vertical slice, and semantic mode and non-SQL targets are optional modes of the same pipeline.
 
 ---
 
