@@ -16,6 +16,27 @@ The goal is not "similar output." The goal is **process parity in two planes**:
 
 Use this file as a machine-executable planning artifact for AI coding tools implementing the Octofy Agent backend.
 
+> **Post-port amendment (2026-09-28): semantic payload classification.** Parity test 24 below ("compile-failure
+> retry/fallback policy") described the pre-fix behaviour, in which a response the extractor could not read
+> was treated as SQL whenever the fallback was enabled — so SMQ JSON could reach the SQL validator and fail
+> as `Incorrect syntax near 'metrics'`. That is now forbidden by an explicit rule:
+>
+> > A response that carries an SMQ payload is **never** executed as SQL, whatever
+> > `SEMANTIC_COMPILATION_FALLBACK_TO_RAW_SQL` says.
+>
+> The ported contract lives in `app/services/semantic_smq.py` (tolerant extraction, independent
+> payload-class guard, typed parse, retry vocabulary) and `app/core/orchestrator/attempts.py:241-322`
+> (guard before fallback; semantic retries; terminal `semantic_compilation` at `:496-508`). Compiler
+> correctness rules (deterministic ordering and anchor, `GROUP BY` only for real aggregates, enforced 5 s
+> budget) are in `app/services/semantic_compiler.py`, and compiled semantic SQL skips the client-side
+> object-scope rewrite in `app/services/sql_validator.py`. The plan that specifies all of this is
+> [SEMANTIC_SMQ_PIPELINE_FIX.md](SEMANTIC_SMQ_PIPELINE_FIX.md); the behaviour record is §9.10 of
+> [SQL_GENERATION_BACKEND_BLUEPRINT.md](SQL_GENERATION_BACKEND_BLUEPRINT.md); the tests are
+> `tests/unit/test_semantic_smq.py`.
+>
+> Read parity test 24 with that amendment: the fallback policy now decides **only** for a reply with no SMQ
+> payload at all, and an exhausted semantic budget ends as `semantic_compilation` rather than `validation`.
+
 ---
 
 ## 1) Source of Truth and Scope
@@ -113,9 +134,9 @@ Preserve these values exactly unless there is a deliberate product change. They 
 | No-discovery path budget | 90 000 ms | Provided-SQL rewrite path budget |
 | `MaxDiscoveryCacheEntries` | 256 | Cap of cached discovery result sets |
 | `MaxQueryAnalysisCacheEntries` | 100 | Cap of cached query-analysis results |
-| `SemanticCompilationTimeoutMs` | 5 000 | Per-call timeout for SMQ → SQL compilation |
-| `SemanticSmqParseRetryOnFailure` | `true` | Missing/invalid SMQ payload triggers a retry attempt |
-| `SemanticModelDiscoveryTopK` | 3 | Max semantic models surfaced by vector discovery |
+| `SemanticCompilationTimeoutMs` | 5 000 | Per-call timeout for SMQ → SQL compilation; enforced by `SemanticCompiler.compile_guarded` (expiry is a semantic retry) |
+| `SemanticSmqParseRetryOnFailure` | `true` | **Declared but no reader** after the payload-class fix — retries are bounded by `MaxRetries` (see the amendment at the top) |
+| `SemanticModelDiscoveryTopK` | 3 | Declared but unused: the only `search_models` call site passes `top_k=2` |
 | `RelativeColumnScoreThreshold` | 0.85 | Only columns within this fraction of the object's best column score are kept as `MatchedColumns` |
 | `ColumnDetailValueSeedScore` | 0.80 | Value-index hit column seed score |
 | `KeywordMatchScore` | 1.0 | Full keyword-token column match score (context-noise anchor) |
@@ -127,7 +148,7 @@ Preserve these values exactly unless there is a deliberate product change. They 
 | Setting | Default | Purpose |
 |---|---|---|
 | `enable_semantic_layer` (per agent/source) | unset (`null`) | Primary semantic-mode flag; legacy per-source dictionary is the fallback |
-| `semantic_compilation_fallback_to_raw_sql` | `true` | Allow SMQ parse/compile failures to fall back to raw SQL output |
+| `semantic_compilation_fallback_to_raw_sql` | `true` | Use the raw SQL a reply contains **only when it carries no SMQ payload at all**; a reply carrying SMQ JSON is never executed as SQL (see the amendment at the top) |
 
 ### Tunable thresholds (admin settings, same semantics as AI Settings UI)
 - `precomputedQueryDirectMatchThreshold` (0.93), `precomputedQueryFewShotThreshold` (0.82), `objectSearchVectorScoreThreshold` (0.50, clamped [0,1]).
@@ -199,8 +220,9 @@ Preserve field semantics even if Python names differ; keep JSON names identical 
 | `sql_error_classifier` | `SqlErrorClassifier` | Error taxonomy incl. semantic-compilation errors |
 | `llm_client` | LLM call layer | Chat completion/Responses API + token accounting, provider-agnostic conventions |
 | `tool_function_invoker` | `ToolFunctionInvoker` | MCP (Streamable HTTP) + sub-agent tool execution with argument sanitization |
-| `semantic_model_service` | `SemanticModelService` | Per-source model CRUD + embeddings + activation |
-| `semantic_compiler` | `SemanticCompiler` | Deterministic SMQ → physical SQL |
+| `semantic_model_service` | `SemanticModelService` | Per-source model CRUD + embeddings + activation; active-model lookup returns `None` when the store is absent |
+| `semantic_smq` | SMQ payload handling | Tolerant extraction, payload-class guard (`looks_like_smq`), typed parse, retry vocabulary |
+| `semantic_compiler` | `SemanticCompiler` | Deterministic SMQ → physical SQL (ordered tables, deterministic anchor, guarded 5 s budget) |
 | `semantic_extraction_service` | `SemanticModelExtractionService` | LLM-first / SQL-parse fallback model extraction (≥ 1 measure guarantee) |
 | `data_group_query_service` | `DataGroupQueryGenerationService` | Precomputed pair generation + statuses (Approved/Modified/Rejected/Pending) |
 
@@ -523,6 +545,8 @@ Active data groups influence allowed schemas, ranked candidates, and protected c
 
 Mirrors `BUILT_IN_SQL_GENERATOR.md`'s six top-level steps. Each stage emits a `status` SSE event (stage name in parentheses) before doing work so clients see pipeline progress.
 
+> **Implemented 2026-09-25 for the iterative loop:** `run_attempt_loop` is a generator that yields its `attempt` / `critic` / `db_validation` / `recovery` status events as each step starts (the `attempt` event carries `attempt` and `max_attempts`), and `generate_sql_builtin` forwards them to the SSE stream while the loop is still running. The single closing `attempt` status ("Completed in N attempt(s)") was removed. Regression test: `tests/parity/test_attempt_progress_streaming.py`.
+
 ### Stage A — Request intake and routing (`routing`)
 
 **A.1 Validate and sanitize** — reject empty/whitespace query (HTTP 400 at the API edge). Apply PII masking (email/SSN/US phone/credit card → `[EMAIL]`, `[SSN]`, `[PHONE]`, `[CARD]`). All downstream work uses the masked query.
@@ -578,7 +602,7 @@ Per attempt (1..`MaxRetries`):
 3. **Merge recovery objects** — when pending recovery objects or loop-breaker active: expand `topK`, optionally re-discover broader context, merge/dedup, re-apply prioritization, rebuild contexts, reset loop-breaker, force critic to rerun.
 4. **Compact attempt history** — all but the newest full entry become one-line summaries.
 5. **Build prompts** — system prompt: DBMS/dialect, generation mode, query analysis, active business context, KB examples (complexity-matched, up to 3; precomputed examples prepended, de-duped by question, capped at 5 total), verified value mappings, available schemas (selected + supplementary), attempt history, output format (fenced SQL with reasoning comment header). In **semantic mode** the system prompt is the semantic variant (DBMS CONTEXT SEMANTIC MODE, AVAILABLE SEMANTIC MODELS JSON, SEMANTIC OUTPUT FORMAT STRICT — reply with a fenced ` ```smq ```` block containing `{"metrics":[...],"dimensions":[...],"filters":[...],"timeframes":[...]}`, only model names; no reasoning/view/scripting sections).
-6. **Call the LLM** — apply `presence_penalty = 0.4` once a hallucination loop is detected; accumulate token usage (thread-safe). Post-process: strip markdown fences, normalize dialect qualifiers, normalize pinned PostgreSQL function invocations to `()` call syntax. In semantic mode: extract SMQ (```` ```smq ```` fence or bare `{"metrics":` object), deserialize, compile against the active model under the 5 s timeout; missing payload / compile failure → `semantic_compilation` failure retried per `SemanticSmqParseRetryOnFailure` (or raw-SQL fallback per policy). Empty response → `generation` failure.
+6. **Call the LLM** — apply `presence_penalty = 0.4` once a hallucination loop is detected; accumulate token usage (thread-safe). Post-process: strip markdown fences, normalize dialect qualifiers, normalize pinned PostgreSQL function invocations to `()` call syntax. In semantic mode, **before** consulting the fallback policy: `extract_smq_json` (five accepted shapes) → `parse_smq` → `compile_guarded` against the active model under the 5 s budget. A reply that carries SMQ JSON but cannot be extracted or compiled is a **semantic retry** carrying the offending item plus the model's valid metric/dimension names — the payload is never executed as SQL. The raw-SQL fallback applies only to a reply with no SMQ payload at all. Empty response → `generation` failure.
 
 **Validation order is fixed (do not reorder):**
 1. Safety gate (`QueryInterceptor`) — dangerous DML/DDL blocked unless explicitly requested; temp-object exceptions; comment/string stripping.
@@ -615,8 +639,9 @@ Unexpected loop exit → structured failure via `BuildDetailedFailureResult`: fi
 - **Storage:** per-source model tables (models, measures, dimensions, joins, governance predicates, embeddings) with idempotent `CREATE TABLE IF NOT EXISTS`; full-model text embedding stored at save; retrieval by cosine similarity; "most recently updated active model" as the compile target.
 - **Model shape:** `SemanticModel { model_id, data_source_key, label, is_active, measures[], dimensions[], joins[] }` — measure `{name, expression (raw SQL), description}`; dimension `{name, column, table, description}`; join `{from_table, to_table, join_expression, join_type (default INNER)}`.
 - **Extraction:** LLM-first prompt requires a non-empty `measures` array and instructs the model to infer defaults (`row_count = COUNT(*)`, `COUNT(DISTINCT …)`, `SUM`/`AVG` over numeric columns) using full `schema.table.column` references (aliases are not resolvable); SQL-parse fallback; deterministic last resort injects `row_count = COUNT(*)` because the editor refuses zero-measure models and compilation requires ≥ 1 metric.
-- **Compiler (deterministic, synchronous, wrapped in the 5 s budget):** resolve metrics/dimensions by name (case-insensitive; `UNKNOWN_METRIC`/`UNKNOWN_DIMENSION`), determine required tables (dimension `Table` → first dimension table → first join `FromTable`), build a BFS join plan connecting all required tables (`INCOMPATIBLE_DIMENSIONS` no path / `MISSING_JOIN_PATH` no source), emit `SELECT` dimensions (`table.column AS name`) + measures (`expression AS name`), `FROM` anchor, join plan, `WHERE` from filters (`eq/ne/neq/gt/gte/lt/lte/like`) + timeframes (`field BETWEEN start AND end`) + optional governance predicates, `GROUP BY` dimensions. Quote identifiers per dialect (`[x]` SQL Server, `` `x` `` MySQL/MariaDB, `"x"` otherwise; `N'…'` string literals on SQL Server).
-- **Integration points to preserve:** precomputed fast path compiles stored `smq_query`; few-shot injection uses the SMQ payload; semantic candidates appended to discovery as scored semantic-model objects; semantic-mode system prompt; SMQ extraction + compile in the attempt loop; semantic critic variant; missing-object expansion surfaces matching models first; `SqlErrorClassifier` recognizes `SemanticCompilationError` (`UnknownMetric`, `UnknownDimension`, `IncompatibleDimensions`, `MissingJoinPath`).
+- **Compiler (deterministic, synchronous, wrapped in the 5 s budget):** resolve metrics/dimensions by name (case-insensitive; `UNKNOWN_METRIC`/`UNKNOWN_DIMENSION`); reject a payload requesting neither with `EMPTY_REQUEST`; determine required tables as an **ordered** list seeded from the model's declared tables (join sources, then dimension tables) plus the requested dimensions and any measure `FROM` table already in that set; choose `FROM` deterministically (first requested dimension's table → a measure's source table → first required table); BFS the join graph to connect them (traversal may pass through non-required tables, but only required tables are emitted; `INCOMPATIBLE_DIMENSIONS` no path / `MISSING_JOIN_PATH` no source); emit `SELECT` dimensions (`table.column AS name`) + measures (`expression AS name`), the join plan, `WHERE` from filters (`eq/ne/neq/gt/gte/lt/lte/like`) + timeframes (`field BETWEEN start AND end`) + optional governance predicates, and `GROUP BY` **only when at least one resolved measure actually aggregates** (delimiter-aware detection; a dimensions-only request is a detail query and stays ungrouped). Quote identifiers per dialect (`[x]` SQL Server, `` `x` `` MySQL/MariaDB, `"x"` otherwise; `N'…'` string literals on SQL Server). Compilation is byte-identical across runs for the same input.
+- **Payload classification (the rule that must hold):** `extract_smq_json` accepts five shapes (smq fence → any fence with the tag dropped → first brace-balanced region → whole text), each validated as a JSON object carrying a `metrics` **or** `dimensions` array. An independent structural predicate `looks_like_smq` (a `metrics`/`dimensions` key at JSON depth 1, or a valid object carrying one — never a substring search) answers "does this carry SMQ JSON, usable or not?". **A reply that carries an SMQ payload is never executed as SQL**, whatever the fallback says; the fallback decides only for a reply with no payload at all. Failures retry semantically with the offending item plus the model's valid metric/dimension names, and an exhausted semantic budget terminates as `semantic_compilation` — never reaching the SQL validator.
+- **Integration points to preserve:** precomputed fast path compiles stored `smq_query` (failure logged; stored SQL used only when it is confirmed to be SQL); few-shot injection uses the SMQ payload; semantic candidates appended to discovery as scored semantic-model objects; semantic-mode system prompt; payload guard + compile in the attempt loop; semantic critic variant; compiled semantic SQL skips the client-side object-scope check; `get_active_model()` returns `None` for an absent store; missing-object expansion surfaces matching models first; `SqlErrorClassifier` recognizes `SemanticCompilationError` (`UnknownMetric`, `UnknownDimension`, `IncompatibleDimensions`, `MissingJoinPath`).
 
 ---
 
@@ -625,7 +650,7 @@ Unexpected loop exit → structured failure via `BuildDetailedFailureResult`: fi
 - **Output format:** model output may include a `/* reasoning */` block and fenced SQL; normalization must extract the SQL body while tolerating wrappers (also strips the reasoning header when the client saves to KB).
 - **Dialect strictness:** inject effective DBMS type, dialect-specific syntax rules, identifier quoting, prohibited cross-dialect syntax; PostgreSQL strict guidance (LIMIT not TOP, CASE not IF(), explicit casts, schema qualification).
 - **System prompt sections (normal mode):** DBMS CONTEXT (STRICT), GENERATION MODE, QUERY ANALYSIS, ACTIVE BUSINESS CONTEXT, KNOWLEDGE BASE EXAMPLES, VERIFIED DATA MAPPINGS, AVAILABLE SCHEMAS, SUPPLEMENTARY SCHEMAS, ATTEMPT HISTORY, OUTPUT FORMAT.
-- **Semantic mode sections:** DBMS CONTEXT (SEMANTIC MODE), AVAILABLE SEMANTIC MODELS (JSON), SEMANTIC OUTPUT FORMAT (STRICT) — prompt returns immediately after that section.
+- **Semantic mode sections:** DBMS CONTEXT (SEMANTIC MODE), AVAILABLE SEMANTIC MODELS (JSON), GENERATION MODE (+ inherited filter block), SEMANTIC OUTPUT FORMAT (STRICT) — the prompt returns immediately after that section. A `SEMANTIC OUTPUT CORRECTION` block is appended when an inherited filter value reads as an SMQ payload.
 - **Complexity tiers** for few-shot matching: "complex" ≥ 2 complex keywords; "moderate" = 1; "simple" = 0.
 - **Conversation folding:** newest answer verbatim; older ≤ 200 chars; failed/canceled turns → placeholders.
 
@@ -743,7 +768,7 @@ Emit per request: branch, attempts, token usage, processing time, hallucination 
 21. Recovery-protected objects not pruned across attempts.
 22. Timeout failure after 120 s (90 s no-discovery).
 23. Success result includes metrics and diagnostics fields incl. canonical question.
-24. Semantic mode: SMQ-only prompt, compile success, semantic critic, compile-failure retry/fallback policy, unknown metric/dimension expansion.
+24. Semantic mode: SMQ-only prompt, compile success, semantic critic, compile-failure retry/fallback policy, unknown metric/dimension expansion. **Amended (see the post-port note at the top):** a reply carrying an SMQ payload is never executed as SQL — the payload-class guard runs before the fallback, a malformed payload is a semantic retry carrying the model's valid names, and an exhausted semantic budget terminates as `semantic_compilation`. Parity tests 24a–24c correspond to `SEMANTIC_SMQ_PIPELINE_FIX.md` §10–§11.
 
 ### Transport parity (API contract)
 25. `/api/v1/generation/generate-sql` streams `status` events for each stage then one `result` (or `error`) + `done`.

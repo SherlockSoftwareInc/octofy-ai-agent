@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-import json
 import time
-from typing import Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, Generator, List, Optional, Tuple
 
 from app.core.branch_taxonomy import PipelineStage
 from app.core.constants import (
@@ -17,7 +16,7 @@ from app.core.constants import (
     MissingObjectBreakThreshold,
     PresencePenaltyAfterLoop,
     SemanticCompilationTimeoutMs,
-    SemanticSmqParseRetryOnFailure,
+    semantic_compilation_fallback_to_raw_sql,
 )
 from app.core.errors import (
     ErrorCategory,
@@ -45,13 +44,18 @@ from app.models.pipeline import (
     CombinedValidationResult,
     DiscoveryResult,
     ScoredObject,
-    SmqPayload,
 )
 from app.services.python_interceptor import PythonInterceptor
 from app.services.query_interceptor import QueryInterceptor
 from app.services.r_interceptor import RInterceptor
 from app.services.sas_interceptor import SASInterceptor
-from app.services.semantic_compiler import SemanticCompilationError, SemanticCompiler
+from app.services.semantic_compiler import SemanticCompiler
+from app.services.semantic_smq import (
+    extract_smq_json,
+    looks_like_smq,
+    parse_smq,
+    valid_names_hint,
+)
 from app.services.sql_error_classifier import SqlErrorClassifier
 from app.services.sql_validator import SqlValidator
 from app.utils.python_normalization import (
@@ -87,7 +91,24 @@ def run_attempt_loop(
     semantic_mode: bool = False,
     started_at: Optional[float] = None,
     target_language: str = "sql",
-) -> BuiltInGenerateResult:
+) -> Generator[Dict[str, Any], None, BuiltInGenerateResult]:
+    """Run the generate / validate / recover loop for one turn.
+
+    This is a **generator**: it yields the SSE status event built by ``emit``
+    (attempt start, LLM critic, database validation, group-member recovery) as
+    each step begins, and *returns* the final :class:`BuiltInGenerateResult`
+    through ``StopIteration.value``. Yielding while the loop is still running is
+    what lets the caller's SSE stream report attempt-level progress live instead
+    of only after the whole loop has finished::
+
+        loop = run_attempt_loop(...)
+        while True:
+            try:
+                yield next(loop)
+            except StopIteration as loop_done:
+                result = loop_done.value
+                break
+    """
     started_at = started_at or time.time()
     interceptor = QueryInterceptor()
     python_interceptor = PythonInterceptor()
@@ -116,9 +137,14 @@ def run_attempt_loop(
     last_error = ""
     last_prompt = ""
     canonical = None
-    active_model = stores.semantic.get_active_model() if semantic_mode else None
+    active_model = _load_active_model(stores) if semantic_mode else None
     semantic_json = active_model.model_dump_json() if active_model else "[]"
-    smq_retry_used = False
+    # Semantic-branch bookkeeping. ``semantic_retry`` records that the current attempt ended
+    # in a semantic retry rather than a SQL candidate, so an exhausted budget can be reported
+    # as a semantic failure instead of a generic "unexpected loop exit".
+    semantic_retry = False
+    compiled_from_semantic_model = False
+    last_semantic_error = ""
 
     for attempt in range(1, MaxRetries + 1):
         elapsed_ms = int((time.time() - started_at) * 1000)
@@ -142,7 +168,12 @@ def run_attempt_loop(
                 source_id=context.request.source_id,
             )
 
-        emit(PipelineStage.ATTEMPT, f"Generation attempt {attempt}/{MaxRetries}", attempt=attempt)
+        yield emit(
+            PipelineStage.ATTEMPT,
+            f"Generation attempt {attempt}/{MaxRetries}",
+            attempt=attempt,
+            max_attempts=MaxRetries,
+        )
 
         if pending_recovery or loop_breaker:
             discovery.objects = _merge_recovery(discovery.objects, pending_recovery)
@@ -182,6 +213,7 @@ def run_attempt_loop(
             )
             continue
 
+        raw_output = raw
         if python_mode:
             sql = extract_python_body(raw)
         elif r_mode:
@@ -205,43 +237,89 @@ def run_attempt_loop(
 
             known = [(o.schema_name, o.object_name) for o in discovery.objects]
             sql = qualify_sql_in_sas(sql, known)
+        cleaned_output = sql or ""
+        # 1. Semantic payload classification (semantic mode only).
+        #
+        # The rule this branch exists to enforce: a response that carries an SMQ payload is
+        # never executed as SQL, whatever the fallback setting says. The fallback keeps its
+        # narrower meaning -- "the model genuinely answered in SQL" -- so the payload-class
+        # guard is evaluated *before* the fallback policy, which cannot resurrect a payload.
+        compiled_from_semantic_model = False
+        semantic_retry = False
         if semantic_mode:
-            smq = _extract_smq(raw)
-            if smq is None:
-                if SemanticSmqParseRetryOnFailure and not smq_retry_used:
-                    smq_retry_used = True
+            smq_json = extract_smq_json(cleaned_output)
+            if not smq_json:
+                if (
+                    looks_like_smq(raw_output)
+                    or looks_like_smq(cleaned_output)
+                    or not semantic_compilation_fallback_to_raw_sql()
+                ):
+                    last_semantic_error = (
+                        "Semantic mode requires an SMQ JSON payload, but the response could not "
+                        "be read as one."
+                    )
                     attempt_reports.append(
-                        BuiltInAttemptReport(attempt_number=attempt, stage="semantic_compilation", what_was_tried="parse SMQ", why_it_failed="missing payload")
+                        BuiltInAttemptReport(
+                            attempt_number=attempt,
+                            stage="semantic_compilation",
+                            what_was_tried="extract SMQ payload",
+                            why_it_failed=last_semantic_error + valid_names_hint(active_model),
+                        )
                     )
+                    semantic_retry = True
                     continue
-                from app.core.constants import semantic_compilation_fallback_to_raw_sql
-
-                if not semantic_compilation_fallback_to_raw_sql():
-                    return _fail(
-                        "semantic_compilation",
-                        "Missing SMQ payload",
-                        attempt,
-                        attempt_reports,
-                        discovery,
-                        llm,
-                        started_at,
-                        hallucination_count,
-                        agentic_retry,
-                        context,
-                    )
+                # Genuine SQL answer with the fallback enabled: proceed as SQL.
             else:
-                try:
-                    sql = compiler.compile(smq, active_model, context.dbms_type, timeout_ms=SemanticCompilationTimeoutMs)
-                except SemanticCompilationError as exc:
+                smq = parse_smq(smq_json)
+                if smq is None:
+                    last_semantic_error = (
+                        f"The SMQ payload could not be parsed. Received: {smq_json[:400]}"
+                    )
+                    attempt_reports.append(
+                        BuiltInAttemptReport(
+                            attempt_number=attempt,
+                            stage="semantic_compilation",
+                            what_was_tried="parse SMQ payload",
+                            why_it_failed=last_semantic_error + valid_names_hint(active_model),
+                        )
+                    )
+                    semantic_retry = True
+                    continue
+
+                if active_model is None:
+                    last_semantic_error = "No active semantic model is available for this data source."
                     attempt_reports.append(
                         BuiltInAttemptReport(
                             attempt_number=attempt,
                             stage="semantic_compilation",
                             what_was_tried="compile SMQ",
-                            why_it_failed=str(exc),
+                            why_it_failed=last_semantic_error,
                         )
                     )
+                    semantic_retry = True
                     continue
+
+                compiled = compiler.compile_guarded(
+                    smq,
+                    active_model,
+                    context.dbms_type,
+                    timeout_ms=SemanticCompilationTimeoutMs,
+                )
+                if not compiled.success:
+                    last_semantic_error = build_semantic_compile_error_feedback(compiled.detail)
+                    attempt_reports.append(
+                        BuiltInAttemptReport(
+                            attempt_number=attempt,
+                            stage="semantic_compilation",
+                            what_was_tried="compile SMQ",
+                            why_it_failed=last_semantic_error + valid_names_hint(active_model),
+                        )
+                    )
+                    semantic_retry = True
+                    continue
+
+                sql = compiled.sql
+                compiled_from_semantic_model = True
 
         if not sql:
             attempt_reports.append(
@@ -328,8 +406,10 @@ def run_attempt_loop(
 
         # 4. Attempt-1 DB pre-check before critic
         if attempt == 1:
-            emit(PipelineStage.DB_VALIDATION, "Database pre-check (attempt 1)")
-            db_ok, db_err, db_missing = _validate_candidate(sql, validator, allowed, target_language)
+            yield emit(PipelineStage.DB_VALIDATION, "Database pre-check (attempt 1)")
+            db_ok, db_err, db_missing = _validate_candidate(
+                sql, validator, allowed, target_language, compiled_from_semantic_model
+            )
             if db_ok and (
                 (not python_mode or extract_sql_from_python(sql))
                 and (not r_mode or extract_sql_from_r(sql))
@@ -339,7 +419,7 @@ def run_attempt_loop(
 
         critic_result = CombinedValidationResult()
         if not skip_critic:
-            emit(PipelineStage.CRITIC, "LLM critic")
+            yield emit(PipelineStage.CRITIC, "LLM critic")
             if python_mode:
                 critic_result = _run_python_critic(llm, sql, discovery.schema_context_for_validation, context.combined_query)
             elif r_mode:
@@ -358,14 +438,16 @@ def run_attempt_loop(
             if not critic_result.schema_valid:
                 if critic_result.status == MissingGroupMemberValidationStatus and not broadened:
                     broadened = True
-                    emit(PipelineStage.RECOVERY, "Broadened group-member recovery")
+                    yield emit(PipelineStage.RECOVERY, "Broadened group-member recovery")
                     continue
                 pending_recovery.extend(_expand_missing(",".join(critic_result.missing_objects), stores)[:MaxRecoveryExpansion])
                 continue
 
         if not skip_critic:
-            emit(PipelineStage.DB_VALIDATION, "Database validation")
-            db_ok, db_err, db_missing = _validate_candidate(sql, validator, allowed, target_language)
+            yield emit(PipelineStage.DB_VALIDATION, "Database validation")
+            db_ok, db_err, db_missing = _validate_candidate(
+                sql, validator, allowed, target_language, compiled_from_semantic_model
+            )
 
         if db_ok:
             elapsed_ms = int((time.time() - started_at) * 1000)
@@ -407,6 +489,24 @@ def run_attempt_loop(
         )
 
     elapsed_ms = int((time.time() - started_at) * 1000)
+    # An exhausted budget whose last attempt was a semantic retry is a *semantic* failure.
+    # Guarding this deliberately is what makes the original symptom impossible rather than
+    # merely rare: the semantic payload never reaches the SQL validator, so the turn cannot
+    # end in "Incorrect syntax near 'metrics'".
+    if semantic_retry:
+        return _fail(
+            ErrorCategory.SEMANTIC_COMPILATION,
+            last_semantic_error or "Semantic compilation failed after all retries",
+            MaxRetries,
+            attempt_reports,
+            discovery,
+            llm,
+            started_at,
+            hallucination_count,
+            agentic_retry,
+            context,
+            context_text=last_prompt,
+        )
     report = build_failure_report(
         summary=last_error or "Failed after max retries",
         resolution_plan=["Review missing objects", "Add few-shot examples", "Pin tables"],
@@ -497,7 +597,13 @@ def _run_sas_critic(llm, code, schema, query) -> CombinedValidationResult:
         return CombinedValidationResult()
 
 
-def _validate_candidate(code: str, validator: SqlValidator, allowed: List[str], target_language: str):
+def _validate_candidate(
+    code: str,
+    validator: SqlValidator,
+    allowed: List[str],
+    target_language: str,
+    compiled_from_semantic_model: bool = False,
+):
     extractors = {
         "python": (syntax_check_python, extract_sql_from_python),
         "r": (syntax_check_r, extract_sql_from_r),
@@ -505,7 +611,9 @@ def _validate_candidate(code: str, validator: SqlValidator, allowed: List[str], 
     }
     pair = extractors.get(target_language)
     if not pair:
-        return validator.validate(code, allowed)
+        return validator.validate(
+            code, allowed, skip_object_scope=compiled_from_semantic_model
+        )
     syntax_check, extract_sql = pair
     ok, err = syntax_check(code)
     if not ok:
@@ -514,26 +622,36 @@ def _validate_candidate(code: str, validator: SqlValidator, allowed: List[str], 
     if not sqls:
         return True, "", []
     for sql in sqls:
-        db_ok, db_err, db_missing = validator.validate(sql, allowed)
+        db_ok, db_err, db_missing = validator.validate(
+            sql, allowed, skip_object_scope=compiled_from_semantic_model
+        )
         if not db_ok:
             return False, db_err, db_missing or []
     return True, "", []
 
 
-def _extract_smq(raw: str) -> Optional[SmqPayload]:
-    import re
+def build_semantic_compile_error_feedback(detail: str) -> str:
+    """Wrap a compiler detail into retry feedback that can actually converge.
 
-    fence = re.search(r"```smq\s*([\s\S]*?)```", raw or "", re.IGNORECASE)
-    text = fence.group(1) if fence else raw
-    start = (text or "").find('{"metrics"')
-    if start < 0:
-        start = (text or "").find("{")
-    if start < 0:
-        return None
-    end = text.rfind("}")
+    The caller appends :func:`valid_names_hint`, so this only has to state what went
+    wrong and how to answer next.
+    """
+    body = (detail or "").strip() or "semantic compilation failed"
+    return (
+        f"Semantic compilation failed: {body}. "
+        "Return only a fenced smq code block naming metrics and dimensions that exist "
+        "in the semantic model; do not return SQL."
+    )
+
+
+def _load_active_model(stores):
+    """Active semantic model, or None when the store is absent or predates the tables.
+
+    A data source whose vector index was never built must degrade to "no active model"
+    (semantic mode off for that turn) instead of failing the whole generation request.
+    """
     try:
-        data = json.loads(text[start : end + 1])
-        return SmqPayload.model_validate(data)
+        return stores.semantic.get_active_model()
     except Exception:
         return None
 
@@ -580,7 +698,20 @@ def _compact_history(reports: List[BuiltInAttemptReport]) -> str:
     return "\n".join(lines)
 
 
-def _fail(category, message, attempt, reports, discovery, llm, started_at, hallu, agentic, context, sql=""):
+def _fail(
+    category,
+    message,
+    attempt,
+    reports,
+    discovery,
+    llm,
+    started_at,
+    hallu,
+    agentic,
+    context,
+    sql="",
+    context_text=None,
+):
     elapsed = int((time.time() - started_at) * 1000)
     report = build_failure_report(
         summary=message,
@@ -600,6 +731,7 @@ def _fail(category, message, attempt, reports, discovery, llm, started_at, hallu
         agentic_retry_count=agentic,
         failure_report=report,
         source_id=context.request.source_id,
+        context_text=context_text,
     )
     if sql:
         result.sql = result.sql  # keep comment wrapper from builder

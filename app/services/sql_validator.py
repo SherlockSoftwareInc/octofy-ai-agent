@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from typing import List, Optional, Tuple
 
-from app.core.errors import ErrorCategory
 from app.services.sql_error_classifier import SqlErrorClassifier
 from app.utils.sql_normalization import extract_sql_object_refs
 
@@ -15,7 +14,12 @@ class SqlValidator:
         self.dbms = dbms
         self.classifier = SqlErrorClassifier()
 
-    def validate(self, sql: str, allowed_objects: Optional[List[str]] = None) -> Tuple[bool, str, List[str]]:
+    def validate(
+        self,
+        sql: str,
+        allowed_objects: Optional[List[str]] = None,
+        skip_object_scope: bool = False,
+    ) -> Tuple[bool, str, List[str]]:
         if not sql or not sql.strip():
             return False, "Empty SQL query generated", []
         kind = (self.dbms or "").lower()
@@ -23,7 +27,11 @@ class SqlValidator:
             ok, err, missing = self._sql_server(sql)
         else:
             ok, err, missing = self._odbc(sql)
-        if ok and allowed_objects:
+        # SQL produced by the semantic compiler is not written against the retrieved schema
+        # context: the model may legitimately own tables discovery never selected. Rewriting
+        # the server error into a missing-object error would bury the real cause and send the
+        # retry loop looking for objects that were never missing.
+        if ok and allowed_objects and not skip_object_scope:
             scoped_err = self._out_of_scope(sql, allowed_objects)
             if scoped_err:
                 return False, scoped_err, missing

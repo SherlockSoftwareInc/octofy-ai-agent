@@ -13,6 +13,40 @@
 
 ---
 
+## Change record — semantic payload handling (2026-09-28)
+
+> **Read this before implementing §07.8 or §09.** The semantic layer described in the older parts of
+> this document had a payload-classification defect: a response carrying SMQ JSON could be **executed
+> as SQL** whenever the raw-SQL fallback was enabled, producing a database syntax error naming a JSON
+> key (`Incorrect syntax near 'metrics'`) after every retry. The rule that now holds is:
+>
+> **A response that carries an SMQ payload is never executed as SQL, whatever the fallback setting says.**
+>
+> §09 now describes the corrected behaviour in full; where an earlier section still reads as the old
+> design, §09.4.3–§09.10 win. The plan that specifies the change, with the C# change record it was
+> ported from, is `C:\Users\sherl\source\repos\OctofyPro\OctofyPro\Docs\plans\SEMANTIC_SMQ_PIPELINE_FIX.md`.
+
+What changed, at a glance:
+
+| Area | Before | After | Spec |
+|---|---|---|---|
+| Extraction | ` ```smq ` fence, else a `{"metrics"`/`{` … last-`}` brace slice | tolerant, five accepted shapes with per-candidate JSON validation and a leading fence-tag drop | §9.10.1 |
+| Payload-class guard | none — "extraction returned nothing" *was* the SQL decision | independent `looks_like_smq` structural predicate, evaluated **before** the fallback | §9.10.2 |
+| Fallback policy | swallowed unrecognised payloads into the SQL path | decides only for a reply with **no** SMQ payload at all | §9.10.2 |
+| Retry feedback | bare `"missing payload"` / `str(exc)`; retry prompt byte-identical | offending item **plus** the model's valid metric/dimension names, and an explicit "return SMQ, not SQL" correction | §9.10.3 |
+| Terminal failure | exhausted semantic loop reported `validation` with the last DB error | `semantic_compilation` carrying the recorded semantic detail | §9.10.3 |
+| `GROUP BY` | emitted whenever dimensions existed | emitted only when a resolved measure actually aggregates | §9.10.4 |
+| FROM anchor / joins | anchor could come from set-derived order; BFS leaked non-requested tables | ordered required-table list, deterministic anchor rule, joins only for requested tables | §9.10.4 |
+| Compile timeout | `timeout_ms` accepted and discarded | enforced per call; expiry is a semantic retry | §9.10.4 |
+| Semantic SQL validation | client-side object-scope check rewrote server errors into `TABLE_VALIDATION_ERROR` | skipped for compiled semantic SQL, so the server error survives | §9.10.5 |
+| Active-model lookup | raised when the store was absent or predated the tables | returns `None` (semantic mode off for that turn) | §9.10.5 |
+
+Regression coverage: `tests/unit/test_semantic_smq.py` (61 tests) — extraction/rejection matrix,
+guard precedence with the fallback both on and off, retry-feedback content, terminal classification,
+compiler determinism over 25 runs, the `GROUP BY` matrix, the anchor rule, and the scope-check skip.
+
+---
+
 ## What this document is for
 
 The reference system is large (≈60 backend modules, several thousand lines in the generation path alone). The knowledge that makes it *work* is spread across hundreds of small decisions: exact thresholds, the order of validations, the shape of each prompt, which store is authoritative for which signal, which failure is terminal and which is retryable.
@@ -254,7 +288,7 @@ These are deliberate design choices; a re-implementation that "improves" them wi
 | Context is capped (8 objects, 6 400 tokens; 12 on refinement) | Prompt-budget determinism; keeps the model from diluting evidence | §06 |
 | Pins and matched-column objects are `required` and never pruned | User intent and column evidence outrank score floors | §06 |
 | Refinement keeps the editor SQL's tables as required and widens the cap | Otherwise the established domain context is dropped | §05, §06 |
-| Semantic mode is SQL-only and falls back to raw SQL by flag | Scripts cannot be compiled from SMQ | §09 |
+| Semantic mode is SQL-only, and a reply carrying an SMQ payload is **never** executed as SQL | Scripts cannot be compiled from SMQ; and the raw-SQL fallback exists only for a model that answered in SQL | §09, §9.10 |
 | LLM request shaping is provider-agnostic | The product supports any OpenAI-compatible endpoint | §07 |
 | All retrieval is partitioned by `source_id` | Multi-tenant isolation | §04, §11 |
 
@@ -340,7 +374,8 @@ Mirror the reference layout (it keeps every cross-reference in this document val
     services/                 llm_client.py · llm_conventions.py · llm_service.py ·
                               validation_service.py · sql_validator.py · sql_error_classifier.py ·
                               execution_service.py · object_name_resolver.py ·
-                              sql_context_hydrator.py · semantic_compiler.py · semantic_model_service.py ·
+                              sql_context_hydrator.py · semantic_compiler.py · semantic_smq.py ·
+                              semantic_model_service.py ·
                               ingest_service.py · schema_scan_service.py · skills_service.py · ...
       stores/                 bundle.py · schema_contracts.py · provider_factory.py ·
                               milvus_provider.py · sqlite_vec_provider.py · embeddings.py ·
@@ -1536,7 +1571,7 @@ Header comment, verbatim: `"""Built-in SQL generator constants. Values must matc
 | `MaxRetries` | `5` | Attempt-loop bound: `for attempt in range(1, MaxRetries + 1)` (`attempts.py:123`); also reported as `BuiltInGenerateResult.attempts` default (`attempts.py:421`) |
 | `MaxGenerationTimeMs` | `120_000` | Wall-clock budget for the attempt loop (`attempts.py:86`, `builtin_sql_generator.py:300`) |
 | `NoDiscoveryTimeBudgetMs` | `90_000` | Shorter budget for the `existing_code`-only ("no discovery") fast path; converted with `/1000.0` (`builtin_sql_generator.py:367`) |
-| `SemanticCompilationTimeoutMs` | `5_000` | `SemanticCompiler.compile(..., timeout_ms=…)` (`attempts.py:234`, `semantic_compiler.py:27`) |
+| `SemanticCompilationTimeoutMs` | `5_000` | Per-call SMQ compile budget, **enforced** by `SemanticCompiler.compile_guarded(..., timeout_ms=…)` (`attempts.py:306`, `semantic_compiler.py:124`); the attempt loop passes it and treats expiry as a semantic retry (§9.10.4) |
 
 #### 4.3.2 Knowledge-base thresholds (cosine distance unless noted)
 
@@ -1602,8 +1637,8 @@ Header comment, verbatim: `"""Built-in SQL generator constants. Values must matc
 
 | Constant | Value | Meaning / consumer |
 |---|---|---|
-| `SemanticSmqParseRetryOnFailure` | `True` | Retry the LLM once when the SMQ JSON fails to parse (`attempts.py:211`) |
-| `SemanticCompilationFallbackToRawSql` | `True` | **Unused as a constant** — the runtime behaviour is driven by `settings.SEMANTIC_COMPILATION_FALLBACK_TO_RAW_SQL` through `semantic_compilation_fallback_to_raw_sql()` (`constants.py:97-99`) |
+| `SemanticSmqParseRetryOnFailure` | `True` | **Unused** — declared only (`constants.py:59`); nothing in the repository reads it. SMQ-parse retries are bounded by `MaxRetries` together with the payload-class guard, not by this flag (see §9.10.2–§9.10.3) |
+| `SemanticCompilationFallbackToRawSql` | `True` | **Unused as a constant** — the runtime behaviour is driven by `settings.SEMANTIC_COMPILATION_FALLBACK_TO_RAW_SQL` through `semantic_compilation_fallback_to_raw_sql()` (`constants.py:97-99`), and only for a reply that carries **no** SMQ payload (§9.10.2) |
 
 #### 4.3.8 Embedding cache / dimensions
 
@@ -4021,21 +4056,28 @@ Returned `FewShotExample(question=row["question"], sql=row.get("sql_query") or "
 is_exact_match=True, smq_query=row.get("smq_query") or "", source="precomputed")`.
 Unlike C1 this lookup does **not** skip rows with an empty `sql_query`.
 
-Semantic compile step (`builtin_sql_generator.py:202-228`):
+Semantic compile step (`builtin_sql_generator.py:200-263`):
 
 ```python
 pre_exact = None if preserve_filters else engine.precomputed_exact(effective_query)
 if pre_exact:
     sql = pre_exact.sql
+    smq_failure = ""
     if semantic_mode and pre_exact.smq_query:
-        from app.services.semantic_compiler import SemanticCompiler
-        from app.models.pipeline import SmqPayload
-        import json
-        try:
-            payload = SmqPayload.model_validate(json.loads(pre_exact.smq_query))
-            sql = SemanticCompiler().compile(payload, stores.semantic.get_active_model(), context.dbms_type)
-        except Exception:
-            sql = pre_exact.sql          # any failure ⇒ stored physical SQL (fallback)
+        payload = SmqPayload.model_validate(json.loads(pre_exact.smq_query))
+        model = stores.semantic.get_active_model()
+        if model is None:
+            smq_failure = "no active semantic model for the stored SMQ"
+        else:
+            compiled = SemanticCompiler().compile_guarded(payload, model, context.dbms_type)
+            if compiled.success:
+                sql = compiled.sql
+            else:
+                smq_failure = compiled.detail
+    if smq_failure:
+        logging.warning(...)                    # recorded, never silent
+        if not _looks_like_sql(sql):            # never execute a JSON payload
+            return <semantic_compilation failure result>
 ```
 
 * `semantic_mode` (`builtin_sql_generator.py:170`):
@@ -4047,8 +4089,13 @@ if pre_exact:
   absent from `ENABLE_SEMANTIC_LAYER_PER_DATA_SOURCE`); `False` ⇒ disabled; otherwise enabled iff
   `get_active_model()` is not `None`.
 * `smq_query` is a JSON string of `{"metrics": [], "dimensions": [], "filters": [], "timeframes": []}`.
-* The fallback covers: invalid JSON, `SmqPayload` validation error, no active model, compiler error.
-  No status event and no note is emitted either way.
+* The stored SMQ is compiled when it is usable; the **stored physical SQL** stands in only when it is
+  absent, unusable, or fails to compile **and** it really is SQL (`_looks_like_sql`:
+  a non-empty body with at least one `FROM`/`JOIN` reference). A compile failure is logged.
+  When the stored answer is not usable SQL either, the turn ends as a `semantic_compilation`
+  failure (`attempts=0`, branch `precomputed_exact`) instead of emitting a payload as SQL.
+* This compile failure is a *semantic* failure; it is not retried, because the payload came from the
+  store rather than from the model.
 
 #### 5.15.3 C3 — `kb_vector_top1` threshold semantics
 
@@ -5799,7 +5846,7 @@ Build in this order; each step lists what it needs to exist first.
 
 ## 07 — Stage E: The Iterative Generation and Validation Loop
 
-Stage E is the reliability core of the backend: **generate → validate → repair**, bounded by 5 attempts and a 120 s wall-clock budget. It is implemented as one function, `run_attempt_loop`, in `app/core/orchestrator/attempts.py:79`, plus its private helpers (`_validate_candidate`, `_expand_missing`, `_merge_recovery`, `_bump_missing`, `_breaker_tripped`, `_compact_history`, `_fail`, `_extract_smq`, the four critic runners). Everything else it uses is frozen machinery: interceptors, the SQL structural hash, the validator, and the error classifier.
+Stage E is the reliability core of the backend: **generate → validate → repair**, bounded by 5 attempts and a 120 s wall-clock budget. It is implemented as one function, `run_attempt_loop`, in `app/core/orchestrator/attempts.py:79`, plus its private helpers (`_validate_candidate`, `_expand_missing`, `_merge_recovery`, `_bump_missing`, `_breaker_tripped`, `_compact_history`, `_fail`, `build_semantic_compile_error_feedback`, `_load_active_model`, the four critic runners). Everything else it uses is frozen machinery: interceptors, the SQL structural hash, the validator, and the error classifier.
 
 A re-implementation that changes the **order** of validation, the **counter semantics**, or the **failure result shape** will not be behaviourally identical. This section is the build spec for all three.
 
@@ -5879,9 +5926,11 @@ Locals created once, before the loop (`attempts.py:91-121`) — reproduce these 
 | `last_error` | `""` | final failure message source |
 | `last_prompt` | `""` | returned as `context_text` |
 | `canonical` | `None` | last non-null critic `canonical_question` |
-| `active_model` | `stores.semantic.get_active_model() if semantic_mode else None` | semantic model |
+| `active_model` | `_load_active_model(stores) if semantic_mode else None` — a try/except wrapper that returns `None` when the store is absent or predates the semantic tables | semantic model |
 | `semantic_json` | `active_model.model_dump_json() if active_model else "[]"` | inlined into the semantic system prompt |
-| `smq_retry_used` | `False` | **one** SMQ-parse retry for the whole call, not per attempt |
+| `semantic_retry` | `False`, reset per attempt | `True` when the attempt ended in a semantic retry (payload extraction, parse, or compile); the post-loop terminal classifier reads it (§9.10.3) |
+| `compiled_from_semantic_model` | `False`, reset per attempt | `True` when `sql` came from the compiler; passed to `_validate_candidate` to skip the object-scope rewrite (§9.10.5) |
+| `last_semantic_error` | `""` | the recorded semantic detail reported when the budget is exhausted |
 
 Constants that must be copied verbatim (`app/core/constants.py`):
 
@@ -5889,15 +5938,15 @@ Constants that must be copied verbatim (`app/core/constants.py`):
 MaxRetries = 5                     # :6
 MaxGenerationTimeMs = 120_000      # :7
 NoDiscoveryTimeBudgetMs = 90_000   # :8   (used by the adjacent no-discovery path)
-SemanticCompilationTimeoutMs = 5_000          # :9
+SemanticCompilationTimeoutMs = 5_000          # :9   (enforced by compile_guarded)
 MissingObjectBreakThreshold = 2               # :38
 MissingGroupMemberValidationStatus = "MISSING_GROUP_MEMBER"   # :39
 MaxRecoveryExpansion = 5                      # :41
 HallucinationExitThreshold = 2                # :54
 HallucinationExitThresholdWithBreaker = 1     # :55   (unreachable — 7.9.3)
 PresencePenaltyAfterLoop = 0.4                # :56
-SemanticSmqParseRetryOnFailure = True         # :59
-SemanticCompilationFallbackToRawSql = True    # :60  (via settings)
+SemanticSmqParseRetryOnFailure = True         # :59   (declared, no reader)
+SemanticCompilationFallbackToRawSql = True    # :60  (via settings; only for replies with no SMQ payload)
 OBJECT_SEARCH_VECTOR_SCORE_THRESHOLD = 0.50   # core/config.py:58
 ```
 
@@ -6001,53 +6050,70 @@ for attempt in range(1, MaxRetries + 1):                      # L123  attempts 1
             what_was_tried="LLM call", why_it_failed=str(exc)))  # L180-182
         continue                                               # L183  (counts as an attempt)
 
-    # ---- code extraction ----
-    if python_mode:   sql = extract_python_body(raw)           # L185-186
-    elif r_mode:      sql = extract_r_body(raw)                # L187-188
-    elif sas_mode:    sql = extract_sas_body(raw)              # L189-190
-    else:             sql = extract_sql_body(raw)              # L191-192
+    raw_output = raw                                           # L218
+    if python_mode:   sql = extract_python_body(raw)           # L220-221
+    elif r_mode:      sql = extract_r_body(raw)                # L222-223
+    elif sas_mode:    sql = extract_sas_body(raw)              # L224-225
+    else:             sql = extract_sql_body(raw)              # L226-227
 
-    if python_mode and sql:                                    # L193
+    if python_mode and sql:                                    # L228
         from app.utils.python_normalization import qualify_sql_in_python
-        known = [(o.schema_name, o.object_name) for o in discovery.objects]     # L196
-        sql = qualify_sql_in_python(sql, known)                # L197
-    elif r_mode and sql:                                       # L198
-        ...  qualify_sql_in_r(sql, known)                      # L202
-    elif sas_mode and sql:                                     # L203
-        ...  qualify_sql_in_sas(sql, known)                    # L207
+        known = [(o.schema_name, o.object_name) for o in discovery.objects]     # L231
+        sql = qualify_sql_in_python(sql, known)                # L232
+    elif r_mode and sql:                                       # L233
+        ...  qualify_sql_in_r(sql, known)                      # L237
+    elif sas_mode and sql:                                     # L238
+        ...  qualify_sql_in_sas(sql, known)                    # L242
+    cleaned_output = sql or ""                                 # L243
 
-    # ---- semantic mode: SMQ parse → compile (with one parse retry + raw-SQL fallback) ----
-    if semantic_mode:                                          # L208
-        smq = _extract_smq(raw)                                # L209
-        if smq is None:                                        # L210
-            if SemanticSmqParseRetryOnFailure and not smq_retry_used:   # L211
-                smq_retry_used = True                          # L212
+    # ---- semantic mode: payload-class guard → compile → retry (see §9.10) ----
+    compiled_from_semantic_model = False                       # L247
+    semantic_retry = False                                     # L248
+    if semantic_mode:                                          # L249
+        smq_json = extract_smq_json(cleaned_output)            # L250
+        if not smq_json:                                       # L251
+            # The guard is evaluated BEFORE the fallback policy: a payload is never
+            # resurrected into SQL by SEMANTIC_COMPILATION_FALLBACK_TO_RAW_SQL.
+            if (looks_like_smq(raw_output)                     # L253
+                    or looks_like_smq(cleaned_output)          # L254
+                    or not semantic_compilation_fallback_to_raw_sql()):   # L255
+                last_semantic_error = "Semantic mode requires an SMQ JSON payload, ..."
                 attempt_reports.append(BuiltInAttemptReport(
                     attempt_number=attempt, stage="semantic_compilation",
-                    what_was_tried="parse SMQ",
-                    why_it_failed="missing payload"))          # L213-215
-                continue                                       # L216
-            from app.core.constants import semantic_compilation_fallback_to_raw_sql
-            if not semantic_compilation_fallback_to_raw_sql():  # L219
-                return _fail("semantic_compilation", "Missing SMQ payload",
-                             attempt, attempt_reports, discovery, llm, started_at,
-                             hallucination_count, agentic_retry, context)      # L220-231
-            # else: fall through with the raw-SQL body extracted at L191-192
-        else:                                                  # L232
-            try:
-                sql = compiler.compile(smq, active_model, context.dbms_type,
-                                       timeout_ms=SemanticCompilationTimeoutMs) # L234
-            except SemanticCompilationError as exc:            # L235
-                attempt_reports.append(BuiltInAttemptReport(
-                    attempt_number=attempt, stage="semantic_compilation",
-                    what_was_tried="compile SMQ", why_it_failed=str(exc)))      # L236-243
-                continue                                       # L244
+                    what_was_tried="extract SMQ payload",
+                    why_it_failed=last_semantic_error + valid_names_hint(active_model)))
+                semantic_retry = True                          # L269
+                continue                                       # L270
+            # else: genuine SQL answer + fallback enabled → proceed as SQL
+        else:                                                  # L272
+            smq = parse_smq(smq_json)                          # L273
+            if smq is None:                                    # L274
+                last_semantic_error = f"The SMQ payload could not be parsed. Received: {smq_json[:400]}"
+                attempt_reports.append(... why_it_failed=last_semantic_error
+                                        + valid_names_hint(active_model))       # L278-285
+                semantic_retry = True                          # L286
+                continue                                       # L287
+            if active_model is None:                           # L289
+                last_semantic_error = "No active semantic model is available for this data source."
+                attempt_reports.append(...)                    # L291-298
+                semantic_retry = True                          # L299
+                continue                                       # L300
+            compiled = compiler.compile_guarded(smq, active_model, context.dbms_type,
+                                                timeout_ms=SemanticCompilationTimeoutMs)  # L302-307
+            if not compiled.success:                           # L308
+                last_semantic_error = build_semantic_compile_error_feedback(compiled.detail)
+                attempt_reports.append(... why_it_failed=last_semantic_error
+                                        + valid_names_hint(active_model))       # L310-317
+                semantic_retry = True                          # L318
+                continue                                       # L319
+            sql = compiled.sql                                 # L321
+            compiled_from_semantic_model = True                # L322
 
-    if not sql:                                                # L246
+    if not sql:                                                # L324
         attempt_reports.append(BuiltInAttemptReport(
             attempt_number=attempt, stage="generation",
-            what_was_tried="LLM output", why_it_failed="empty"))                # L247-249
-        continue                                               # L250
+            what_was_tried="LLM output", why_it_failed="empty"))                # L325-327
+        continue                                               # L328
     last_sql = sql                                             # L251  (dead)
 
     # ================= 1. SAFETY =================
@@ -6317,36 +6383,49 @@ sql = qualify_sql_in_python(sql, known)   # / qualify_sql_in_r / qualify_sql_in_
 
 `qualify_unqualified_objects` (`sql_normalization.py:71-110`) is the shared worker; Python additionally rewrites string literals in place via `tokenize`/`ast` (`python_normalization.py:282-324`), R and SAS do a plain `str.replace` of each extracted SQL literal (`r_normalization.py:280-291`, `sas_normalization.py:222-233`).
 
-### 7.8 Semantic-mode branch (SMQ parse → compile → retry → fallback)
+### 7.8 Semantic-mode branch (payload-class guard → compile → retry → fallback)
 
-Order inside `if semantic_mode:` (`attempts.py:208-244`):
+Order inside `if semantic_mode:` (`attempts.py:241-322`). The governing rule, and the one this
+branch exists to enforce:
 
-1. `smq = _extract_smq(raw)`.
-2. **Parse failure, first time** (`SemanticSmqParseRetryOnFailure` is `True` and `smq_retry_used` is `False`) → set `smq_retry_used = True`, append report `{stage: "semantic_compilation", what_was_tried: "parse SMQ", why_it_failed: "missing payload"}`, `continue`. This is **one retry for the entire call**, not one per attempt.
-3. **Parse failure, retry already used** → if `semantic_compilation_fallback_to_raw_sql()` (`settings.SEMANTIC_COMPILATION_FALLBACK_TO_RAW_SQL`, default `True`, `core/config.py:64`) is `False` → terminal `_fail("semantic_compilation", "Missing SMQ payload", …)`. If `True`, the loop **falls through** keeping the raw-SQL body extracted at `attempts.py:191-192` (the raw-SQL fallback path).
-4. **Parse success** → `sql = compiler.compile(smq, active_model, context.dbms_type, timeout_ms=SemanticCompilationTimeoutMs)`.
-5. `SemanticCompilationError` → append report `{stage: "semantic_compilation", what_was_tried: "compile SMQ", why_it_failed: str(exc)}` and `continue` (retryable, **no** terminal category, no recovery objects).
+> **A response that carries an SMQ payload is never executed as SQL, whatever the fallback setting says.**
+> The fallback keeps a narrower meaning — *the model genuinely answered in SQL* — so the payload-class
+> guard is evaluated **before** the fallback policy, which therefore cannot resurrect a payload into SQL.
 
-`_extract_smq` (`attempts.py:523-538`), verbatim behaviour:
+1. `smq_json = extract_smq_json(cleaned_output)` — tolerant extraction (§9.10.1).
+2. **No payload extracted** → if `looks_like_smq(raw_output)` **or** `looks_like_smq(cleaned_output)`
+   **or** `not semantic_compilation_fallback_to_raw_sql()`:
+   append report `{stage: "semantic_compilation", what_was_tried: "extract SMQ payload",
+   why_it_failed: <reason> + valid_names_hint(active_model)}`, set `semantic_retry = True`, `continue`.
+   The reason is *"Semantic mode requires an SMQ JSON payload, but the response could not be read as one."*
+3. **No payload and none SMQ-shaped and the fallback is on** → the loop proceeds with the body extracted
+   at `attempts.py:226-227`, i.e. the genuine-SQL path.
+4. **Payload extracted** → `smq = parse_smq(smq_json)`; `None` ⇒ report `what_was_tried="parse SMQ payload"`,
+   `why_it_failed = "The SMQ payload could not be parsed. Received: {smq_json[:400]}" + valid_names_hint(...)`,
+   `semantic_retry = True`, `continue`.
+5. **No active model** → report `what_was_tried="compile SMQ"`, `why_it_failed="No active semantic model is
+   available for this data source."`, `semantic_retry = True`, `continue`.
+6. **Compile** → `compiler.compile_guarded(smq, active_model, context.dbms_type,
+   timeout_ms=SemanticCompilationTimeoutMs)`. `result.success == False` ⇒ report
+   `why_it_failed = build_semantic_compile_error_feedback(result.detail) + valid_names_hint(active_model)`,
+   `semantic_retry = True`, `continue`.
+7. **Success** → `sql = result.sql`, `compiled_from_semantic_model = True`.
 
-```python
-fence = re.search(r"```smq\s*([\s\S]*?)```", raw or "", re.IGNORECASE)
-text  = fence.group(1) if fence else raw
-start = (text or "").find('{"metrics"')
-if start < 0:
-    start = (text or "").find("{")
-if start < 0:
-    return None
-end = text.rfind("}")
-try:
-    return SmqPayload.model_validate(json.loads(text[start:end + 1]))
-except Exception:
-    return None
-```
+`extract_smq_json` / `parse_smq` / `looks_like_smq` / `valid_names_hint` live in
+`app/services/semantic_smq.py` (`:107`, `:226`, `:203`, `:255`) — full specification in §9.10.1–§9.10.3.
 
-`SemanticCompiler.compile` (`app/services/semantic_compiler.py:20-88`) is deterministic and raises `SemanticCompilationError(code, message)` (`:13-17`, `str(e)` == `"{code}: {message}"`) with codes `UNKNOWN_METRIC` (`:37`), `UNKNOWN_DIMENSION` (`:46`), `MISSING_JOIN_PATH` (`:58`, `:125`), `INCOMPATIBLE_DIMENSIONS` (`:121`). `timeout_ms` is accepted and **ignored** (`_ = timeout_ms`, `:29`) — compilation is a synchronous BFS over the model's join graph.
+`SemanticCompiler` (`app/services/semantic_compiler.py:112`) is deterministic and raises
+`SemanticCompilationError(code, message)` (`:64`, `str(e)` == `"{code}: {message}"`) with codes
+`UNKNOWN_METRIC` (`:182`), `UNKNOWN_DIMENSION` (`:189`), `EMPTY_REQUEST` (`:171`),
+`MISSING_JOIN_PATH` (`:200`, `:338`/`:343`), `INCOMPATIBLE_DIMENSIONS` (`:311`). `compile_guarded`
+(`:124`) enforces `timeout_ms` on a worker thread; expiry returns
+`SmqCompileResult(detail="COMPILATION_TIMEOUT: …")` and is treated as a semantic retry.
+Compilation itself is a synchronous ordered walk over the model's join graph (§9.10.4).
 
-`SmqPayload` (`app/models/pipeline.py:318-322`) is deliberately lenient — all four fields default to empty lists, `filters`/`timeframes` are `List[Dict[str, Any]]` — so most malformed payloads fail at *compile* time, not parse time.
+`SmqPayload` (`app/models/pipeline.py:318-322`) is deliberately lenient — all four fields default to empty
+lists, `filters`/`timeframes` are `List[Dict[str, Any]]` — so a *structurally* SMQ payload with a bad field
+type reaches the compiler rather than failing extraction; the compiler rejects a payload that requests
+neither metrics nor dimensions with `EMPTY_REQUEST`.
 
 ### 7.9 Step 1 — safety interceptor
 
@@ -6718,7 +6797,7 @@ Because the loop always calls it with the default `stage="validation"`, rows 5-7
 | — (`ErrorCategory.TIMEOUT`) | **no** | terminal, budget gate |
 | — (`ErrorCategory.DETERMINISTIC_MISSING_OBJECT`) | **no** | terminal, breaker |
 | — (`"hallucination_loop"`) | **no** | terminal, 2 duplicate digests |
-| — (`"semantic_compilation"` literal) | **no** | terminal only when SMQ parse failed twice **and** `SEMANTIC_COMPILATION_FALLBACK_TO_RAW_SQL=false` |
+| — (`"semantic_compilation"` literal) | **no** | terminal at the post-loop exit when the budget is exhausted **and the last attempt was a semantic retry** (payload extraction/parse/compile failure), whatever the fallback setting says; the raw-SQL fallback never applies to a reply carrying SMQ JSON (§9.10.3) |
 
 Note the classifier taxonomy is **not** branch-structured: `category` only feeds `missing_cat_counts` (write-only) and the failure telemetry. The single differentiated recovery in the loop is the `Invalid object name|Invalid column name` regex plus the `TABLE_VALIDATION_ERROR` prefix check.
 
@@ -6729,14 +6808,14 @@ Note the classifier taxonomy is **not** branch-structured: `category` only feeds
 | Safety block | terminal | `safety` |
 | Sentinel + breaker (same token twice) | terminal | `deterministic_missing_object` |
 | Duplicate structure ×2 | terminal | `hallucination_loop` |
-| SMQ missing payload (retry used, fallback disabled) | terminal | `semantic_compilation` |
+| Reply carries SMQ JSON that cannot be extracted/parsed/compiled (fallback **on or off**) | retryable | report `stage="semantic_compilation"` with the offending item + valid names; the payload never reaches the validator |
 | Budget exceeded (top of iteration) | terminal | `timeout` |
 | DB error naming an already-seen object twice | terminal | `deterministic_missing_object` |
-| All 5 attempts consumed | terminal | `validation` |
+| All 5 attempts consumed, **last attempt was a semantic retry** | terminal | `semantic_compilation` with `last_semantic_error` |
+| All 5 attempts consumed, last attempt was not a semantic retry | terminal | `validation` |
 | LLM exception | retryable | report `stage="generation"` |
 | Empty extracted code | retryable | report `stage="generation"`, `"empty"` |
-| SMQ parse failure (first) | retryable | report `stage="semantic_compilation"` |
-| SMQ compile failure | retryable | report `stage="semantic_compilation"` |
+| SMQ payload absent but none SMQ-shaped, fallback on | retryable | continues as SQL with the extracted body |
 | Sentinel without breaker | retryable | objects queued, no report |
 | Critic `requirements_satisfied == False` | retryable | report `stage="critic"`, feedback |
 | Critic `schema_valid == False` | retryable | objects queued, no report |
@@ -6753,7 +6832,7 @@ Note the classifier taxonomy is **not** branch-structured: `category` only feeds
 | Check frequency | once per iteration, **before** `emit` and before any work | `attempts.py:123-145` |
 | Effect at deadline | return the timeout failure (shape in 7.15) with `attempts = attempt` (the iteration that was about to run) | `attempts.py:126-143` |
 | Per-call timeouts | LLM: `timeout=60` (litellm path, `llm_service.py:1351`); **no** explicit timeout on the OpenAI-SDK path or on DB validation | — |
-| Semantic compilation | `SemanticCompilationTimeoutMs = 5_000` accepted and ignored (`semantic_compiler.py:29`) | — |
+| Semantic compilation | `SemanticCompilationTimeoutMs = 5_000` **enforced** by `SemanticCompiler.compile_guarded` (`semantic_compiler.py:124-147`) on a daemon worker thread; expiry is a semantic retry (`COMPILATION_TIMEOUT`). The raising `compile` entry point still ignores the budget | §9.10.4 |
 
 Because the gate is at the top of an iteration and no call is interrupted, a single slow LLM response or a hung `SET NOEXEC` batch can overshoot the budget arbitrarily; the *result* is still reported with the measured `processing_time_ms`, which may exceed 120 000.
 
@@ -6820,8 +6899,8 @@ Field-by-field per failure site:
 | Producer | `message` | `error_category` | `attempts` | `failure_report.summary` | `failure_report.resolution_plan` | `failure_report.final_resolution_guidance` | `candidate_objects` | `canonical_question` | `context_text` |
 |---|---|---|---|---|---|---|---|---|---|
 | Budget gate (`attempts.py:126-143`) | `"Generation timed out"` | `timeout` | current `attempt` | `"Generation timed out"` | `["Retry with a narrower question", "Pin specific tables"]` | `"The 120s generation budget was exceeded."` | `[]` (not passed) | `None` | `None` |
-| `_fail` (`:583-606`) — safety, sentinel breaker, hallucination, SMQ, db breaker | the terminal string (`reason`, sentinel text, `"Repeated … structure detected"`, `"Missing SMQ payload"`, missing object) | `safety` / `deterministic_missing_object` / `hallucination_loop` / `semantic_compilation` | current `attempt` | same as `message` | `["Inspect candidates", "Adjust pins"]` | same as `message` | `discovery.objects` | `None` | `None` |
-| Loop exhausted (`:409-429`) | `last_error or "Failed after max retries"` | `validation` (always) | `MaxRetries` = 5 (always) | same as `message` | `["Review missing objects", "Add few-shot examples", "Pin tables"]` | `"All generation attempts were exhausted."` | `discovery.objects` | `None` | `last_prompt` |
+| `_fail` (`:701-732`) — safety, sentinel breaker, hallucination, semantic exhaustion, db breaker | the terminal string (`reason`, sentinel text, `"Repeated … structure detected"`, `last_semantic_error`, missing object) | `safety` / `deterministic_missing_object` / `hallucination_loop` / `semantic_compilation` | current `attempt` (or `MaxRetries` for the post-loop semantic exit, `:496-508`) | same as `message` | `["Inspect candidates", "Adjust pins"]` | same as `message` | `discovery.objects` | `None` | `None`, except the post-loop semantic exit which passes `context_text=last_prompt` |
+| Loop exhausted, **last attempt not a semantic retry** (`:512-523`) | `last_error or "Failed after max retries"` | `validation` (always) | `MaxRetries` = 5 (always) | same as `message` | `["Review missing objects", "Add few-shot examples", "Pin tables"]` | `"All generation attempts were exhausted."` | `discovery.objects` | `None` | `last_prompt` |
 
 `_fail` additionally contains a no-op that must be preserved for fidelity:
 
@@ -6930,27 +7009,29 @@ There is **no** Responses-API, Anthropic `/v1/messages`, or Google-native endpoi
 | E2 | Script/SQL safety interceptor returns `ok = False` | `:278` | yes | `safety` | interceptor `reason` (`"Empty SQL"`, `"Dangerous operation blocked by safety policy"`, `"Write operation blocked unless explicitly requested"`, `"Empty Python code"`, `"Dangerous Python operation blocked by safety policy"`, `"Filesystem write blocked unless explicitly requested"`, `"create_engine must use the injected DB_CONNECTION_STRING"`, `"Empty R code"`, `"Dangerous R operation blocked by safety policy"`, `"Empty SAS code"`, `"Dangerous SAS operation blocked by safety policy"`), else `"blocked"` | — |
 | E3 | Sentinel found and the same token already seen twice | `:287` | yes | `deterministic_missing_object` | sentinel text (`table_err or col_err`) | — |
 | E4 | `hallucination_count >= 2` (duplicate digest) | `:303` | yes | `hallucination_loop` | `"Repeated {SQL\|Python\|R\|SAS} structure detected"` | `hallucination_count ≥ 2` |
-| E5 | SMQ payload unparseable twice **and** `SEMANTIC_COMPILATION_FALLBACK_TO_RAW_SQL == False` | `:219` | yes | `semantic_compilation` | `"Missing SMQ payload"` | `smq_retry_used = True` |
+| E5 | Budget exhausted **and the last attempt ended in a semantic retry** (`semantic_retry`), whatever the fallback setting | `:496` | yes | `semantic_compilation` | `last_semantic_error` (the recorded semantic detail, e.g. `"Semantic compilation failed: UNKNOWN_METRIC: gross_margin. …"`), or `"Semantic compilation failed after all retries"` | `attempts = MaxRetries`; never `validation` |
 | E6 | DB error names an object already seen twice | `:393` | yes | `deterministic_missing_object` | the missing object string | — |
-| E7 | Attempt 5 completes without `db_ok` | `:409` | yes | `validation` | `last_error or "Failed after max retries"`; guidance `"All generation attempts were exhausted."` | `attempts = 5` |
-| R1 | LLM raised | `:179` | no | — | report `{stage: "generation", what_was_tried: "LLM call", why_it_failed: str(exc)}` | — |
-| R2 | Empty extracted code | `:246` | no | — | report `{stage: "generation", what_was_tried: "LLM output", why_it_failed: "empty"}` | — |
-| R3 | SMQ missing, first occurrence | `:211` | no | — | report `{stage: "semantic_compilation", what_was_tried: "parse SMQ", why_it_failed: "missing payload"}` | — |
-| R4 | `SemanticCompilationError` | `:235` | no | — | report `{stage: "semantic_compilation", what_was_tried: "compile SMQ", why_it_failed: "CODE: message"}` (e.g. `UNKNOWN_METRIC: revenue`) | — |
-| R5 | Sentinel found (breaker not tripped) | `:283-290` | no | (records `"sentinel"`) | no report; ≤5 objects queued; `agentic_retry += 1` next iteration | — |
-| R6 | Duplicate digest, first occurrence | `:299-301` | no | — | no report; `loop_breaker = True`; presence penalty armed | `hallucination_count = 1` |
-| R7 | Critic `requirements_satisfied == False` | `:353` | no | — | report `{stage: "critic", what_was_tried: "requirements", why_it_failed: feedback}`; `canonical` already captured | — |
-| R8 | Critic `schema_valid == False`, status `MISSING_GROUP_MEMBER`, `broadened == False` | `:359` | no | — | `emit(RECOVERY, "Broadened group-member recovery")`; no report, no objects, no counter changes | `broadened = True` |
-| R9 | Critic `schema_valid == False` (other) | `:363` | no | — | no report; ≤5 objects queued from `",".join(missing_objects)` | — |
-| R10 | DB validation failed | `:387-407` | no | (classified) | report `{stage: "db_validation", what_was_tried: sql[:500], why_it_failed: db_err, recovery_action: "expand missing objects", candidate_objects: db_missing}`; object expansion | — |
-| S1 | DB validation passed | `:370` | yes (success) | `None` | `message = "OK"`; `discovery_branch = discovery.branch` | returns `attempts = attempt` |
-| S2 | Attempt-1 pre-check passed + script has embedded SQL (or SQL mode) | `:333-338` | — | — | `skip_critic = True`; returns success right after the pre-check | — |
+| E7 | Attempt 5 completes without `db_ok` **and the last attempt was not a semantic retry** | `:512` | yes | `validation` | `last_error or "Failed after max retries"`; guidance `"All generation attempts were exhausted."` | `attempts = 5` |
+| R1 | LLM raised | `:212` | no | — | report `{stage: "generation", what_was_tried: "LLM call", why_it_failed: str(exc)}` | — |
+| R2 | Empty extracted code | `:324` | no | — | report `{stage: "generation", what_was_tried: "LLM output", why_it_failed: "empty"}` | — |
+| R3 | Reply carries an SMQ payload that cannot be extracted, or none at all while `looks_like_smq(...)` is true or the fallback is off | `:251-270` | no | — | report `{stage: "semantic_compilation", what_was_tried: "extract SMQ payload", why_it_failed: <reason> + valid names}` | `semantic_retry = True` |
+| R4 | Payload extracted but `parse_smq` fails | `:274-287` | no | — | report `{stage: "semantic_compilation", what_was_tried: "parse SMQ payload", why_it_failed: "The SMQ payload could not be parsed. Received: …" + valid names}` | `semantic_retry = True` |
+| R5 | No active semantic model | `:289-300` | no | — | report `{stage: "semantic_compilation", what_was_tried: "compile SMQ", why_it_failed: "No active semantic model is available for this data source."}` | `semantic_retry = True` |
+| R6 | `SemanticCompilationError` / compile timeout | `:302-319` | no | — | report `{stage: "semantic_compilation", what_was_tried: "compile SMQ", why_it_failed: "Semantic compilation failed: CODE: message. …" + valid names}` | `semantic_retry = True` |
+| R7 | Sentinel found (breaker not tripped) | `:359-369` | no | (records `"sentinel"`) | no report; ≤5 objects queued; `agentic_retry += 1` next iteration | — |
+| R8 | Duplicate digest, first occurrence | `:371-380` | no | — | no report; `loop_breaker = True`; presence penalty armed | `hallucination_count = 1` |
+| R9 | Critic `requirements_satisfied == False` | `:432` | no | — | report `{stage: "critic", what_was_tried: "requirements", why_it_failed: feedback}`; `canonical` already captured | — |
+| R10 | Critic `schema_valid == False`, status `MISSING_GROUP_MEMBER`, `broadened == False` | `:437-440` | no | — | `emit(RECOVERY, "Broadened group-member recovery")`; no report, no objects, no counter changes | `broadened = True` |
+| R11 | Critic `schema_valid == False` (other) | `:441-443` | no | — | no report; ≤5 objects queued from `",".join(missing_objects)` | — |
+| R12 | DB validation failed | `:466-493` | no | (classified) | report `{stage: "db_validation", what_was_tried: sql[:500], why_it_failed: db_err, recovery_action: "expand missing objects", candidate_objects: db_missing}`; object expansion | — |
+| S1 | DB validation passed | `:449` | yes (success) | `None` | `message = "OK"`; `discovery_branch = discovery.branch` | returns `attempts = attempt` |
+| S2 | Attempt-1 pre-check passed + script has embedded SQL (or SQL mode) | `:412-417` | — | — | `skip_critic = True`; returns success right after the pre-check | — |
 
 Conditions outside the loop that still shape the loop's behaviour: (a) a pinned-object resolution failure returns `priority_validation_failed` before Stage E is entered (`builtin_sql_generator.py:133-166`); (b) the no-discovery/optimization path has its own 90 s deadline and its own `validation`/`timeout` failures and never calls `run_attempt_loop` (`builtin_sql_generator.py:361-512`); (c) `semantic_mode` is forced `False` for `python`/`r`/`sas` (`attempts.py:101-102`).
 
 ### Implementation checklist
 
-1. Recreate `run_attempt_loop` with the exact signature and the 24 pre-loop locals from 7.2; keep `script_mode → semantic_mode = False`, keep `smq_retry_used` global to the call, and keep `missing_counts` un-reset.
+1. Recreate `run_attempt_loop` with the exact signature and the pre-loop locals from 7.2; keep `script_mode → semantic_mode = False`, keep `semantic_retry` / `compiled_from_semantic_model` reset per attempt, and keep `missing_counts` un-reset.
 2. Implement the budget gate as the **first** statement of each iteration: `int((time.time() - started_at) * 1000) > time_budget_ms` (strict `>`), returning the exact timeout failure from 7.15.2.
 3. Rebuild both prompt messages from scratch each attempt; wire the four language branches and the semantic SQL variant exactly as in 7.5; render `ATTEMPT HISTORY` via `_compact_history` (compact lines + last record as `model_dump_json()`).
 4. Send `presence_penalty=0.4` **only** when `hallucination_count > 0` (omit the key otherwise), and never on the critic call.
@@ -7491,7 +7572,7 @@ The refinement behaviour comes from `REFINEMENT_INSTRUCTIONS` selected inside `_
 
 ### 8.4 Semantic mode (SMQ) system prompt
 
-`build_system_prompt(..., semantic=True)` returns early (`prompts.py:63-76`) and **never** emits the
+`build_system_prompt(..., semantic=True)` returns early (`prompts.py:62-82`) and **never** emits the
 scenario rules, the analysis line, business context, examples, mappings, schemas, supplementary
 schemas, attempt history or the SQL output-format block. The return expression:
 
@@ -7499,6 +7580,11 @@ schemas, attempt history or the SQL output-format block. The return expression:
 semantic_blocks = [f"GENERATION MODE\n{context.generation_mode.value}"]
 if context.filter_state_text and context.filter_state_text != "(none)":
     semantic_blocks.append(_filter_block(context))
+# The retry prompt is the main corrective signal in semantic mode, so a reply that
+# drifted back to SQL is called out explicitly. The history embeds the offending
+# payload, so detection parses structure rather than searching for a key name.
+if any(looks_like_smq(line) for line in semantic_blocks if line):
+    semantic_blocks.append(SEMANTIC_OUTPUT_CORRECTION)
 semantic_extra = "\n\n".join(semantic_blocks)
 return (
     f"DBMS CONTEXT (SEMANTIC MODE)\nYou compile Semantic Model Queries for {dbms}.\n"
@@ -7511,9 +7597,14 @@ return (
 )
 ```
 
+> Note the correction injection (`prompts.py:28`, `:71-73`): when an inherited session-filter value is
+> itself SMQ-shaped, `SEMANTIC_OUTPUT_CORRECTION` is appended, which restates that the reply must be an
+> `smq` block and must not be SQL. This is the one addition to the otherwise frozen semantic prompt, and
+> it exists because the retry prompt is the main corrective signal in semantic mode (§9.10.3).
+
 **Assembly order:** `DBMS CONTEXT (SEMANTIC MODE)` → `AVAILABLE SEMANTIC MODELS (JSON)` → `GENERATION
-MODE` (+ optional filters/SCOPE GUARD) → `SEMANTIC OUTPUT FORMAT (STRICT)`. Every line is separated by
-a single `\n`; there are no blank lines anywhere in the semantic prompt.
+MODE` (+ optional filters/SCOPE GUARD, + optional correction) → `SEMANTIC OUTPUT FORMAT (STRICT)`. Every
+line is separated by a single `\n`; there are no blank lines anywhere in the semantic prompt.
 
 **Rendered output (no filters, `semantic_models_json="[]"`):**
 
@@ -7547,12 +7638,14 @@ SEMANTIC OUTPUT FORMAT (STRICT)
 Reply with a fenced ```smq block containing {"metrics":[],"dimensions":[],"filters":[],"timeframes":[]}. Use only model names. No reasoning, view, or scripting sections.
 ````
 
-**The semantic user prompt is not a separate builder** — `attempts.py:171` calls the same
-`build_user_prompt(context)` (§8.6). The response is parsed by `_extract_smq` (`attempts.py:523-538`):
-a ```` ```smq ```` fence if present, else the raw text from the first `{"metrics"` (else the first `{`)
-to the last `}`; parse failure triggers one retry
-(`SemanticSmqParseRetryOnFailure = True`, `constants.py:59`) before falling back to raw SQL
-(`SemanticCompilationFallbackToRawSql = True`, `constants.py:60`).
+**The semantic user prompt is not a separate builder** — `attempts.py:204` calls the same
+`build_user_prompt(context)` (§8.6). The response is parsed by `extract_smq_json` / `parse_smq`
+(`app/services/semantic_smq.py:107`, `:226`): five accepted shapes, taken in candidate order — a
+` ```smq ` fence, any other fence (a leading language tag is dropped), the first brace-balanced `{...}`
+region, then the whole text — each validated as a JSON object carrying a `metrics` **or** `dimensions`
+array. Anything carrying an SMQ payload is then compiled; the raw-SQL fallback
+(`SemanticCompilationFallbackToRawSql`, `constants.py:60`) applies only to a reply with **no** SMQ
+payload at all. Full spec: §9.10.
 
 ---
 
@@ -9874,7 +9967,7 @@ the insight/refinement prompts (`prepare_user_query_for_llm`).
 |---|---|---|
 | `FENCE_SQL` | `app/utils/regexes.py:18` | `r"```(?:sql\|tsql\|smq)?\s*([\s\S]*?)```"` (case-insensitive) |
 | `extract_sql_body` | `app/utils/sql_normalization.py` | strips ```` ```sql ````/```` ``` ```` fences and returns the body |
-| `_extract_smq` | `attempts.py:523-538` | `r"```smq\s*([\s\S]*?)```"` first, then the JSON from `{"metrics"`/`{` to the last `}` |
+| `extract_smq_json` / `parse_smq` | `semantic_smq.py:107`, `:226` | Tolerant, shape-driven: ` ```smq ` fence → any fence (tag dropped) → brace-balanced `{...}` → whole text, each validated as a JSON object with a `metrics`/`dimensions` array |
 | `extract_json_object` | `discuss_prompts.py:324-344` | strips a leading fence (and a `json` tag), then parses the outermost braces |
 | `complete_json` | `llm_client.py:64-78` | strips a leading fence (+ `json` tag), then parses the outermost braces |
 
@@ -10020,22 +10113,25 @@ Verified component map:
 
 | Component | File | Role |
 |---|---|---|
-| `SemanticCompiler` | `app/services/semantic_compiler.py:20` | Deterministic SMQ → SQL (BFS join plan, dialect quoting) |
-| `SemanticCompilationError` | `app/services/semantic_compiler.py:13` | Coded compile failure (`code`, `message`, `str(e) = "CODE: message"`) |
-| `SemanticModelService` | `app/services/semantic_model_service.py:16` | Per-source model CRUD, embeddings, activation, `is_enabled`, `search_models` |
+| **Payload handling** | `app/services/semantic_smq.py` | Tolerant SMQ extraction, the payload-class guard, the typed parse, retry vocabulary — **§9.10** |
+| `SemanticCompiler` | `app/services/semantic_compiler.py:112` | Deterministic SMQ → SQL (ordered tables, BFS join plan, dialect quoting) |
+| `SmqCompileResult` | `app/services/semantic_compiler.py:72` | Guarded-compile outcome (`success`, `sql`, `detail`) |
+| `SemanticCompilationError` | `app/services/semantic_compiler.py:64` | Coded compile failure (`code`, `message`, `str(e) = "CODE: message"`) |
+| `SemanticModelService` | `app/services/semantic_model_service.py:16` | Per-source model CRUD, embeddings, activation, `is_enabled`, `search_models`; `get_active_model` degrades to `None` when the store is absent (`:129`) |
 | `SemanticModelExtractionService` | `app/services/semantic_extraction_service.py:14` | LLM-first / SQL-parse-fallback model authoring, ≥ 1 measure guarantee |
 | `SemanticModel`, `SemanticMeasure`, `SemanticDimension`, `SemanticJoin`, `SmqPayload` | `app/models/pipeline.py:285`–`322` | Data model |
-| Admin surface | `app/api/endpoints/admin_semantic.py:14`–`55` | `GET /semantic-models`, `POST /semantic-models`, `POST /semantic-models/extract`, `POST /semantic-models/compile` |
+| Admin surface | `app/api/endpoints/admin_semantic.py:14`–`59` | `GET /semantic-models`, `POST /semantic-models`, `POST /semantic-models/extract`, `POST /semantic-models/compile` |
 | Storage contract | `app/services/stores/schema_contracts.py:191`–`261`, `:359` | Six `semantic_*` collections + embedding source text |
 | Wiring | `app/services/stores/bundle.py:54`–`58` | `SemanticModelService(provider, source_id, enable_flag=settings.semantic_layer_enabled_for(source_id))` |
 | Mode decision | `app/core/orchestrator/builtin_sql_generator.py:170` | `semantic_mode = False if script_mode else stores.semantic.is_enabled(context.request.semantic_mode)` |
-| Attempt-loop compile | `app/core/orchestrator/attempts.py:208`–`244` | SMQ parse → compile → retry / fallback |
-| Semantic prompt | `app/core/orchestrator/prompts.py:63`–`76` | `DBMS CONTEXT (SEMANTIC MODE)` variant |
-| Semantic critic | `app/core/orchestrator/prompts.py:521`–`528`, `app/core/orchestrator/attempts.py:432` | Model-aware validation prompt |
+| Attempt-loop guard + compile | `app/core/orchestrator/attempts.py:241`–`322` | payload-class guard → parse → guarded compile → semantic retry |
+| Terminal classification | `app/core/orchestrator/attempts.py:496`–`508` | exhausted semantic budget ⇒ `semantic_compilation` |
+| Semantic prompt | `app/core/orchestrator/prompts.py:62`–`82` | `DBMS CONTEXT (SEMANTIC MODE)` variant (+ `SEMANTIC_OUTPUT_CORRECTION`) |
+| Semantic critic | `app/core/orchestrator/prompts.py:533`–`540`, `app/core/orchestrator/attempts.py:429` | Model-aware validation prompt |
 | Error taxonomy | `app/services/sql_error_classifier.py:10`–`15`, `:45` | `UNKNOWN_METRIC` → `UnknownMetric`, … |
-| Constants | `app/core/constants.py:9`, `:51`, `:58`–`60`, `:97` | Timeouts, retry flag, fallback flag, discovery top-K |
+| Constants | `app/core/constants.py:9`, `:51`, `:58`–`60`, `:97` | Timeouts, retry flag (unused), fallback flag, discovery top-K |
 | Config | `app/core/config.py:63`–`64`, `:96`–`115` | `ENABLE_SEMANTIC_LAYER_PER_DATA_SOURCE`, `SEMANTIC_COMPILATION_FALLBACK_TO_RAW_SQL` |
-| Tests | `tests/unit/test_semantic.py` | 4 unit tests (compile success, unknown metric, incompatible dimensions, extraction guarantee) |
+| Tests | `tests/unit/test_semantic.py`, `tests/unit/test_semantic_smq.py` | 4 legacy tests + the 61-test SMQ extraction/guard/compiler matrix |
 
 Invariant: **semantic mode never changes the validation order, the retry budget, or the result envelope.** It only changes what the model is asked for (SMQ instead of SQL) and how the candidate artifact is produced (compiler instead of fence → text).
 
@@ -10117,13 +10213,14 @@ This second guard is defence in depth for direct callers of `run_attempt_loop` (
 `semantic_mode` is then passed to the loop (`:301`) and to the system prompt builder (`:167`–`169`). Inside the loop, the active model is loaded once, before the first attempt (`:119`–`120`):
 
 ```python
-active_model = stores.semantic.get_active_model() if semantic_mode else None
+active_model = _load_active_model(stores) if semantic_mode else None
 semantic_json = active_model.model_dump_json() if active_model else "[]"
 ```
 
 - `active_model` is loaded **once** and never refreshed between attempts — a model changed mid-generation is not picked up.
 - `semantic_json` is the Pydantic JSON dump of the whole model (measures, dimensions, joins, governance) and is reused for both the generator prompt and the critic prompt.
-- If `semantic_mode` is `True` but no model exists, `is_enabled` would have returned `False`, so `active_model is None` cannot happen via the normal entry point; **a direct caller that forces `semantic_mode=True` without a model gets `semantic_json == "[]"` and `compiler.compile(smq, None, …)` → `AttributeError`** (not a `SemanticCompilationError`).
+- `_load_active_model` (`attempts.py:647`) is a try/except wrapper returning `None` on any store failure, so a store that is absent or predates the semantic tables yields "no active model" instead of propagating.
+- If `semantic_mode` is `True` but no model exists, `is_enabled` would have returned `False`, so `active_model is None` cannot happen via the normal entry point; a direct caller that forces `semantic_mode=True` without a model now records the semantic retry `"No active semantic model is available for this data source."` (`attempts.py:289`–`300`) and retries — the previous `compiler.compile(smq, None, …)` → `AttributeError` path is gone.
 
 > **Dialect source (verified absence):** `AgentContext.dbms_type` is declared with default `"SQL Server"` (`app/models/pipeline.py:145`) and **no assignment to `dbms_type` exists anywhere in the repository** (exhaustive grep for `dbms_type\s*=` and for the field in every module returns only the declaration and read sites at `attempts.py:96`, `:234`, `builtin_sql_generator.py:212`, `:366`, `sql_validator.py:13`, `sql_context_hydrator.py:47`). In the current Python port the compiler therefore always receives `"SQL Server"` from the orchestrator; other dialects are reachable only through the admin compile endpoint's `dbms` body field (`app/api/endpoints/admin_semantic.py:52`) and through direct service calls. Do not assume a request field sets it, and do not build dialect behaviour that depends on `context.dbms_type` being set by the pipeline.
 
@@ -10177,16 +10274,16 @@ Notes that matter for parity:
 - `SemanticModel.model_config = ConfigDict(protected_namespaces=())` is **mandatory** in Pydantic v2 — without it, the `model_id` field emits a protected-namespace warning/error on serialization. Field name must stay `model_id` (it is the store key and appears in the API).
 - `SemanticModel.is_active` defaults to `True`; `SemanticJoin.join_type` defaults to `"INNER"`.
 - `SmqPayload` has **no** `extra="forbid"`: unknown keys in the LLM JSON are silently ignored by Pydantic's default (`ignore`) behaviour.
-- `filters`/`timeframes` are `List[Dict[str, Any]]` — **unvalidated entry shapes**. A non-dict entry (e.g. a string) raises `ValidationError`, which `_extract_smq` catches (`app/core/orchestrator/attempts.py:537`) and turns into "no payload".
-- All four `SmqPayload` lists default to `[]`, so `SmqPayload()` validates and compiles (it produces `COUNT(*) AS row_count` from the first table — see §9.5.2).
+- `filters`/`timeframes` are `List[Dict[str, Any]]` — **unvalidated entry shapes**. A non-dict entry (e.g. a string) raises `ValidationError`; that is exactly why extraction and the typed parse are two separate passes in `semantic_smq.py` (§9.10.1) — a payload the guard recognises must never be executed as SQL merely because Pydantic refused it.
+- All four `SmqPayload` lists default to `[]`, so `SmqPayload()` *validates* — but it no longer *compiles*: the compiler rejects a payload requesting neither metrics nor dimensions with `EMPTY_REQUEST` (§9.5.10). The old `COUNT(*) AS row_count` fallback for an empty select list is gone.
 
 #### 9.3.2 Accepted SMQ entry shapes
 
-`metrics` — logical measure names, case-insensitive, matched against `SemanticMeasure.name` (`app/services/semantic_compiler.py:30`, `:34`–`38`).
+`metrics` — logical measure names, case-insensitive, matched against `SemanticMeasure.name` (`app/services/semantic_compiler.py:164`, `:176`–`182`).
 
-`dimensions` — logical dimension names, case-insensitive, matched against `SemanticDimension.name` (`:31`, `:43`–`47`).
+`dimensions` — logical dimension names, case-insensitive, matched against `SemanticDimension.name` (`:165`, `:174`–`178`).
 
-`filters` — one entry per predicate; keys are read with `dict.get`, unknown keys ignored (`app/services/semantic_compiler.py:136`–`157`):
+`filters` — one entry per predicate; keys are read with `dict.get`, unknown keys ignored (`app/services/semantic_compiler.py:354`–`375`):
 
 | Key | Aliases | Type (accepted) | Default | Meaning |
 |---|---|---|---|---|
@@ -10194,7 +10291,7 @@ Notes that matter for parity:
 | `op` | `operator` | `str` | `"eq"` | `eq`/`ne`/`neq`/`gt`/`gte`/`lt`/`lte`/`like`; anything else → `=` |
 | `value` | — | `int`, `float`, `bool`, `str` | `None` | `None` ⇒ the whole filter renders to `""` and is dropped at assembly |
 
-`timeframes` — one entry per date range (`app/services/semantic_compiler.py:72`–`79`):
+`timeframes` — one entry per date range (`app/services/semantic_compiler.py:206`–`215`):
 
 | Key | Type (accepted) | Required for emission | Meaning |
 |---|---|---|---|
@@ -10345,15 +10442,21 @@ Retrieval (`SemanticModelService.search_models`, `app/services/semantic_model_se
 
 #### 9.3.5 Active-model selection rules
 
-`SemanticModelService.get_active_model` (`app/services/semantic_model_service.py:129`–`136`):
+`SemanticModelService.get_active_model` (`app/services/semantic_model_service.py:129`–`141`):
 
 ```python
-headers = [h for h in self.provider.fetch_all("semantic_models", self.source_id)
-           if int(h.get("is_active") or 0) == 1]
+try:
+    headers = [h for h in self.provider.fetch_all("semantic_models", self.source_id)
+               if int(h.get("is_active") or 0) == 1]
+except Exception:
+    return None                       # store absent, or predates the semantic tables
 if not headers:
     return None
 headers.sort(key=lambda h: h.get("updated_at_utc") or "", reverse=True)
-return self._hydrate(headers[0])
+try:
+    return self._hydrate(headers[0])
+except Exception:
+    return None                       # child rows unreadable
 ```
 
 Rules, exactly:
@@ -10363,8 +10466,9 @@ Rules, exactly:
 3. **Newest wins** by lexicographic descending sort on `updated_at_utc`, which is written as `datetime.now(timezone.utc).isoformat()` (`:36`) — fixed-width ISO-8601 with an offset, so string ordering equals chronological ordering.
 4. **Ties** are resolved by SQLite row order (the sort is stable): the first row returned by `SELECT *` wins.
 5. Multiple active models are legal and expected; only the newest is used for compilation. "Newest" means *most recently saved*, not *most recently created* — re-saving an older model makes it active.
-6. `_hydrate` (`:155`–`196`) rebuilds the full model with 4 additional `fetch_all` reads (measures, dimensions, joins, governance) filtered in Python by `r.get("model_id") == mid`. Join `join_type` is normalized with `r.get("join_type") or "INNER"`; measure/dimension descriptions with `or ""`; `label` falls back to `model_id`; `is_active` is `bool(int(header.get("is_active") or 0))`.
-7. `list_models` (`:125`–`127`) returns **all** models for the source (active and inactive), newest-agnostic, in store order.
+6. **The lookup never raises.** Both the header read and the hydrate are guarded, so a data source whose vector index was never built (or predates the semantic tables) degrades to "no active model" — semantic mode off for that turn — instead of failing the generation request. This is also why the attempt loop wraps its own call in `_load_active_model` (`attempts.py:647`): a direct caller that forces `semantic_mode=True` against such a store now records `"No active semantic model is available for this data source."` as a semantic retry rather than raising `AttributeError`.
+7. `_hydrate` (`:155`–`203`) rebuilds the full model with 4 additional `fetch_all` reads (measures, dimensions, joins, governance) filtered in Python by `r.get("model_id") == mid`. Join `join_type` is normalized with `r.get("join_type") or "INNER"`; measure/dimension descriptions with `or ""`; `label` falls back to `model_id`; `is_active` is `bool(int(header.get("is_active") or 0))`.
+8. `list_models` (`:125`–`127`) returns **all** models for the source (active and inactive), newest-agnostic, in store order.
 
 Save path — `SemanticModelService.save` (`:35`–`64`):
 
@@ -10436,94 +10540,102 @@ The user prompt is unchanged (`build_user_prompt`, `:168`–`177`): `User reques
 - `metrics[]` and `dimensions[]` must contain **logical names from the serialized model** (`SemanticMeasure.name`, `SemanticDimension.name`), matched **case-insensitively** (`name.lower()`).
 - `filters[].field` and `timeframes[].field` must be **physical SQL path expressions** (`schema.table.column`), not logical dimension names. The compiler never resolves them (see §9.5.5) — although `_filter_sql` also accepts the alias key `dimension`, that value is still emitted raw, so passing a logical name there produces invalid SQL.
 - `SemanticMeasure.expression`, `SemanticJoin.join_expression`, governance predicates, and filter/timeframe fields are all emitted **verbatim**. The model author owns dialect validity; only table/column identifiers built from `SemanticDimension.table`/`.column` and aliases are dialect-quoted by the compiler.
-- Because `FROM` is rebuilt from the model's `joins` (see `_join_plan`, §9.5.4), measure expressions must use **full `schema.table.column` paths, never query aliases** — the compiled SQL declares no aliases in `FROM`. This rule is stated in the extraction prompt (`app/services/semantic_extraction_service.py:37`–`38`) and enforced nowhere in code.
+- Because `FROM`/`JOIN` is rebuilt from the model's declared tables and `joins` (see §9.5.4), measure expressions must use **full `schema.table.column` paths, never query aliases** — the compiled SQL declares no aliases for its tables. This rule is stated in the extraction prompt (`app/services/semantic_extraction_service.py:37`–`38`) and enforced nowhere in code. A measure expression that names a table via `FROM` *does* participate in anchor selection, but only when that table is already part of the model (§9.5.4).
 
-#### 9.4.3 Parsing the model output — `_extract_smq`
+#### 9.4.3 Parsing the model output — `extract_smq_json` / `parse_smq`
 
-`app/core/orchestrator/attempts.py:523`–`538` (verbatim):
+The extractor no longer lives in `attempts.py`; it is `app/services/semantic_smq.py` (see §9.10.1 for the
+verbatim module). Candidate order, first valid candidate wins:
 
-```python
-def _extract_smq(raw: str) -> Optional[SmqPayload]:
-    import re
+1. a ` ```smq ` fenced block body (`_SMQ_FENCE_RE`, `:31`);
+2. any other fenced block body (`_ANY_FENCE_RE`, `:35`), with a leading language tag dropped by
+   `_drop_fence_tag` (`:59`);
+3. the first brace-balanced `{...}` region anywhere in the text (`_find_balanced_object`, `:72`);
+4. the whole response.
 
-    fence = re.search(r"```smq\s*([\s\S]*?)```", raw or "", re.IGNORECASE)
-    text = fence.group(1) if fence else raw
-    start = (text or "").find('{"metrics"')
-    if start < 0:
-        start = (text or "").find("{")
-    if start < 0:
-        return None
-    end = text.rfind("}")
-    try:
-        data = json.loads(text[start : end + 1])
-        return SmqPayload.model_validate(data)
-    except Exception:
-        return None
-```
+A candidate is accepted when it parses as a JSON **object** carrying a `metrics` **or** `dimensions`
+array (`_is_smq_object`, `:48`). Accepting either key alone is deliberate: a dimensions-only request is a
+valid detail query and must still be recognised, so that it is never executed as SQL.
 
-Behaviour table (all rows verified by executing `_extract_smq`):
+Behaviour table (executed against the module; the full matrix lives in `tests/unit/test_semantic_smq.py`):
 
-| Input | Result |
+| Input | `extract_smq_json` |
 |---|---|
-| ` ```smq\n{...}\n``` ` | fence body parsed |
-| ` ```json\n{...}\n``` ` or bare prose + JSON | no smq fence → whole text; first `{"metrics"` wins, else first `{`; slice to **last** `}` |
-| Prose before **and** after the object, e.g. `noise {"metrics":["revenue"]} trailing` | parsed (the brace slice isolates the object) |
-| ` ```smq\n{"metrics":["revenue"]}\n```\nnote: {}` | parsed — when a `smq` fence exists, `text` is the **fence body only**, so trailing prose is never part of the slice |
-| Prose containing a later `}` **inside the same text as the JSON** (no fence), e.g. `{"metrics":["a"]} then {"x":"}"} ` | `None` (slice spans both objects) |
-| A **single-element** list `[{"metrics":["a"]}]` | **parses** — `find("{")` lands on the inner object and `rfind("}")` on its close, so the list brackets are sliced away |
-| A **two-element** list `[{"metrics":["a"]},{"metrics":["b"]}]` | `None` (slice is not valid JSON) |
-| Valid JSON object with `metrics`/`dimensions`/`filters`/`timeframes` | `SmqPayload` (unknown keys ignored; missing keys default to `[]`) |
-| Non-string list entries, e.g. `{"metrics":[1,2]}` | `None` (Pydantic refuses int→str coercion) |
-| No `{` at all | `None` |
+| ` ```smq\n{...}\n``` ` | fence body |
+| ` ```json\n{...}\n``` ` / ` ```JSON ` / bare ` ``` ` | fence body, tag line dropped |
+| Bare JSON object | whole text |
+| Prose before and/or after the object | the balanced region |
+| ` ```smq ` fence followed by other prose and a second fence | the `smq` fence body (first pattern wins) |
+| `{"dimensions":["bctr_number"]}` | accepted (dimensions-only) |
+| `{"metrics":["row_count"],"filters":[{"value":"a \" b {c"}]}` | accepted — the brace scanner honours string state **and** backslash escapes (§9.10.1) |
+| Truncated payload, e.g. `{"metrics":["row_count"], "dimensions":[` | `None` (but `looks_like_smq` is `True`, so the attempt is a semantic retry — never SQL) |
+| `{"dimensions":"bctr_number"}` | `None` (key present, value not an array) |
+| `{"metrics":[1,2]}` | `None` — extraction succeeds structurally but `parse_smq` is `None` (Pydantic refuses int→str), which is an **explicit semantic retry**, not a fallback |
+| Plain SQL / prose only / empty | `None`, and `looks_like_smq` is `False` |
 
-Note the interaction with the SQL extractor: `FENCE_SQL = re.compile(r"```(?:sql|tsql|smq)?\s*([\s\S]*?)```")` (`app/utils/regexes.py:18`) also matches the ` ```smq ` fence, so `extract_sql_body(raw)` (`app/utils/sql_normalization.py:34`–`36`) returns the **JSON body** as the "candidate SQL" on the same attempt — this is what the raw-SQL fallback would hand to validation.
+Note the interaction with the SQL extractor: `FENCE_SQL = re.compile(r"```(?:sql|tsql|smq)?\s*([\s\S]*?)```")`
+(`app/utils/regexes.py:18`) still matches the ` ```smq ` fence, so `extract_sql_body(raw)`
+(`app/utils/sql_normalization.py:34`–`36`) returns the **JSON body** as the "candidate SQL". That is
+exactly why the payload-class guard exists: without it, this body is what validation would receive.
 
 #### 9.4.4 Retry policy, timeout, and fallback
 
-`app/core/orchestrator/attempts.py:208`–`244`:
+`app/core/orchestrator/attempts.py:241`–`322` — the guarded three-way decision (abridged; §9.10.2–§9.10.3
+gives the full rationale):
 
 ```python
+compiled_from_semantic_model = False
+semantic_retry = False
 if semantic_mode:
-    smq = _extract_smq(raw)
-    if smq is None:
-        if SemanticSmqParseRetryOnFailure and not smq_retry_used:
-            smq_retry_used = True
+    smq_json = extract_smq_json(cleaned_output)
+    if not smq_json:
+        # A payload that carries SMQ JSON must never be executed as SQL, whatever the
+        # fallback policy says: the fallback exists for a model that answered in SQL.
+        if (looks_like_smq(raw_output) or looks_like_smq(cleaned_output)
+                or not semantic_compilation_fallback_to_raw_sql()):
+            last_semantic_error = ("Semantic mode requires an SMQ JSON payload, but the "
+                                   "response could not be read as one.")
             attempt_reports.append(BuiltInAttemptReport(
                 attempt_number=attempt, stage="semantic_compilation",
-                what_was_tried="parse SMQ", why_it_failed="missing payload"))
+                what_was_tried="extract SMQ payload",
+                why_it_failed=last_semantic_error + valid_names_hint(active_model)))
+            semantic_retry = True
             continue
-        from app.core.constants import semantic_compilation_fallback_to_raw_sql
-        if not semantic_compilation_fallback_to_raw_sql():
-            return _fail("semantic_compilation", "Missing SMQ payload", attempt,
-                         attempt_reports, discovery, llm, started_at,
-                         hallucination_count, agentic_retry, context)
+        # genuine SQL answer + fallback enabled: proceed as SQL
     else:
-        try:
-            sql = compiler.compile(smq, active_model, context.dbms_type,
-                                   timeout_ms=SemanticCompilationTimeoutMs)
-        except SemanticCompilationError as exc:
-            attempt_reports.append(BuiltInAttemptReport(
-                attempt_number=attempt, stage="semantic_compilation",
-                what_was_tried="compile SMQ", why_it_failed=str(exc)))
-            continue
+        smq = parse_smq(smq_json)
+        if smq is None:
+            last_semantic_error = f"The SMQ payload could not be parsed. Received: {smq_json[:400]}"
+            attempt_reports.append(...); semantic_retry = True; continue
+        if active_model is None:
+            last_semantic_error = "No active semantic model is available for this data source."
+            attempt_reports.append(...); semantic_retry = True; continue
+        compiled = compiler.compile_guarded(smq, active_model, context.dbms_type,
+                                           timeout_ms=SemanticCompilationTimeoutMs)
+        if not compiled.success:
+            last_semantic_error = build_semantic_compile_error_feedback(compiled.detail)
+            attempt_reports.append(...); semantic_retry = True; continue
+        sql = compiled.sql
+        compiled_from_semantic_model = True
 ```
 
 Policy, itemized:
 
 | Situation | Behaviour |
 |---|---|
-| SMQ unparsable, `smq_retry_used == False` | Record attempt report `stage="semantic_compilation"`, `what_was_tried="parse SMQ"`, `why_it_failed="missing payload"`; set `smq_retry_used = True`; `continue` → next attempt. The retry prompt is **byte-identical** (no corrective hint is added). |
-| SMQ unparsable again (or parse retry disabled) and `SEMANTIC_COMPILATION_FALLBACK_TO_RAW_SQL == True` | Fall through: `sql` keeps whatever `extract_sql_body(raw)` returned and normal validation proceeds. |
-| SMQ unparsable and fallback disabled | Terminal failure via `_fail("semantic_compilation", "Missing SMQ payload", …)` → `error_category = "semantic_compilation"`. |
-| `SemanticCompilationError` (any code) | Record attempt report and `continue` (retry). Never terminal on its own; the loop's 5-attempt / 120 s budget bounds it, and exhaustion yields `error_category = "validation"` with the last DB error as the summary (`attempts.py:409`–`429`). |
-| Any other exception (e.g. `AttributeError` from `active_model=None`) | **Not caught here** — it propagates out of `run_attempt_loop`. |
-| Compile returns a string | `sql` is replaced wholesale; the safety interceptor, sentinels, structural hash, critic and DB validation all run on the compiled SQL exactly as they would on LLM SQL. |
+| Reply carries an SMQ payload that cannot be extracted, **or** carries no payload while `looks_like_smq(raw_output)`/`looks_like_smq(cleaned_output)` is true, **or** the fallback is off | Semantic retry: report `stage="semantic_compilation"`, `what_was_tried="extract SMQ payload"`, `why_it_failed=<reason> + valid_names_hint(model)`, `continue`. The JSON never reaches the safety scan, the critic or `ValidateSql`. |
+| Reply carries **no** SMQ payload at all and the fallback is on | Fall through to the SQL path with the body from `extract_sql_body`. This is the only remaining meaning of the fallback. |
+| Payload extracted, `parse_smq` returns `None` | Semantic retry with the first 400 chars of the offending payload + valid names. |
+| `active_model is None` | Semantic retry naming the missing model. The previous `AttributeError` propagation is gone. |
+| `SemanticCompilationError` / compile timeout (any code, incl. `EMPTY_REQUEST`) | Semantic retry whose feedback names the offending item **and** the model's valid metric/dimension names (§9.10.3). |
+| Compile returns SQL | `sql` is replaced wholesale and `compiled_from_semantic_model = True`; safety, sentinels, structural hash, critic and DB validation then run on the compiled SQL exactly as on LLM SQL — **except** that the client-side object-scope rewrite is skipped (§9.10.5). |
+| Budget exhausted while the last attempt was a semantic retry | Terminal `_fail(ErrorCategory.SEMANTIC_COMPILATION, last_semantic_error, …)` (`attempts.py:496`–`508`) — **not** the generic `validation` exit, and never a `Incorrect syntax` message. |
 
 Constants (`app/core/constants.py:9`, `:58`–`60`, `:97`–`99`):
 
 ```python
-SemanticCompilationTimeoutMs = 5_000        # passed to compile(); ACCEPTED BUT NOT ENFORCED
-SemanticSmqParseRetryOnFailure = True       # exactly one extra attempt per generation
+SemanticCompilationTimeoutMs = 5_000        # passed to compile_guarded(); ENFORCED (§9.10.4)
+SemanticSmqParseRetryOnFailure = True       # declared, no reader — retries are bound by MaxRetries
 SemanticCompilationFallbackToRawSql = True  # module constant, unused (see below)
 
 def semantic_compilation_fallback_to_raw_sql() -> bool:
@@ -10533,18 +10645,28 @@ def semantic_compilation_fallback_to_raw_sql() -> bool:
 
 Two parity traps:
 
-1. `SemanticCompilationTimeoutMs` is a **dead parameter in the Python port**: `compile` immediately does `_ = timeout_ms` (`app/services/semantic_compiler.py:29`). There is no thread, no signal, no deadline. The 5 s budget is documentation + C# parity only.
-2. The module-level constant `SemanticCompilationFallbackToRawSql` is **shadowed** by the function of the same name at `:97` (the function definition overwrites the constant). Settings key `SEMANTIC_COMPILATION_FALLBACK_TO_RAW_SQL` (`app/core/config.py:64`, default `True`) is the operative value. Re-implementations should keep the function and may drop the dead constant, but must keep the settings name.
-
-Also note `smq_retry_used` is a **per-generation** flag, not per-attempt: across the whole 5-attempt loop at most one SMQ-parse retry happens (`attempts.py:121`).
+1. The 5 s budget is real in `compile_guarded` (`semantic_compiler.py:124`–`147`): a daemon worker thread
+   runs `_render` and `join(timeout_ms/1000)` decides. Expiry yields
+   `SmqCompileResult(detail="COMPILATION_TIMEOUT: semantic compilation exceeded {n} ms")`, which the loop
+   reports as a semantic retry. The bare `compile()` entry point still ignores `timeout_ms`
+   (`_ = timeout_ms`, `:118`) — call sites that must enforce the budget use `compile_guarded`.
+2. The module-level constant `SemanticCompilationFallbackToRawSql` is **shadowed** by the function of the
+   same name at `:97` (the function definition overwrites the constant). Settings key
+   `SEMANTIC_COMPILATION_FALLBACK_TO_RAW_SQL` (`app/core/config.py:64`, default `True`) is the operative
+   value. Re-implementations should keep the function and may drop the dead constant, but must keep the
+   settings name.
 
 ---
 
-### 9.5 `SemanticCompiler.compile` — full algorithm
+### 9.5 `SemanticCompiler` — full algorithm
 
-#### 9.5.1 Signature and error type
+> This section describes the compiler as it now behaves. The ordered-table/anchor/`GROUP BY` rules below
+> are load-bearing: each one was a silent wrong answer before (see the change record at the top of this
+> document and §9.10.4).
 
-`app/services/semantic_compiler.py:13`–`29`:
+#### 9.5.1 Signature and error types
+
+`app/services/semantic_compiler.py:64`–`85`, `:112`–`123`:
 
 ```python
 class SemanticCompilationError(Exception):
@@ -10553,70 +10675,72 @@ class SemanticCompilationError(Exception):
         self.code = code
         self.message = message
 
+@dataclass
+class SmqCompileResult:
+    sql: str = ""
+    detail: str = ""
+    @property
+    def success(self) -> bool:
+        return bool(self.sql) and not self.detail
+
 class SemanticCompiler:
     def compile(self, payload: SmqPayload, model: SemanticModel, dbms: str = "SQL Server",
                 include_governance: bool = True,
                 timeout_ms: int = SemanticCompilationTimeoutMs) -> str:
+    def compile_guarded(self, payload, model, dbms="SQL Server",
+                        include_governance=True,
+                        timeout_ms=SemanticCompilationTimeoutMs) -> SmqCompileResult:
 ```
 
 - `str(exc)` is exactly `f"{code}: {message}"` — e.g. `"UNKNOWN_METRIC: revenue"`. Attempt reports and the HTTP 400 detail both use this string.
-- `include_governance` defaults to `True` and **no call site in the repository ever passes `False`** (verified by grep) → governance predicates are always injected in production paths.
+- `compile_guarded` is what production call sites use: it enforces `timeout_ms` and converts both compile errors and unexpected exceptions into `SmqCompileResult(detail=...)`, so no caller has to catch. `compile` remains the raising entry point (used by the admin endpoint and by tests).
+- `include_governance` defaults to `True` and **no production call site ever passes `False`** → governance predicates are always injected in production paths.
 - No caller passes `dbms=None`; the default is `"SQL Server"`.
 
-#### 9.5.2 Step-by-step algorithm (verbatim pseudocode)
+#### 9.5.2 Step-by-step algorithm
 
 ```
-compile(payload, model, dbms, include_governance, timeout_ms):
-  _ = timeout_ms                                    # not enforced
+_render(payload, model, dbms, include_governance):
+  metrics         = list(payload.metrics or [])
+  dimension_names = list(payload.dimensions or [])
+  if not metrics and not dimension_names:
+      raise SemanticCompilationError("EMPTY_REQUEST",
+            "payload requests neither metrics nor dimensions")   # a dimensions-only request is NOT rejected
 
   measures_by_name = {m.name.lower(): m for m in model.measures}      # later duplicate names WIN
   dims_by_name     = {d.name.lower(): d for d in model.dimensions}    # same
 
-  # ---- measure resolution
+  # ---- measure resolution (payload order)
   selected_measures = []
-  for name in payload.metrics:
-      m = measures_by_name.get(name.lower())
+  for name in metrics:
+      m = measures_by_name.get((name or "").lower())
       if m is None: raise SemanticCompilationError("UNKNOWN_METRIC", name)
       selected_measures.append(m)
-  if not selected_measures and model.measures:
-      selected_measures = [model.measures[0]]        # first DECLARED measure, not alphabetical
+  # NOTE: no "first declared measure" default. An aggregate-only request simply has no metrics.
 
-  # ---- dimension resolution
+  # ---- dimension resolution (payload order)
   selected_dims = []
-  for name in payload.dimensions:
-      d = dims_by_name.get(name.lower())
+  for name in dimension_names:
+      d = dims_by_name.get((name or "").lower())
       if d is None: raise SemanticCompilationError("UNKNOWN_DIMENSION", name)
       selected_dims.append(d)                        # duplicates are NOT de-duplicated
 
-  # ---- required tables (order-preserving, de-duplicated by exact string)
-  required_tables = []
-  for d in selected_dims:
-      if d.table and d.table not in required_tables:
-          required_tables.append(d.table)
-  if not required_tables and selected_dims:
-      required_tables.append(selected_dims[0].table) # d.table may be "" for every dimension -> anchor ""
-  if not required_tables and model.joins:
-      required_tables.append(model.joins[0].from_table)   # first DECLARED join
+  # ---- SELECT list (dimensions first, then measures; payload order within each group)
+  select_parts = [f"{_col(d.table, d.column, dbms)} AS {quote_identifier(d.name, dbms)}" for d in selected_dims]
+  select_parts += [f"{m.expression} AS {quote_identifier(m.name, dbms)}" for m in selected_measures]
+
+  # ---- required tables: an ORDERED list, seeded from the model in a fixed order
+  required_tables = _required_tables(model, selected_dims, selected_measures)
   if not required_tables:
       raise SemanticCompilationError("MISSING_JOIN_PATH", "no source table")
 
-  # ---- FROM / JOIN
-  join_sql = _join_plan(required_tables, model, dbms)
-
-  # ---- SELECT list (dimensions first, then measures; payload order within each group)
-  select_parts = []
-  for d in selected_dims:
-      select_parts.append(f"{_col(d.table, d.column, dbms)} AS {quote_identifier(d.name, dbms)}")
-  for m in selected_measures:
-      select_parts.append(f"{m.expression} AS {quote_identifier(m.name, dbms)}")   # expression verbatim
-  if not select_parts:
-      select_parts.append("COUNT(*) AS row_count")   # literal, unquoted, not dialect-aware
+  # ---- deterministic anchor
+  anchor = _anchor(required_tables, selected_dims, selected_measures)
+  join_sql = _join_plan(required_tables, model, dbms, anchor)
 
   # ---- WHERE accumulation order: filters -> timeframes -> governance
-  where_parts = []
-  for filt in payload.filters:
-      where_parts.append(_filter_sql(filt, dbms))    # may be ""
-  for tf in payload.timeframes:
+  where_parts = [_filter_sql(f, dbms) for f in payload.filters or []]
+  for tf in payload.timeframes or []:
       field, start, end = tf.get("field"), tf.get("start"), tf.get("end")
       if field and start and end:
           where_parts.append(f"{field} BETWEEN {quote_string_literal(str(start), dbms)}"
@@ -10627,9 +10751,8 @@ compile(payload, model, dbms, include_governance, timeout_ms):
   # ---- assembly
   sql = f"SELECT {', '.join(select_parts)}\nFROM {join_sql}"
   if where_parts:                                                 # LIST truthiness test
-      sql += "\nWHERE " + " AND ".join(p for p in where_parts if p)   # empty parts dropped,
-                                                                     # but "\nWHERE " is still emitted
-  if selected_dims:
+      sql += "\nWHERE " + " AND ".join(p for p in where_parts if p)
+  if selected_dims and any(expression_has_aggregate(m.expression) for m in selected_measures):
       sql += "\nGROUP BY " + ", ".join(_col(d.table, d.column, dbms) for d in selected_dims)
   return sql
 ```
@@ -10637,13 +10760,13 @@ compile(payload, model, dbms, include_governance, timeout_ms):
 Observations that are load-bearing for identical behaviour:
 
 - Dictionary comprehensions make **later duplicate measure/dimension names win**; duplicate names in `payload.metrics`/`payload.dimensions` emit duplicate select items and duplicate `GROUP BY` items (no de-duplication anywhere).
-- `d.table` is used as an opaque string for matching/dedup, and it is the *same* string fed to `_table_ident`/`_col`.
-- The measure-only path anchors on `model.joins[0].from_table` **by declaration order**, so reordering joins in the model changes the compiled `FROM`.
-- `COUNT(*) AS row_count` (`:67`) is a hard-coded SQL-Server-flavoured literal used for every dialect — it is only reachable when `selected_dims == []` **and** `selected_measures == []`, i.e. an empty model (no measures) compiled with a metrics-less payload.
+- **There is no measure default.** A payload requesting only dimensions produces a projection with no measure at all, and a payload requesting neither is rejected with `EMPTY_REQUEST`. The old `model.measures[0]` fallback (and the hard-coded `COUNT(*) AS row_count` used when the select list was empty) are gone — both silently answered a question that was not asked.
+- **`GROUP BY` requires a real aggregate.** `expression_has_aggregate` (`:88`) tests the measure expression with a delimiter-aware pattern for `COUNT|SUM|AVG|MIN|MAX|STDEV|STDEVP|VAR|VARP|STRING_AGG|GROUP_CONCAT|LISTAGG|ARRAY_AGG|MEDIAN|APPROX_COUNT_DISTINCT`, so `t.avg_cost` is not an aggregate call. A dimensions-only request is a detail query and is **not** grouped.
+- `d.table` is used as an opaque string for matching/dedup, but it is **normalized** by `_normalize_table` (`:78`): whitespace around dots is squeezed and surrounding `[` `]` `"` `'` `` ` `` are stripped, so `[dbo].[Orders]` and `dbo.Orders` are the same table for planning purposes. The compiled identifiers are re-quoted from the normalized form.
 
 #### 9.5.3 Identifier helpers
 
-`app/services/semantic_compiler.py:90`–`94`, `:130`–`134`:
+`app/services/semantic_compiler.py:274`–`278`, `:348`–`352`:
 
 ```python
 def _col(self, table: str, column: str, dbms: str) -> str:
@@ -10663,78 +10786,96 @@ def _table_ident(self, table: str, dbms: str) -> str:
 - A table name with no dot is quoted as a single identifier; this matches how the extraction prompt is told to write dimensions (`table` is expected to be `schema.table`).
 - Columns are never split — `d.column` is always treated as one identifier.
 
-#### 9.5.4 Join-plan construction (BFS)
+#### 9.5.4 Required tables, anchor, and join plan
 
-`app/services/semantic_compiler.py:96`–`128` (verbatim):
+**Required tables** — `_required_tables` (`:224`). The list is built by seeding the model's declared tables
+in a **fixed** order (every `joins[].from_table` in declaration order, then every `dimensions[].table` in
+declaration order), then appending the requested dimensions' tables and any table a measure expression
+names — but only if that table is **already in the model's declared set**:
 
 ```python
-def _join_plan(self, required: List[str], model: SemanticModel, dbms: str) -> str:
-    if len(required) == 1 and not model.joins:
-        return self._table_ident(required[0], dbms)
-    graph = defaultdict(list)
-    edge_sql = {}
-    for j in model.joins:
-        graph[j.from_table].append(j.to_table)
-        graph[j.to_table].append(j.from_table)
-        edge_sql[(j.from_table, j.to_table)] = j
-        edge_sql[(j.to_table, j.from_table)] = j
-    anchor = required[0]
-    visited: Set[str] = {anchor}
-    order: List[Tuple[str, Optional[object]]] = [(anchor, None)]
-    remaining = set(required[1:])
-    q = deque([anchor])
-    while q and remaining:
-        node = q.popleft()
-        for nbr in graph.get(node, []):
-            if nbr in visited:
-                continue
-            visited.add(nbr)
-            order.append((nbr, edge_sql.get((node, nbr))))
-            q.append(nbr)
-            remaining.discard(nbr)
-    if remaining:
-        raise SemanticCompilationError("INCOMPATIBLE_DIMENSIONS", ", ".join(sorted(remaining)))
-    parts = [self._table_ident(order[0][0], dbms)]
-    for table, join in order[1:]:
-        if join is None:
-            raise SemanticCompilationError("MISSING_JOIN_PATH", table)
-        jtype = join.join_type or "INNER"
-        parts.append(f"{jtype} JOIN {self._table_ident(table, dbms)} ON {join.join_expression}")
-    return "\n".join(parts)
+def add(table):                                   # order-preserving, de-duplicated by normalized string
+    normalized = _normalize_table(table)
+    if normalized and normalized not in required:
+        required.append(normalized)
+
+for join in model.joins:      add(join.from_table)
+for d in model.dimensions:    add(d.table)
+for d in selected_dims:       add(d.table)
+for m in selected_measures:
+    for table in expression_source_tables(m.expression):
+        if table in required:  add(table)         # a stray name may not extend the plan
 ```
 
-Precise semantics:
+`expression_source_tables` (`:93`) reads only explicit `FROM` clauses inside the expression
+(`_FROM_IN_EXPRESSION_RE`, `:51`) and skips SQL trailing words, so `SUM(dbo.Orders.Amount)` — which names a
+*column* — contributes nothing, while `(SELECT COUNT(*) FROM bctr.transport)` contributes
+`bctr.transport`.
+
+**Anchor** — `_anchor` (`:256`), the deterministic rule:
+
+1. the first **requested dimension's** table, if it is in the required set;
+2. else the table a **measure expression** reads from, if it is in the required set;
+3. else `required[0]` (which, for a measure-only request, is `model.joins[0].from_table`).
+
+**Join plan** — `_join_plan` (`:280`). The graph is undirected, and traversal is breadth-first over the
+**whole reachable component** (a required table may only be reachable through a table that is not itself
+required), but **only required tables are emitted**:
+
+```python
+graph, edge_sql = build from model.joins (both directions, last declared join wins per pair)
+visited = {anchor}; parent = {anchor: None}; queue = deque([anchor])
+while queue:                                     # no early exit: the full component is mapped
+    node = queue.popleft()
+    for neighbour in graph.get(node, []):
+        if neighbour in visited: continue
+        visited.add(neighbour); parent[neighbour] = node
+        order.append((neighbour, edge_sql.get((node, neighbour)))); queue.append(neighbour)
+
+missing = [t for t in required if t not in {t for t, _ in order}]
+if missing: raise SemanticCompilationError("INCOMPATIBLE_DIMENSIONS", ", ".join(missing))
+
+projected = [t for t in required if t in visited]          # required tables only, request order
+if anchor not in projected: projected.insert(0, anchor)
+parts = [self._table_ident(anchor, dbms)]
+for table in projected:
+    if table == anchor: continue
+    attach = nearest_joined(table)                          # climb `parent` to a projected ancestor
+    if attach is None: raise SemanticCompilationError("MISSING_JOIN_PATH", table)
+    join = edge_sql.get((parent[table], table)) or edge_sql.get((attach, table))
+    if join is None: raise SemanticCompilationError("MISSING_JOIN_PATH", table)
+    jtype = (join.join_type or "INNER").strip() or "INNER"
+    parts.append(f"{jtype} JOIN {self._table_ident(table, dbms)} ON {join.join_expression}")
+```
 
 | Rule | Detail |
 |---|---|
-| Graph is **undirected** | Every join contributes both `from→to` and `to→from` adjacency, and both key orders to `edge_sql` pointing at the **same** `SemanticJoin` object |
-| Anchor | `required[0]` — the first selected dimension's table, or (measure-only) `model.joins[0].from_table` |
-| Emit order | `order` = anchor first, then breadth-first discovery order |
-| Cycle handling | The `visited` set (seeded with the anchor) prevents re-emitting any table; cycles terminate naturally. Reverse-edge reuse is what lets the compiler emit a join from the "wrong" side (see Example E below) |
-| Duplicate joins (same table pair) | `graph` gains duplicate adjacency entries, `edge_sql` keeps the **last** declared join for that pair; the `visited` guard keeps a pair from being emitted twice |
-| **Extra tables leak in** | The inner `for nbr` loop enqueues **every** unvisited neighbour of the popped node, without checking `remaining`. When the anchor has two or more joins and at least one required table is still outstanding, *non-required* neighbours are appended to `order` too and therefore appear in `FROM`/`JOIN` |
-| Early exit | `while q and remaining` — as soon as every required table is in `order`, BFS stops, even if `q` still holds nodes |
-| Single-table shortcut | `len(required) == 1 and not model.joins` returns the bare table identifier; when a model *has* joins the general path runs but yields the identical single-table plan because `remaining` is empty |
-| Unreachable required table | `INCOMPATIBLE_DIMENSIONS` with `", ".join(sorted(remaining))` — the message is the **sorted, comma-joined** list of unreachable table names |
-| Join type | Declared `SemanticJoin.join_type` is a required `str` (Pydantic rejects `None`), so `jtype = join.join_type or "INNER"` only rewrites the **empty string** to `INNER`. Any other value is emitted verbatim and **not validated** — execution-verified: `"FULL OUTER"` → `FULL OUTER JOIN`, `"CROSS"` → `CROSS JOIN` (with the author's `ON` clause still appended), `""` → `INNER JOIN`. `_hydrate` applies the same `or "INNER"` when reading rows (`semantic_model_service.py:177`) |
+| Graph is **undirected** | Every join contributes both `from→to` and `to→from` adjacency, and both key orders to `edge_sql` pointing at the **same** `SemanticJoin` object. Reverse-edge reuse is what lets the compiler emit a join from the "wrong" side (Example E) |
+| Anchor | `_anchor` (above) — first requested dimension's table, else a measure's source table, else `required[0]` |
+| Emit order | `projected` order = the **required-table list order**, which is deterministic; never set or dict iteration |
+| **No extra tables** | Traversal-only tables are never emitted. A required table hanging off a traversal-only hop is joined to its nearest projected ancestor, so its `ON` clause stays valid |
+| Duplicate joins (same table pair) | `edge_sql` keeps the **last** declared join for that pair; the `visited` guard keeps a pair from being emitted twice |
+| Unreachable required table | `INCOMPATIBLE_DIMENSIONS` with `", ".join(missing)` — in **required order**, not sorted (the plan's §5.4 wording; the message names what could not be connected) |
+| Join type | Declared `SemanticJoin.join_type` is a required `str` (Pydantic rejects `None`), so the `or "INNER"` only rewrites a blank value. Any other value is emitted verbatim and **not validated** — execution-verified: `"FULL OUTER"` → `FULL OUTER JOIN`, `"CROSS"` → `CROSS JOIN` (with the author's `ON` clause still appended), `""` → `INNER JOIN`. `_hydrate` applies the same normalization when reading rows (`semantic_model_service.py:177`) |
 | Join predicate | `join.join_expression` is emitted **byte-for-byte**; it is never re-quoted, re-normalized, or rewritten to use the emitted table identifiers |
-| Defensive branch | `if join is None: raise MISSING_JOIN_PATH(table)` is unreachable in practice: every `order[i>0]` entry is appended together with `edge_sql.get((node, nbr))`, which exists because `nbr ∈ graph[node]` implies a join. Keep it for structural parity |
+| Defensive branch | the `attach`/`join is None` checks are unreachable in practice and kept for structure |
 
-BFS traces — the rows exercised by Examples A–E and by the `INCOMPATIBLE_DIMENSIONS` check were confirmed by executing the compiler; the remaining abstract rows follow the same loop and are derived by hand:
+Traces (execution-verified for the rows that correspond to Examples A–E; the rest follow the same loop):
 
-| `required` (order matters) | Joins (declaration order) | `order` emitted | `FROM`/`JOIN` |
-|---|---|---|---|
-| `[A]` | none | `[A]` | `A` (shortcut) |
-| `[A]` | `A→B` | `[A]` | `A` (remaining empty, BFS never runs) |
-| `[A, B]` | `A→B` | `[A, B]` | `A INNER JOIN B ON <expr>` |
-| `[A, B]` | `A→B`, `A→C` | `[A, B, C]` | `A INNER JOIN B … INNER JOIN C …` — **C leaks in, unused** |
-| `[B, C]` | `A→B`, `A→C` | `[B, A, C]` | `B INNER JOIN A ON <A→B expr> INNER JOIN C ON <A→C expr>` |
-| `[B, C]` | `A→B`, `B→C` | `[B, A, C]` | `B INNER JOIN A … INNER JOIN C …` (multi-hop) |
-| `[A, D]` | `A→B`, `B→C` | — | `INCOMPATIBLE_DIMENSIONS: D` |
+| `required` (order matters) | Joins (declaration order) | Emitted `FROM`/`JOIN` |
+|---|---|---|
+| `[A]` | none | `A` |
+| `[A]` | `A→B` | `A INNER JOIN B ON <expr>` — the model's joins are always in the plan |
+| `[A, B]` | `A→B` | `A INNER JOIN B ON <expr>` |
+| `[A, B]` | `A→B`, `A→C` | `A INNER JOIN B …` — **C is not emitted** (it is not required) |
+| `[B, C]` | `A→B`, `A→C` | `B INNER JOIN A ON <A→B expr> INNER JOIN C ON <A→C expr>` |
+| `[B, C]` | `A→B`, `B→C` | `B INNER JOIN A … INNER JOIN C …` (multi-hop through a non-required `A`) |
+| `[A, D]` | `A→B`, `B→C` | `INCOMPATIBLE_DIMENSIONS: D` |
 
 #### 9.5.5 Filter rendering
 
-`app/services/semantic_compiler.py:136`–`157` (verbatim):
+`app/services/semantic_compiler.py:354`–`375` (verbatim — unchanged from the original port, including the
+`field`/`dimension` alias and the numeric inlining):
 
 ```python
 def _filter_sql(self, filt: dict, dbms: str) -> str:
@@ -10768,7 +10909,7 @@ def _filter_sql(self, filt: dict, dbms: str) -> str:
 
 Rules to preserve:
 
-1. **Filters are never resolved against dimensions or joins.** `field` is raw SQL text, and the compiler does **not** add the filter's table to the join plan. A filter on a table that no selected dimension requires compiles to SQL that references a table absent from `FROM` (runtime DB error), not a compile error.
+1. **Filters are never resolved against dimensions or joins.** `field` is raw SQL text, and the compiler does **not** add the filter's table to the join plan. A filter on a table that no selected dimension requires compiles to SQL that references a table absent from `FROM` (runtime DB error), not a compile error. Execution-verified in Example C-counter.
 2. `int`/`float` (and `bool`) values are inlined via `str()`; everything else — including numeric-looking strings and `datetime` objects — goes through `quote_string_literal`.
 3. There is **no** `IN`, `BETWEEN`, `IS NULL`, `NOT LIKE`, or `<>`-with-null support in filters; `BETWEEN` only comes from timeframes.
 4. Predicates are AND-joined without parentheses. A `LIKE`/comparison predicate containing `OR` changes precedence relative to the rest of the `WHERE` clause.
@@ -10777,11 +10918,14 @@ Rules to preserve:
 #### 9.5.6 Timeframe handling
 
 ```python
-for tf in payload.timeframes:
-    field, start, end = tf.get("field"), tf.get("start"), tf.get("end")
+for tf in payload.timeframes or []:
+    field = tf.get("field")
+    start = tf.get("start")
+    end = tf.get("end")
     if field and start and end:
         where_parts.append(
-            f"{field} BETWEEN {quote_string_literal(str(start), dbms)} AND {quote_string_literal(str(end), dbms)}"
+            f"{field} BETWEEN {quote_string_literal(str(start), dbms)}"
+            f" AND {quote_string_literal(str(end), dbms)}"
         )
 ```
 
@@ -10793,12 +10937,12 @@ for tf in payload.timeframes:
 
 #### 9.5.7 Governance predicate injection
 
-`if include_governance: where_parts.extend(model.governance_predicates)` (`app/services/semantic_compiler.py:80`–`81`).
+`if include_governance: where_parts.extend(model.governance_predicates)` (`app/services/semantic_compiler.py:216`–`217`).
 
 - Predicates are appended **last**, in stored order (which is the order returned by `fetch_all("semantic_governance_predicates", source_id)` filtered by `model_id` — i.e. insertion/row order, not sorted).
 - Each predicate is a bare string emitted verbatim, AND-joined with everything else, **without parentheses**.
 - Empty strings in the list survive into `where_parts` but are dropped by the `if p` filter during assembly — so an empty predicate is harmless.
-- Governance is the mechanism for row-level security / soft-delete / tenant scoping; because it is unconditional and last, it applies to every compiled SMQ regardless of the caller's intent. `include_governance=False` is the escape hatch, unused in-tree.
+- Governance is the mechanism for row-level security / soft-delete / tenant scoping; because it is unconditional and last, it applies to every compiled SMQ regardless of the caller's intent. `include_governance=False` is the escape hatch, unused in production paths. Execution-verified output for `include_governance=False` (Example K) omits both predicates and the `WHERE` line entirely.
 
 #### 9.5.8 Dialect quoting and literal escaping
 
@@ -10844,26 +10988,32 @@ Escaping/quoting rules and their verified limits:
 5. Dialect matching is **substring-based**, so `"Azure SQL"` does **not** get bracket quoting or `N''` literals (verified: `"sql server" not in "azure sql"`). If the product must support Azure SQL names, the `dbms` string must literally contain `sql server`.
 6. `normalize_qualifiers` (`:30`–`34`) is a no-op stub — it returns the input unchanged. Do not expect post-hoc dialect normalization of compiled SQL.
 
+The compiler's own regression test for (1)–(3) is `test_dialect_quoting` in `tests/unit/test_semantic_smq.py`,
+which asserts `[bctr].[trauma_scene]` / `` `bctr`.`trauma_scene` `` / `"bctr"."trauma_scene"` for the three
+dialect families.
+
 #### 9.5.9 SQL assembly order, and verified absences
 
-Assembly (`app/services/semantic_compiler.py:83`–`88`):
+Assembly (`app/services/semantic_compiler.py:224`–`226`):
 
 ```
 SELECT <dim1_alias>, …, <dimN_alias>, <measure1_alias>, …, <measureM_alias>
 FROM <anchor>
-[<TYPE> JOIN <table> ON <expr>]…          # BFS order, "\n"-separated
+[<TYPE> JOIN <table> ON <expr>]…          # required-table order, "\n"-separated
 WHERE <p1> AND <p2> AND …                 # filters, then timeframes, then governance; empties dropped
-GROUP BY <dim1 col>, …, <dimN col>        # present iff payload.dimensions resolved non-empty
+GROUP BY <dim1 col>, …, <dimN col>        # present iff dimensions requested AND ≥1 measure aggregates
 ```
 
 Formatting details: `f"SELECT {', '.join(select_parts)}\nFROM {join_sql}"`, `"\nWHERE "`, `"\nGROUP BY "`. No trailing semicolon, no terminal newline, exactly one space after each comma, `AND` uppercase.
 
-**Where-clause emission quirk (execution-verified, must be reproduced):** the guard is `if where_parts:` — a *list* truthiness test, not an "any non-empty string" test. When at least one filter entry exists but **every** entry renders to `""` (e.g. `filters=[{"field": "x", "value": null}]`), the result ends with a bare keyword and a trailing space:
+**Where-clause emission quirk (execution-verified, must be reproduced):** the guard is `if where_parts:` — a *list* truthiness test, not an "any non-empty string" test. When at least one filter entry exists but **every** entry renders to `""` (e.g. `filters=[{"field": "x", "value": null}]`), the result ends up with a bare keyword:
 
 ```
-SELECT SUM(dbo.Orders.Amount) AS [revenue]
+SELECT [dbo].[Orders].[CustomerID] AS [customer], SUM(dbo.Orders.Amount) AS [revenue]
 FROM [dbo].[Orders]
+INNER JOIN [dbo].[Customers] ON dbo.Orders.CustomerID = dbo.Customers.CustomerID
 WHERE 
+GROUP BY [dbo].[Orders].[CustomerID]
 ```
 
 That trailing-space `WHERE` is emitted verbatim by `sql += "\nWHERE " + " AND ".join(p for p in where_parts if p)`. A re-implementation that writes `if any(where_parts):` changes the byte output (and would emit no `WHERE` at all).
@@ -10880,19 +11030,21 @@ That trailing-space `WHERE` is emitted verbatim by `sql += "\nWHERE " + " AND ".
 | Table aliases | never emitted (`FROM [dbo].[Orders]`, never `AS o`) |
 | `JOIN` parenthesization / subquery wrapping | never emitted |
 | Measure/dimension-name sanitizing | names are quoted, never validated against a dialect keyword list |
-| Timeout enforcement | accepted and discarded (`_ = timeout_ms`) |
+| Timeout enforcement | **enforced** by `compile_guarded` only; the raising `compile` still discards it (`_ = timeout_ms`) |
 
 #### 9.5.10 Error catalogue
 
-Raised only by `SemanticCompilationError`; catch sites: `app/api/endpoints/admin_semantic.py:54` (→ HTTP 400), `app/core/orchestrator/attempts.py:235` (→ attempt report + retry).
+Raised only by `SemanticCompilationError`; catch sites: `app/api/endpoints/admin_semantic.py:51`–`53`
+(→ HTTP 400), `app/core/orchestrator/attempts.py:302`–`319` (→ attempt report + semantic retry).
 
 | Code | Line | Trigger | `message` payload |
 |---|---|---|---|
-| `UNKNOWN_METRIC` | `:37` | `payload.metrics` name not found in `model.measures` (case-insensitive) | the offending name, verbatim |
-| `UNKNOWN_DIMENSION` | `:46` | `payload.dimensions` name not found in `model.dimensions` | the offending name, verbatim |
-| `INCOMPATIBLE_DIMENSIONS` | `:121` | A required table is unreachable from the anchor over the join graph | `", ".join(sorted(unreachable_tables))` |
-| `MISSING_JOIN_PATH` | `:58` | No required table could be derived at all (no dimensions with tables, no joins) | the literal string `no source table` |
-| `MISSING_JOIN_PATH` | `:125` | Defensive: a BFS-ordered table arrived without a join edge (unreachable in practice) | the table name |
+| `UNKNOWN_METRIC` | `:182` | `payload.metrics` name not found in `model.measures` (case-insensitive) | the offending name, verbatim |
+| `UNKNOWN_DIMENSION` | `:189` | `payload.dimensions` name not found in `model.dimensions` | the offending name, verbatim |
+| `EMPTY_REQUEST` | `:171` | the payload requests **neither** metrics nor dimensions | the literal string `payload requests neither metrics nor dimensions` |
+| `INCOMPATIBLE_DIMENSIONS` | `:311` | A required table is unreachable from the anchor over the join graph | the missing tables in required order |
+| `MISSING_JOIN_PATH` | `:200` | No required table could be derived at all | the literal string `no source table` |
+| `MISSING_JOIN_PATH` | `:338`, `:343` | Defensive: a projected table has no join edge to a projected ancestor (unreachable in practice) | the table name |
 
 `str(exc)` is `"{CODE}: {message}"`. The taxonomy mapping used elsewhere (`app/services/sql_error_classifier.py:10`–`15`, `:45`–`49`):
 
@@ -10905,50 +11057,51 @@ SEMANTIC_CODES = {
 }
 ```
 
-`classify()` returns `"semantic_compilation"` when the message is uppercased and contains `"SEMANTIC"` **or** any of the four raw codes (`:20`–`21`); `semantic_kind()` returns the PascalCase name, or `None`. Because the raw codes are matched by substring, `classify("UNKNOWN_METRIC: revenue") == "semantic_compilation"`.
+`classify()` returns `"semantic_compilation"` when the message is uppercased and contains `"SEMANTIC"`
+**or** any of the four raw codes (`:20`–`21`); `semantic_kind()` returns the PascalCase name, or `None`.
+Because the raw codes are matched by substring, `classify("UNKNOWN_METRIC: revenue") == "semantic_compilation"`.
+`EMPTY_REQUEST` is deliberately **not** in the map: the attempt loop never lets a compiler error reach the
+classifier, because it converts every compile failure into a semantic retry with its own detail
+(§9.10.3) — the taxonomy's semantic branches only ever supply a recovery hint.
 
 ---
 
 ### 9.6 Worked examples
 
-**Verification status.** Examples A–F were executed against the repository code (Python 3.14.7, Pydantic 2.13.5) by constructing the stated models/payloads and calling `SemanticCompiler().compile(...)`; every SQL string below matches the executed output byte-for-byte, and the trailing-space `WHERE` quirk in §9.5.9 was reproduced the same way. The *inputs* are: Example A = the exact `tests/unit/test_semantic.py:6`–`23` fixture; Examples B and F = that same fixture with different payloads; Examples C, D, E = illustrative models written for this document (the code path they exercise is the same verified one). No test in the repository asserts these full strings — `tests/unit/test_semantic.py` checks substrings and error codes only.
+**Verification status.** Every SQL string below was produced by executing the stated model + payload
+against the current `SemanticCompiler` (Python 3.14.7 / Pydantic 2.13.5), and matches byte-for-byte.
+Example A reuses the `_model()` fixture from `tests/unit/test_semantic.py:6`–`23`; Examples D/E use one
+illustrative three-table model; Example L is the reference case from the change plan (a model rooted in
+schema `BCTR`). The executable assertions live in `tests/unit/test_semantic_smq.py`.
 
-#### Example A — single dimension, no join (SQL Server)
+#### Example A — one dimension, model declares a join (SQL Server)
 
-Model (exactly the `_model()` fixture in `tests/unit/test_semantic.py:6`–`23`):
-
-```json
-{
-  "model_id": "m1", "label": "Sales", "is_active": true,
-  "measures": [{"name": "revenue", "expression": "SUM(dbo.Orders.Amount)", "description": "rev"}],
-  "dimensions": [
-    {"name": "customer", "column": "CustomerID", "table": "dbo.Orders", "description": "c"},
-    {"name": "region",   "column": "Region",     "table": "dbo.Customers", "description": "r"}
-  ],
-  "joins": [{"from_table": "dbo.Orders", "to_table": "dbo.Customers",
-             "join_expression": "dbo.Orders.CustomerID = dbo.Customers.CustomerID",
-             "join_type": "INNER"}],
-  "governance_predicates": []
-}
-```
+Model: the `tests/unit/test_semantic.py` fixture — measure `revenue = SUM(dbo.Orders.Amount)`; dimensions
+`customer → dbo.Orders.CustomerID` and `region → dbo.Customers.Region`; one `INNER` join
+`dbo.Orders → dbo.Customers`.
 
 SMQ: `{"metrics": ["revenue"], "dimensions": ["customer"], "filters": [], "timeframes": []}`
 
-Trace: `required_tables = ["dbo.Orders"]`; `_join_plan` takes the general path (the model has joins) but `remaining` is empty, so BFS never runs; `order = [("dbo.Orders", None)]`.
+Trace: `required = ["dbo.Orders", "dbo.Customers"]` (seeded from the model's join + dimensions); anchor =
+`dbo.Orders` (first requested dimension's table); BFS reaches `dbo.Customers`; both are projected.
 
 ```sql
 SELECT [dbo].[Orders].[CustomerID] AS [customer], SUM(dbo.Orders.Amount) AS [revenue]
 FROM [dbo].[Orders]
+INNER JOIN [dbo].[Customers] ON dbo.Orders.CustomerID = dbo.Customers.CustomerID
 GROUP BY [dbo].[Orders].[CustomerID]
 ```
 
-Note the asymmetry: the dimension's table/column are dialect-quoted and schema-split, while `SUM(dbo.Orders.Amount)` is reproduced verbatim from the model. `tests/unit/test_semantic.py:26`–`32` (`test_compile_success`) exercises exactly this path, asserting `"SUM(dbo.Orders.Amount)" in sql` and `"GROUP BY" in sql`.
+Note the asymmetry: the dimension's table/column are dialect-quoted and schema-split, while
+`SUM(dbo.Orders.Amount)` is reproduced verbatim from the model. Note also that the join **is** emitted
+even though only one table is projected — the model's joins define the plan, so a model whose join graph
+is broader than the request still compiles to a single-table `FROM` only when the model has no joins at
+all. `tests/unit/test_semantic.py:26`–`32` (`test_compile_success`) asserts `"SUM(dbo.Orders.Amount)" in sql`
+and `"GROUP BY" in sql`, both of which hold.
 
 #### Example B — two dimensions across a join (SQL Server)
 
 Same model. SMQ: `{"metrics": ["revenue"], "dimensions": ["customer", "region"]}`
-
-Trace: `required_tables = ["dbo.Orders", "dbo.Customers"]`; anchor `dbo.Orders`; `remaining = {"dbo.Customers"}`; first BFS pop expands `dbo.Orders` → `dbo.Customers` via the one edge; `remaining` empties → stop.
 
 ```sql
 SELECT [dbo].[Orders].[CustomerID] AS [customer], [dbo].[Customers].[Region] AS [region], SUM(dbo.Orders.Amount) AS [revenue]
@@ -10957,37 +11110,20 @@ INNER JOIN [dbo].[Customers] ON dbo.Orders.CustomerID = dbo.Customers.CustomerID
 GROUP BY [dbo].[Orders].[CustomerID], [dbo].[Customers].[Region]
 ```
 
-With `model.joins = []` the same payload raises `INCOMPATIBLE_DIMENSIONS` with message `dbo.Customers` (`tests/unit/test_semantic.py:43`–`53` accepts `INCOMPATIBLE_DIMENSIONS` or `MISSING_JOIN_PATH`; the verified code path is `INCOMPATIBLE_DIMENSIONS`, because `required_tables` is non-empty and BFS fails to reach `dbo.Customers`).
+With `model.joins = []` the same payload raises `INCOMPATIBLE_DIMENSIONS` with message `dbo.Customers`
+(`tests/unit/test_semantic.py:43`–`53` accepts `INCOMPATIBLE_DIMENSIONS` or `MISSING_JOIN_PATH`; the
+verified code path is `INCOMPATIBLE_DIMENSIONS`, because the anchor's component cannot reach
+`dbo.Customers`).
 
 #### Example C — PostgreSQL dialect with filters, timeframe and governance
 
-Model (illustrative; PostgreSQL strings so the double-quote branch is exercised):
+Model (illustrative): measure `revenue = SUM(public.orders.amount)`; dimension `month → public.orders.month`;
+one `LEFT` join to `public.customers`; governance predicates
+`["public.orders.deleted_at IS NULL", "public.orders.tenant_id = 'acme'"]`.
 
-```json
-{
-  "model_id": "m-pg", "label": "Sales PG", "is_active": true,
-  "measures": [{"name": "revenue", "expression": "SUM(public.orders.amount)", "description": ""}],
-  "dimensions": [{"name": "month", "column": "month", "table": "public.orders", "description": ""}],
-  "joins": [{"from_table": "public.orders", "to_table": "public.customers",
-             "join_expression": "public.orders.customer_id = public.customers.id",
-             "join_type": "LEFT"}],
-  "governance_predicates": ["public.orders.deleted_at IS NULL", "public.orders.tenant_id = 'acme'"]
-}
-```
-
-SMQ:
-
-```json
-{
-  "metrics": ["revenue"],
-  "dimensions": ["month"],
-  "filters": [
-    {"field": "public.orders.channel", "op": "eq", "value": "O'Hare"},
-    {"field": "public.orders.amount", "op": "gte", "value": 100}
-  ],
-  "timeframes": [{"field": "public.orders.created_at", "start": "2024-01-01", "end": "2024-03-31"}]
-}
-```
+SMQ: metrics `["revenue"]`, dimensions `["month"]`, filters
+`[{"field": "public.orders.channel", "op": "eq", "value": "O'Hare"}, {"field": "public.orders.amount", "op": "gte", "value": 100}]`,
+timeframe `[{"field": "public.orders.created_at", "start": "2024-01-01", "end": "2024-03-31"}]`.
 
 Compiled with `dbms="PostgreSQL"`, `include_governance=True` (default):
 
@@ -10998,35 +11134,23 @@ WHERE public.orders.channel = 'O''Hare' AND public.orders.amount >= 100 AND publ
 GROUP BY "public"."orders"."month"
 ```
 
-Verified properties shown: the `LEFT` join is **not** emitted (only one required table ⇒ BFS `remaining` is empty even though the model has joins); `'` doubles to `''` with no `N` prefix; the numeric filter is inlined; the timeframe is quoted-string `BETWEEN`; governance predicates are appended last and ANDed without parentheses.
+Verified properties: the `LEFT` join to `public.customers` is **not** emitted (that table is not required
+by this request); `'` doubles to `''` with no `N` prefix; the numeric filter is inlined; the timeframe is a
+quoted-string `BETWEEN`; governance predicates are appended last and ANDed without parentheses.
 
-Counter-example worth writing as a test: change the first filter to `{"field": "public.customers.country", "op": "eq", "value": "US"}`. The compiler emits `public.customers.country = 'US'` while `FROM` still contains only `"public"."orders"` — a runtime `missing FROM-clause entry` error. **Filters/timeframes never extend the join plan.**
+**Counter-example (execution-verified).** Change the filter to
+`{"field": "public.customers.country", "op": "eq", "value": "US"}` and the compiler emits
+`WHERE public.customers.country = 'US' AND …` while `FROM` still contains only `"public"."orders"` — a
+runtime `missing FROM-clause entry` error. **Filters/timeframes never extend the join plan.**
 
-#### Example D — BFS extra-neighbour leak and join-order sensitivity (SQL Server)
+#### Example D — a model table that the request does not need is not joined (SQL Server)
 
-Model (illustrative):
+Model (illustrative, three tables): measure `revenue = SUM(dbo.Orders.Amount)`; dimensions
+`customer → dbo.Orders`, `region → dbo.Customers`, `product → dbo.Products`; joins
+`dbo.Orders → dbo.Customers` (`INNER`) and `dbo.Orders → dbo.Products` (`LEFT`).
 
-```json
-{
-  "model_id": "m2", "label": "SalesMulti", "is_active": true,
-  "measures": [{"name": "revenue", "expression": "SUM(dbo.Orders.Amount)", "description": ""}],
-  "dimensions": [
-    {"name": "customer", "column": "CustomerID", "table": "dbo.Orders",    "description": ""},
-    {"name": "region",   "column": "Region",     "table": "dbo.Customers", "description": ""}
-  ],
-  "joins": [
-    {"from_table": "dbo.Orders", "to_table": "dbo.Customers",
-     "join_expression": "dbo.Orders.CustomerID = dbo.Customers.CustomerID", "join_type": "INNER"},
-    {"from_table": "dbo.Orders", "to_table": "dbo.Products",
-     "join_expression": "dbo.Orders.ProductID = dbo.Products.ProductID", "join_type": "LEFT"}
-  ],
-  "governance_predicates": []
-}
-```
-
-SMQ: `{"metrics": ["revenue"], "dimensions": ["customer", "region"]}` → `required = ["dbo.Orders", "dbo.Customers"]`.
-
-BFS trace: pop `dbo.Orders` → adjacency `[dbo.Customers, dbo.Products]` (declaration order) → both are unvisited, so **both** are appended; `remaining` loses `dbo.Customers` and the loop stops with `dbo.Products` already in `order`.
+SMQ: `{"metrics": ["revenue"], "dimensions": ["customer", "region"]}` → required tables are the model's
+join sources and dimension tables, but only `dbo.Orders` and `dbo.Customers` are requested:
 
 ```sql
 SELECT [dbo].[Orders].[CustomerID] AS [customer], [dbo].[Customers].[Region] AS [region], SUM(dbo.Orders.Amount) AS [revenue]
@@ -11036,13 +11160,17 @@ LEFT JOIN [dbo].[Products] ON dbo.Orders.ProductID = dbo.Products.ProductID
 GROUP BY [dbo].[Orders].[CustomerID], [dbo].[Customers].[Region]
 ```
 
-`dbo.Products` is joined but never selected or grouped — a faithful re-implementation must reproduce this (it is a no-op for N:1 joins but changes the row set for 1:N joins). A conformance test should assert the presence of the unused `LEFT JOIN`.
+`dbo.Products` appears because it is a model-declared table (`joins[].to_table` is part of the seeded
+required set) — the plan is the model's, not the request's. What the compiler no longer does is emit
+*traversal-only* tables that appear nowhere in the model's declared set. Requesting `product` as well
+(Example D′) yields the expected three-way projection and `GROUP BY`.
 
-#### Example E — multi-hop BFS with reverse-edge reuse (SQL Server)
+#### Example E — anchor on the joined table, with multi-hop traversal
 
-Same model as D. SMQ: `{"metrics": ["revenue"], "dimensions": ["region", "product"]}` with a third dimension `{"name": "product", "column": "ProductName", "table": "dbo.Products"}` → `required = ["dbo.Customers", "dbo.Products"]`.
+Same model as D. SMQ: `{"metrics": ["revenue"], "dimensions": ["region", "product"]}`
 
-BFS trace: anchor `dbo.Customers`; `remaining = {"dbo.Products"}`; pop `Customers` → neighbour `Orders` (unvisited) → append `Orders`, `remaining` unchanged; pop `Orders` → neighbours `Customers` (visited), `Products` (unvisited) → append `Products`; `remaining` empty → stop. `order = [Customers, Orders, Products]`.
+Trace: anchor = `dbo.Customers` (the **first requested** dimension's table, not the measure's table);
+`dbo.Products` is reached through `dbo.Orders`.
 
 ```sql
 SELECT [dbo].[Customers].[Region] AS [region], [dbo].[Products].[ProductName] AS [product], SUM(dbo.Orders.Amount) AS [revenue]
@@ -11052,18 +11180,68 @@ LEFT JOIN [dbo].[Products] ON dbo.Orders.ProductID = dbo.Products.ProductID
 GROUP BY [dbo].[Customers].[Region], [dbo].[Products].[ProductName]
 ```
 
-The `Customers → Orders` step reuses the same `SemanticJoin` object through the reversed `edge_sql` key, so the emitted predicate is still `dbo.Orders.CustomerID = dbo.Customers.CustomerID` — the join expression must therefore be **order-independent**, which is why the extraction prompt tells the model to write full-path equalities.
+The `Customers → Orders` step reuses the same `SemanticJoin` object through the reversed `edge_sql` key,
+so the emitted predicate is still `dbo.Orders.CustomerID = dbo.Customers.CustomerID` — the join expression
+must therefore be **order-independent**, which is why the extraction prompt tells the model to write
+full-path equalities.
 
-#### Example F — measure-only payload and the unknown-metric failure
+#### Example F — measure-only payload, and the failures
 
-SMQ `{"metrics": ["revenue"]}` with the Example A/D models (which have joins): `selected_dims == []` ⇒ `required_tables` is empty ⇒ `required_tables = [model.joins[0].from_table] = ["dbo.Orders"]` ⇒
+SMQ `{"metrics": ["revenue"]}` on the D model (which has joins) — no dimensions, so no `GROUP BY`, and the
+anchor falls back to the measure's table if its expression names one, else `required[0]`:
 
 ```sql
 SELECT SUM(dbo.Orders.Amount) AS [revenue]
 FROM [dbo].[Orders]
+INNER JOIN [dbo].[Customers] ON dbo.Orders.CustomerID = dbo.Customers.CustomerID
+LEFT JOIN [dbo].[Products] ON dbo.Orders.ProductID = dbo.Products.ProductID
 ```
 
-No `GROUP BY` (that block is gated on `selected_dims`). With `{"metrics": []}` on the same model, `selected_measures` falls back to `[model.measures[0]]` and yields the same SQL. With `{"metrics": ["nope"]}` the compiler raises `SemanticCompilationError("UNKNOWN_METRIC", "nope")` → `str(exc) == "UNKNOWN_METRIC: nope"` (`tests/unit/test_semantic.py:35`–`40` asserts `exc.code == "UNKNOWN_METRIC"`).
+Failure paths (all execution-verified):
+
+| SMQ | Result |
+|---|---|
+| `{}` (no metrics, no dimensions) | `SemanticCompilationError("EMPTY_REQUEST", "payload requests neither metrics nor dimensions")` |
+| `{"metrics": ["nope"]}` | `SemanticCompilationError("UNKNOWN_METRIC", "nope")` → `str(exc) == "UNKNOWN_METRIC: nope"` (`tests/unit/test_semantic.py:35`–`40` asserts `exc.code == "UNKNOWN_METRIC"`) |
+| `{"dimensions": ["nope"]}` | `SemanticCompilationError("UNKNOWN_DIMENSION", "nope")` |
+
+#### Example G — dimensions-only detail query (no aggregation)
+
+Model: the Example A fixture. SMQ: `{"dimensions": ["customer"]}`
+
+```sql
+SELECT [dbo].[Orders].[CustomerID] AS [customer]
+FROM [dbo].[Orders]
+INNER JOIN [dbo].[Customers] ON dbo.Orders.CustomerID = dbo.Customers.CustomerID
+```
+
+No `GROUP BY`: the request has no measure and therefore nothing to aggregate. With a *non-aggregate*
+measure (e.g. `amount_plain = dbo.Orders.Amount`) the projection includes it and **still** emits no
+`GROUP BY` — a detail query is returned at its natural grain. This is the case the plan's §5.3 calls out:
+emitting `GROUP BY` here would silently collapse the result to distinct tuples, a wrong answer that
+validation happily accepts.
+
+#### Example H — the reference case (schema mismatch between model and discovery)
+
+The plan's reference failure: a model rooted in schema `BCTR` while schema selection chose `TSBC`. With
+`row_count = COUNT(*)` and dimensions `transport_mode → bctr.transport.mode`,
+`bctr_number → bctr.trauma_scene.bctr_number`, and one join
+`bctr.trauma_scene → bctr.transport`, SMQ
+`{"metrics": ["row_count"], "dimensions": ["transport_mode", "bctr_number"]}`:
+
+```sql
+SELECT [bctr].[transport].[mode] AS [transport_mode], [bctr].[trauma_scene].[bctr_number] AS [bctr_number], COUNT(*) AS [row_count]
+FROM [bctr].[transport]
+INNER JOIN [bctr].[trauma_scene] ON bctr.trauma_scene.transport_id = bctr.transport.id
+GROUP BY [bctr].[transport].[mode], [bctr].[trauma_scene].[bctr_number]
+```
+
+`FROM` is the **first requested dimension's** table (`bctr.transport`). Because this SQL was produced by the
+compiler, the follow-up validation skips the client-side object-scope check, so a server error about a
+`bctr` object is reported as-is rather than rewritten into "missing object" feedback for objects that were
+never missing (§9.10.5).
+
+---
 
 ---
 
@@ -11073,19 +11251,21 @@ No `GROUP BY` (that block is gated on `selected_dims`). With `{"metrics": []}` o
 |---|---|---|---|
 | 1 | Store construction | `app/services/stores/bundle.py:54`–`58` | `SemanticModelService(provider, source_id, enable_flag=settings.semantic_layer_enabled_for(source_id))`; the field is `SourceStores.semantic` (`:32`). `resolve_source_stores` is `lru_cache(maxsize=64)` (`:68`–`70`), so the service instance (and its `enable_flag`) is cached per `source_id`; a settings change needs a cache clear or process restart |
 | 2 | Mode decision | `app/core/orchestrator/builtin_sql_generator.py:170` | `semantic_mode = False if script_mode else stores.semantic.is_enabled(context.request.semantic_mode)` — evaluated **after** pin validation and routing, **before** the fast paths |
-| 3 | Precomputed-exact SMQ compilation | `app/core/orchestrator/builtin_sql_generator.py:202`–`228` | In semantic mode, if the exact precomputed row carries `smq_query`, the stored SMQ is re-compiled against the **current** active model: `SmqPayload.model_validate(json.loads(pre_exact.smq_query))` → `SemanticCompiler().compile(payload, stores.semantic.get_active_model(), context.dbms_type)`; **any** exception (including `active_model is None`) is swallowed and `sql` reverts to `pre_exact.sql`. The returned SQL is wrapped by `code_from_match` and the result branch is `DiscoveryBranch.PRECOMPUTED_EXACT` with `attempts=0`. Also note the fast path is skipped entirely on refinement turns carrying active filters (`preserve_filters`, `:183`) |
+| 3 | Precomputed-exact SMQ compilation | `app/core/orchestrator/builtin_sql_generator.py:200`–`263` | In semantic mode, if the exact precomputed row carries `smq_query`, the stored SMQ is re-compiled against the **current** active model via `SemanticCompiler().compile_guarded(payload, model, context.dbms_type)`. On success the compiled SQL is used; on failure the failure is **logged** (`logging.warning`) and `sql` falls back to the stored physical SQL — but only if that really is SQL (`_looks_like_sql`: non-empty body with a `FROM`/`JOIN` reference). If it is not, the turn returns a `semantic_compilation` failure result (`attempts=0`, branch `precomputed_exact`) rather than emitting a payload as SQL. The returned SQL is wrapped by `code_from_match`. Also note the fast path is skipped entirely on refinement turns carrying active filters (`preserve_filters`, `:183`) |
 | 4 | Precomputed SMQ storage | `app/services/stores/precomputed_store.py:31`, `:46`; `app/services/stores/schema_contracts.py:159` | `vec_data_group_queries.smq_query TEXT DEFAULT ''`; written by `DataGroupQueryGenerationService.generate_pairs` (`app/services/data_group_query_service.py:30`) and read back into `FewShotExample.smq_query` (`app/services/vector_search_service.py:105`, `:143`) |
 | 5 | Few-shot / precomputed payload injection into prompts | `app/core/orchestrator/prompts.py:186` (SQL), `:286` (Python), `:397` (R), `:504` (SAS) | `payload = ex.smq_query or ex.sql` — **the SMQ JSON is shown to the model in place of SQL whenever present**, in every language prompt, regardless of whether semantic mode is on |
-| 6 | Generator prompt context | `app/core/orchestrator/attempts.py:119`–`120`, `:164`–`171`; `app/core/orchestrator/prompts.py:63`–`76` | `semantic_json = active_model.model_dump_json()` (or `"[]"`); passed as `semantic_models_json` only when `semantic_mode` |
-| 7 | Attempt-loop compile + retry/fallback | `app/core/orchestrator/attempts.py:208`–`244` | See §9.4.4 |
-| 8 | Semantic-aware critic | `app/core/orchestrator/attempts.py:350`, `:432`–`446`; `app/core/orchestrator/prompts.py:521`–`528` | `semantic_json if semantic_mode else None` selects the model-aware critic prompt: system `"Validate the SMQ/SQL against the semantic model. Return JSON {requirements_satisfied:bool, schema_valid:bool, feedback:str, status:str\|null, canonical_question:str\|null, missing_objects:[]}."`, user `f"MODEL:\n{semantic_json}\nQUERY:\n{query}\nSQL:\n{sql}"`. The critic sees the **compiled physical SQL**, not the SMQ, plus the full model JSON. Critic failures follow the normal paths (requirements → retry; schema → missing-object expansion / `MISSING_GROUP_MEMBER` broadening) |
+| 6 | Generator prompt context | `app/core/orchestrator/attempts.py:140`–`141`, `:197`–`204`; `app/core/orchestrator/prompts.py:62`–`82` | `active_model = _load_active_model(stores)` (a try/except wrapper that returns `None` instead of raising when the store is absent); `semantic_json = active_model.model_dump_json()` (or `"[]"`); passed as `semantic_models_json` only when `semantic_mode`. `build_system_prompt` also appends `SEMANTIC_OUTPUT_CORRECTION` when a `GENERATION MODE`/filter block reads as an SMQ payload |
+| 7 | Attempt-loop guard + compile + retry | `app/core/orchestrator/attempts.py:241`–`322` | See §9.4.4 and §9.10.2–§9.10.3 |
+| 7a | Terminal semantic classification | `app/core/orchestrator/attempts.py:496`–`508` | An exhausted budget whose last attempt set `semantic_retry` returns `_fail(ErrorCategory.SEMANTIC_COMPILATION, last_semantic_error, …, context_text=last_prompt)` instead of the generic `validation` exit |
+| 7b | Compiled-SQL validation | `app/core/orchestrator/attempts.py:407`–`417`, `:445`–`449`, `:600`–`631`; `app/services/sql_validator.py:17`–`34` | `_validate_candidate(..., compiled_from_semantic_model)` forwards `skip_object_scope=True` to `SqlValidator.validate`, so a server error on compiled semantic SQL is preserved verbatim instead of being rewritten as `TABLE_VALIDATION_ERROR` (§9.10.5) |
+| 8 | Semantic-aware critic | `app/core/orchestrator/attempts.py:420`–`429`; `app/core/orchestrator/prompts.py:533`–`540` | `semantic_json if semantic_mode else None` selects the model-aware critic prompt: system `"Validate the SMQ/SQL against the semantic model. Return JSON {requirements_satisfied:bool, schema_valid:bool, feedback:str, status:str\|null, canonical_question:str\|null, missing_objects:[]}."`, user `f"MODEL:\n{semantic_json}\nQUERY:\n{query}\nSQL:\n{sql}"`. The critic sees the **compiled physical SQL**, not the SMQ, plus the full model JSON. Critic failures follow the normal paths (requirements → retry; schema → missing-object expansion / `MISSING_GROUP_MEMBER` broadening) |
 | 9 | Error-classification mapping | `app/services/sql_error_classifier.py:10`–`15`, `:20`–`21`, `:45`–`49` | `semantic_compilation` category; `UnknownMetric` / `UnknownDimension` / `IncompatibleDimensions` / `MissingJoinPath`. `ErrorCategory.SEMANTIC_COMPILATION = "semantic_compilation"` (`app/core/errors.py:18`) |
-| 10 | Expansion recovery | `app/core/orchestrator/attempts.py:541`–`552` | `_expand_missing(token, stores)` runs `stores.vector_search.search_objects(q, top_k=5)`, optional per-column searches (`top_k=3`), then `stores.semantic.search_models(q, top_k=2)` and **inserts each hit at the head** of the candidate list as `ScoredObject(schema_name="semantic", object_name=m.label, object_type="SemanticModel", required=True, score=1.0)`. Callers cap the batch with `MaxRecoveryExpansion = 5` (`app/core/constants.py:41`; `attempts.py:285`, `:363`, `:392`, `:397`). The label (not the model JSON) becomes a `required` discovery object, and `merge_and_dedup` (`app/utils/rrf.py`) folds it into the prompt schema context |
-| 11 | Missing-object circuit breaker | `app/core/orchestrator/attempts.py:287`–`290`, `:390`–`395` | Unaffected by semantic mode, but semantic-model objects injected by (10) participate in `hash_history` / `missing_counts` bookkeeping like any other object |
-| 12 | Admin HTTP surface | `app/api/endpoints/admin_semantic.py:14`–`55` | `GET /{api}/admin/semantic-models?source_id=` → `{"models": [model_dump()]}`; `POST .../semantic-models?source_id=` (body = `SemanticModel`) → saved dump; `POST .../semantic-models/extract?source_id=` (body `{schema_text, sql, label}`) → extracts **and saves** → saved dump; `POST .../semantic-models/compile?source_id=` (body `{"smq": {...}, "dbms": "..."}` or a bare SMQ object) → `{"sql": "..."}`, `404 "No active semantic model"` when none, `400 str(exc)` on `SemanticCompilationError`. All four call `resolve_known_source_id(source_id)` first (`app/services/source_resolver.py:10`), which raises `400 "source_id is required"` / `404 "Resource not found"`. Router mounted at `{settings.API_V1_STR}/admin` with tag `admin-semantic` (`app/main.py:45`) |
-| 13 | Constants declared but unused | `app/core/constants.py:51` | `SemanticModelDiscoveryTopK = 3` is **never referenced**: the only `search_models` call site passes `top_k=2` (`attempts.py:549`). `docs/BUILT_IN_SQL_GENERATOR_PYTHON_PORT_PLAN.md:118` and `docs/AGENT_PROCESS.md:287` describe semantic candidates as a *discovery* stage input and the top-K as 3 — in the Python port the only entry point is the recovery expansion in (10) |
+| 10 | Expansion recovery | `app/core/orchestrator/attempts.py:659`–`670` | `_expand_missing(token, stores)` runs `stores.vector_search.search_objects(q, top_k=5)`, optional per-column searches (`top_k=3`), then `stores.semantic.search_models(q, top_k=2)` and **inserts each hit at the head** of the candidate list as `ScoredObject(schema_name="semantic", object_name=m.label, object_type="SemanticModel", required=True, score=1.0)`. Callers cap the batch with `MaxRecoveryExpansion = 5` (`app/core/constants.py:41`). The label (not the model JSON) becomes a `required` discovery object, and `merge_and_dedup` (`app/utils/rrf.py`) folds it into the prompt schema context |
+| 11 | Missing-object circuit breaker | `app/core/orchestrator/attempts.py:359`–`369`, `:471`–`478` | Unaffected by semantic mode, but semantic-model objects injected by (10) participate in `hash_history` / `missing_counts` bookkeeping like any other object |
+| 12 | Admin HTTP surface | `app/api/endpoints/admin_semantic.py:14`–`59` | `GET /{api}/admin/semantic-models?source_id=` → `{"models": [model_dump()]}`; `POST .../semantic-models?source_id=` (body = `SemanticModel`) → saved dump; `POST .../semantic-models/extract?source_id=` (body `{schema_text, sql, label}`) → extracts **and saves** → saved dump; `POST .../semantic-models/compile?source_id=` (body `{"smq": {...}, "dbms": "..."}` or a bare SMQ object) → `{"sql": "..."}`, `404 "No active semantic model"` when none, `400 "Invalid SMQ payload: …"` when the body is not a valid `SmqPayload`, `400 str(exc)` on `SemanticCompilationError`. All four call `resolve_known_source_id(source_id)` first (`app/services/source_resolver.py:10`), which raises `400 "source_id is required"` / `404 "Resource not found"`. Router mounted at `{settings.API_V1_STR}/admin` with tag `admin-semantic` (`app/main.py:45`) |
+| 13 | Constants declared but unused | `app/core/constants.py:51`, `:59` | `SemanticModelDiscoveryTopK = 3` is **never referenced**: the only `search_models` call site passes `top_k=2` (`attempts.py:665`). `SemanticSmqParseRetryOnFailure = True` is likewise unreferenced after the payload-class guard replaced the one-shot parse retry. `docs/BUILT_IN_SQL_GENERATOR_PYTHON_PORT_PLAN.md:118` and `docs/AGENT_PROCESS.md:287` describe semantic candidates as a *discovery* stage input and the top-K as 3 — in the Python port the only entry point is the recovery expansion in (10) |
 
-**Verified absence:** the Python port has **no** semantic-model retrieval inside `DiscoveryEngine.discover` — exhaustive grep of `app/core/orchestrator/discovery_engine.py` returns zero `semantic`/`search_models` symbols, and the only `search_models` call site in the repository is `attempts.py:549` inside `_expand_missing`. Treat integration (10) as the complete Python-port semantic retrieval surface.
+**Verified absence:** the Python port has **no** semantic-model retrieval inside `DiscoveryEngine.discover` — exhaustive grep of `app/core/orchestrator/discovery_engine.py` returns zero `semantic`/`search_models` symbols, and the only `search_models` call site in the repository is `attempts.py:665` inside `_expand_missing`. Treat integration (10) as the complete Python-port semantic retrieval surface.
 
 > ⚠️ Unverified: whether the C# engine merges semantic-model candidates into the discovery object set earlier (as `docs/BUILT_IN_SQL_GENERATOR_PYTHON_PORT_PLAN.md:619` and `docs/AGENT_PROCESS.md:287` imply). If full C# parity is required, this is the one place where the Python port is narrower than its own documentation.
 
@@ -11197,9 +11377,10 @@ Rules to reproduce exactly:
 
 #### 9.8.4 What validation prevents
 
-- **Zero-measure models**: prevented at the extraction boundary by the inline `row_count = COUNT(*)` append in `extract`; the compiler itself tolerates a zero-measure model (it emits `COUNT(*) AS row_count`, `app/services/semantic_compiler.py:66`–`67`) and `SemanticModelService.save` persists one without complaint. So the guarantee is a data-quality rule enforced at authoring time, not a store or compiler precondition.
-- **Alias-based measure expressions**: prevented only by prompt instruction ("full schema.table.column references (no aliases)"). Nothing in code strips or validates aliases; the compiler re-emits expressions verbatim and rebuilds `FROM` without aliases, so an alias-based expression compiles to SQL that fails at the database. A re-implementation should keep the instruction (and may add a validator, but must not change the emitted SQL shape).
-- **Models with unusable dimensions**: not prevented. `SemanticDimension.table`/`.column` may be empty strings; the compiler will emit `"".""` style identifiers (`_col("", "", dbms)` → `quote_identifier("", dbms)` returns `""`). Only the `required_tables` derivation guards against a totally empty table (`:51`, `:53`–`54`).
+- **Zero-measure models**: prevented at the extraction boundary by the inline `row_count = COUNT(*)` append in `extract`; the compiler no longer tolerates a *request* with no metrics and no dimensions (it raises `EMPTY_REQUEST`, `app/services/semantic_compiler.py:171`), and `SemanticModelService.save` still persists a zero-measure model without complaint. So the guarantee is a data-quality rule enforced at authoring time, not a store precondition.
+- **Alias-based measure expressions**: prevented only by prompt instruction ("full schema.table.column references (no aliases)"). Nothing in code strips or validates aliases; the compiler re-emits expressions verbatim and rebuilds `FROM`/`JOIN` without table aliases, so an alias-based expression compiles to SQL that fails at the database. A re-implementation should keep the instruction (and may add a validator, but must not change the emitted SQL shape).
+- **Models with unusable dimensions**: not prevented. `SemanticDimension.table`/`.column` may be empty strings; `_normalize_table` then drops the table from the required set entirely, and a dimensions-only request whose dimensions carry no usable table fails as `MISSING_JOIN_PATH: no source table` rather than emitting `"".""`.
+- **Measure expressions that name a table the model does not declare**: the name is ignored for planning purposes (§9.5.4), so a typo inside an expression cannot silently choose the `FROM` anchor.
 
 ---
 
@@ -11207,30 +11388,194 @@ Rules to reproduce exactly:
 
 | # | Behaviour | Where | Why it matters |
 |---|---|---|---|
-| 1 | Unset per-source flag ⇒ enabled | `semantic_model_service.py:29`–`33` | "Flag not set" must not mean "off" |
+| 1 | Unset per-source flag ⇒ enabled | `semantic_model_service.py:26`–`33` | "Flag not set" must not mean "off" |
 | 2 | `semantic_mode=False` vetoes even with an active model | `:23`–`24` | Request override is checked first and short-circuits |
-| 3 | Script targets force `semantic_mode=False` in two places | `builtin_sql_generator.py:170`; `attempts.py:100`–`102` | One guard is not enough for direct callers |
-| 4 | Only **one** SMQ parse retry per generation | `attempts.py:121`, `:211`–`216` | A per-attempt retry changes retry accounting and the attempt reports |
-| 5 | Fallback to raw SQL reuses the ` ```smq ` fence body as "SQL" | `regexes.py:18`; `sql_normalization.py:34` | The fallback candidate is the JSON text, which then fails DB validation — preserving this is required for identical failure transcripts |
-| 6 | `timeout_ms` is accepted and discarded | `semantic_compiler.py:29` | Do not add a real 5 s deadline without a spec change |
-| 7 | `SemanticCompilationFallbackToRawSql` is shadowed by a same-named function | `constants.py:58`, `:97` | Import the function; the settings key is the real switch |
-| 8 | Filters/timeframes never extend the join plan and never resolve names | `semantic_compiler.py:136`–`157`, `:72`–`79` | Silently produces SQL referencing absent tables |
-| 9 | BFS appends non-required neighbours | `:111`–`119` | Unused joins appear in `FROM`; changes row sets for 1:N joins |
-| 10 | `edge_sql` is symmetric and last-write-wins per pair | `:100`–`105` | Duplicate joins collapse; reverse lookups reuse the same predicate text |
-| 11 | `bool` values inline as `True`/`False` | `:153`–`154` | `isinstance(True, int)` is `True` in Python |
-| 12 | Governance predicates are appended last, unparenthesized, verbatim | `:80`–`81` | Precedence and row-level security semantics |
-| 13 | No `ORDER BY` / `LIMIT` / `TOP` / `DISTINCT` / aliases | whole compiler | Do not "improve" the SQL shape |
-| 13a | A `WHERE` keyword plus trailing space is emitted whenever `where_parts` is a non-empty list, even if every part renders `""` | `semantic_compiler.py:84`–`85` | `if where_parts:` is a list test; `if any(where_parts)` changes the bytes |
-| 13b | A **single-element** JSON list parses as an SMQ payload (brace slice), a multi-element list does not | `attempts.py:528`–`535` | The parser is a brace-slice, not a JSON-document parser |
-| 14 | Dimension select items and `GROUP BY` items are duplicated if the payload repeats a name | `:42`–`47`, `:87` | No de-duplication anywhere |
-| 15 | `_replace_children` deletes by `model_id`, so a re-save with empty children wipes them | `semantic_model_service.py:66`–`123` | The ≥1-measure guarantee lives in extraction, not in save |
-| 16 | `get_active_model` sorts by `updated_at_utc` string, ties by row order | `:129`–`136` | "Active" = most recently saved |
-| 17 | `search_models` is in-process cosine over JSON vectors, active models only, missing embedding = 0.0 | `:138`–`153` | Not the provider ANN search; inactive models are invisible |
-| 18 | `is_enabled` does a full 5-query `get_active_model` on every non-short-circuited call | `:22`–`33`, `:155`–`196` | Per-request, per-attempt cost; a naive re-implementation may cache it and change behaviour when a model is deactivated mid-session |
-| 19 | Extraction fallback names measures after the SQL function (`sum`, `count`, …) | `semantic_extraction_service.py:79`–`84` | Duplicate names collide on the PK on save |
-| 20 | Extraction truncates `schema_text` at 8 000 chars | `semantic_extraction_service.py:39` | Large schemas silently lose the tail |
+| 3 | Script targets force `semantic_mode=False` in two places | `builtin_sql_generator.py:170`; `attempts.py:118`–`119` | One guard is not enough for direct callers |
+| 4 | **A payload is never executed as SQL, whatever the fallback setting says** | `attempts.py:251`–`272`; `semantic_smq.py:203` | This is the point of the payload-class guard: `looks_like_smq` is evaluated **before** the fallback policy |
+| 5 | The guard is structural, never a substring test | `semantic_smq.py:135`–`194` | `"metrics" in text` would refuse `SELECT [metrics] FROM [dbo].[audit]`; the guard requires the key token at JSON depth 1 (outside strings, outside nested objects) |
+| 6 | A truncated payload is still recognised as SMQ | `semantic_smq.py:135`, `:195` | A brace-led fragment cut off before its first value parses as nothing, so the fallback would otherwise execute it |
+| 7 | `extract_smq_json` and `parse_smq` are deliberately two passes | `semantic_smq.py:107`, `:226` | One answers "is something SMQ-shaped here?", the other "can I use it?"; collapsing them loses the guard's evidence |
+| 8 | Retry feedback enumerates the model's valid names | `semantic_smq.py:255`; `attempts.py:633` | A retry told only "unknown metric: gross_margin" cannot converge |
+| 9 | An exhausted semantic budget is `semantic_compilation`, not `validation` | `attempts.py:496`–`508` | Otherwise a payload bug is reported as a parse error and the symptom returns |
+| 10 | Compiled semantic SQL skips the object-scope rewrite | `attempts.py:600`–`631`; `sql_validator.py:26`–`34` | The model may own tables discovery never selected (the `BCTR`/`TSBC` case); rewriting buries the real cause |
+| 11 | `get_active_model` returns `None` when the store is absent or predates the tables | `semantic_model_service.py:129`–`141` | A source whose vector index was never built must degrade to "no active model", not fail the request |
+| 12 | The stored precomputed SMQ is compiled, and a failure is logged, not silent | `builtin_sql_generator.py:200`–`263` | The stored SQL may stand in — but only after `_looks_like_sql` confirms it is SQL |
+| 13 | `GROUP BY` requires a real aggregate | `semantic_compiler.py:88`, `:220` | Emitting it for a detail query silently collapses the result to distinct tuples, which validation accepts |
+| 14 | Aggregate detection is delimiter-aware | `semantic_compiler.py:46`–`49` | `t.avg_cost` / `t.county_name` are not aggregate calls |
+| 15 | There is **no** measure default; an empty request is rejected | `semantic_compiler.py:169`–`172` | `model.measures[0]` silently answered a question that was not asked |
+| 16 | Required tables and the anchor come from **ordered lists** | `semantic_compiler.py:224`–`272` | Set/dict iteration order made identical input compile to different SQL |
+| 17 | Traversal visits the whole component but emits only requested tables | `semantic_compiler.py:280`–`346` | Keeps multi-hop reachability without leaking unused joins |
+| 18 | `timeout_ms` is enforced by `compile_guarded` only | `semantic_compiler.py:124`–`147` | Expiry is a semantic retry; the raising `compile` still discards the budget |
+| 19 | `SemanticCompilationFallbackToRawSql` is shadowed by a same-named function | `constants.py:60`, `:97` | Import the function; the settings key is the real switch |
+| 20 | Filters/timeframes never extend the join plan and never resolve names | `semantic_compiler.py:354`–`375`, `:206`–`215` | Silently produces SQL referencing absent tables |
+| 21 | `edge_sql` is symmetric and last-write-wins per pair | `semantic_compiler.py:283`–`291` | Duplicate joins collapse; reverse lookups reuse the same predicate text |
+| 22 | `bool` values inline as `True`/`False` | `semantic_compiler.py:371`–`372` | `isinstance(True, int)` is `True` in Python |
+| 23 | Governance predicates are appended last, unparenthesized, verbatim | `semantic_compiler.py:216`–`217` | Precedence and row-level security semantics |
+| 24 | No `ORDER BY` / `LIMIT` / `TOP` / `DISTINCT` / table aliases | whole compiler | Do not "improve" the SQL shape |
+| 25 | A `WHERE` keyword plus trailing space is emitted whenever `where_parts` is a non-empty list, even if every part renders `""` | `semantic_compiler.py:218`–`219` | `if where_parts:` is a list test; `if any(where_parts)` changes the bytes |
+| 26 | Dimension select items and `GROUP BY` items are duplicated if the payload repeats a name | `:167`–`179`, `:210` | No de-duplication anywhere |
+| 27 | `_replace_children` deletes by `model_id`, so a re-save with empty children wipes them | `semantic_model_service.py:66`–`123` | The ≥1-measure guarantee lives in extraction, not in save |
+| 28 | `get_active_model` sorts by `updated_at_utc` string, ties by row order | `:129`–`141` | "Active" = most recently saved |
+| 29 | `search_models` is in-process cosine over JSON vectors, active models only, missing embedding = 0.0 | `:145`–`160` | Not the provider ANN search; inactive models are invisible |
+| 30 | `is_enabled` does a full 5-query `get_active_model` on every non-short-circuited call | `:22`–`33`, `:129`–`141` | Per-request, per-attempt cost; a naive re-implementation may cache it and change behaviour when a model is deactivated mid-session |
+| 31 | Extraction fallback names measures after the SQL function (`sum`, `count`, …) | `semantic_extraction_service.py:79`–`84` | Duplicate names collide on the PK on save |
+| 32 | Extraction truncates `schema_text` at 8 000 chars | `semantic_extraction_service.py:39` | Large schemas silently lose the tail |
 
 ---
+
+### 9.10 The semantic payload module (`app/services/semantic_smq.py`)
+
+The defect this module exists to prevent: a response carrying SMQ JSON was handed to the SQL validator,
+which reported a syntax error naming a JSON key (`Incorrect syntax near 'metrics'`). The root cause was
+using "extraction returned nothing" as the answer to *"is this SQL?"* — two different questions.
+
+#### 9.10.1 Tolerant extraction (verified)
+
+```python
+_SMQ_FENCE_RE = re.compile(r"```smq\s*\n?(?P<body>.*?)```", re.IGNORECASE | re.DOTALL)         # :31
+_ANY_FENCE_RE = re.compile(r"```(?:sql)?\s*\n?(?P<body>.*?)```", re.IGNORECASE | re.DOTALL)    # :35
+
+def _is_smq_object(obj) -> bool:                       # :48
+    return isinstance(obj, dict) and (
+        isinstance(obj.get("metrics"), list) or isinstance(obj.get("dimensions"), list))
+
+def extract_smq_json(raw) -> Optional[str]:             # :107
+    # 1. _SMQ_FENCE_RE body  2. _ANY_FENCE_RE body  3. first balanced {...}  4. whole text
+```
+
+Rules:
+
+1. **Candidate order matters** — the `smq` fence wins over any other fence; a bare fence wins over a
+   balanced region; the whole text is last.
+2. **A leading fence language tag must be dropped.** `_ANY_FENCE_RE` does not enumerate tags, so a
+   ` ```json ` body arrives with `json` as its first line; `_drop_fence_tag` (`:59`) removes it.
+3. **The brace scanner must honour string state *and* escapes.** `_find_balanced_object` (`:72`) skips
+   braces inside strings and treats `\"` as an escaped quote. Getting this wrong returns a truncated
+   region for a value such as `"a \" b {c"`, the parse fails, and a perfectly good SMQ falls through to
+   the SQL path — the original bug, reproduced by a one-character omission. Regression test:
+   `test_escaped_quote_brace_scan_returns_whole_payload`.
+4. **Either key is enough.** Accepting only `metrics` would make a dimensions-only detail request
+   unrecognisable, and it would then be executed as SQL.
+
+`parse_smq` (`:226`) is the second, strongly typed pass: same tolerant extraction, then a requirement that
+the result is an SMQ object, then `SmqPayload.model_validate`. It returns `None` — an explicit semantic
+retry — rather than raising.
+
+#### 9.10.2 The payload-class guard
+
+`looks_like_smq` (`:203`) answers only *"does this response carry SMQ-shaped JSON, usable or not?"*. It is
+**independent of** the typed parse and must be `True` for a malformed SMQ attempt, because that is exactly
+the case that must not be executed. It is implemented by parsing structure, never by searching for the
+substring `metrics`:
+
+```python
+def _looks_like_smq_text(text) -> bool:             # :182
+    obj = _parse_object(text)
+    if obj is not None and _is_smq_object(obj):     # valid object carrying metrics/dimensions
+        return True
+    if _has_top_level_smq_key(text):                # :135 — a truncated attempt
+        return True
+    head = text[:80]
+    return text.startswith("{") and bool(_SMQ_KEY_RE.search(head))
+```
+
+`_has_top_level_smq_key` walks the text once, tracking string state, escapes and brace depth, and accepts
+the token only when **all** of these hold: the quoted string sits at depth 1, its content is `metrics` or
+`dimensions`, and the next non-space character is `:`. Consequences, all covered by tests:
+
+| Input | `looks_like_smq` | Why |
+|---|---|---|
+| `{"metrics":["row_count"], "dimensions":[` | `True` | depth-1 key with its colon |
+| `{"metrics": "row_count"}` | `True` | key present even though the value is the wrong type |
+| `{"dimensions":[]}` | `True` | `_is_smq_object` |
+| `{"metrics":` (cut off before the colon) | `True` | brace-led fragment matching `_SMQ_KEY_RE` in its first 80 chars |
+| `SELECT [metrics] FROM [dbo].[audit] WHERE [metrics] IS NOT NULL;` | `False` | `metrics` is a bracketed identifier, not a quoted depth-1 key |
+| `SELECT 'dimensions': FROM [dbo].[audit]` | `False` | quoted, but there is no enclosing object at depth 1 |
+| `{"name":"r","columns":["a"]}` | `False` | no SMQ key |
+| `{"a":{"dimensions":[]}}` | `True` | still SMQ-shaped, so refused rather than executed |
+| `""`, `"   "`, prose only, plain SQL | `False` | the fallback decides (an empty reply is a generation failure) |
+
+The guard is called on **both** the raw model output and the fence-stripped body (`attempts.py:253`–`254`),
+because `extract_sql_body` may have removed context the guard needs.
+
+#### 9.10.3 Retry feedback and terminal classification
+
+Every semantic failure appends a report whose `why_it_failed` is the reason **plus**
+`valid_names_hint(model)` (`semantic_smq.py:255`):
+
+```
+ Return only a fenced smq code block with JSON of the shape
+ {"metrics":[...],"dimensions":[...],"filters":[...],"timeframes":[...]}. Do not return SQL.
+ Valid metrics: row_count, avg_response_minutes.
+ Valid dimensions: bctr_number, arrival_date, transport_mode.
+```
+
+`valid_names_hint` accepts either a dict-shaped model (the shape the API transports) or an
+attribute-shaped one (a Pydantic instance), de-duplicates names, and always states that the reply must be an
+SMQ block rather than SQL — the retry prompt is the main corrective signal in semantic mode. It is also what
+`build_system_prompt` keys off: a `GENERATION MODE`/filter block that reads as an SMQ payload appends
+`SEMANTIC_OUTPUT_CORRECTION` (`prompts.py:28`, `:71`–`73`).
+
+`build_semantic_compile_error_feedback` (`attempts.py:633`) wraps a compiler detail:
+
+```
+Semantic compilation failed: {detail}. Return only a fenced smq code block naming metrics and
+dimensions that exist in the semantic model; do not return SQL.
+```
+
+**Terminal classification** (`attempts.py:496`–`508`): when the loop exhausts its budget and the last
+attempt ended in a semantic retry, the turn ends as
+
+```python
+return _fail(ErrorCategory.SEMANTIC_COMPILATION,
+             last_semantic_error or "Semantic compilation failed after all retries",
+             MaxRetries, attempt_reports, discovery, llm, started_at,
+             hallucination_count, agentic_retry, context, context_text=last_prompt)
+```
+
+which is why the reported detail never contains `Incorrect syntax`. The guard is deliberately explicit: if
+the last attempt was **not** a semantic retry, the pre-existing generic `validation` exit still applies.
+
+#### 9.10.4 Compiler correctness rules
+
+| Rule | Implementation | Test |
+|---|---|---|
+| Deterministic ordering | `_required_tables`: model join sources → model dimension tables → requested dimensions → measure `FROM` tables already in the set | `test_determinism_is_byte_identical` (25 runs) |
+| Deterministic anchor | `_anchor`: first requested dimension's table → a measure's source table → `required[0]` | `test_from_anchor_is_first_requested_dimension`, `test_anchor_falls_back_to_measure_source_table` |
+| `GROUP BY` only when needed | `any(expression_has_aggregate(m.expression) …)` | `test_group_by_matrix`, `test_group_by_needs_a_real_aggregate` |
+| Detail queries stay ungrouped | a non-aggregate measure + dimensions emits no `GROUP BY` | `test_group_by_needs_a_real_aggregate` |
+| Join plan | BFS over an undirected join graph; only requested tables are emitted | `test_join_plan_skips_traversal_only_tables` |
+| Dimensions-only accepted | `EMPTY_REQUEST` only when both lists are empty | `test_dimensions_only_request_is_accepted`, `test_empty_request_is_rejected` |
+| Dialect quoting | `quote_identifier` / `quote_qualified` / `quote_string_literal` | `test_dialect_quoting` |
+| Timeout | `compile_guarded` runs `_render` on a daemon thread and `join(timeout_ms/1000)` | `test_guarded_compile_times_out` |
+
+#### 9.10.5 Call-site obligations
+
+1. **`attempts.py`** — the guard is evaluated before the fallback; every semantic failure records a report
+   and `continue`s; success sets `compiled_from_semantic_model`, which `_validate_candidate` forwards as
+   `skip_object_scope`, so `SqlValidator` preserves the server error instead of rewriting it into
+   `TABLE_VALIDATION_ERROR` (`sql_validator.py:26`–`34`).
+2. **`builtin_sql_generator.py`** — the precomputed fast path compiles a stored `smq_query` through
+   `compile_guarded`, logs a failure, and falls back to the stored SQL only when `_looks_like_sql` confirms
+   it is SQL.
+3. **`semantic_model_service.get_active_model`** — never raises: absent store, absent tables and
+   unhydratable rows all return `None`, i.e. "no active model" and semantic mode off for that turn.
+4. **`admin_semantic.compile_smq`** — an unusable payload is a 400 (`"Invalid SMQ payload: …"`) and a
+   compile failure is a 400 (`str(exc)`); neither is downgraded to something executable.
+
+#### 9.10.6 Acceptance criteria (proved by test)
+
+1. No configuration of the fallback setting can cause a JSON payload containing `metrics` to be sent to a
+   database — `test_no_fallback_setting_can_execute_a_payload` asserts the validator is called **zero**
+   times across 4 malformed payload shapes × fallback on/off.
+2. An unusable semantic payload terminates as `semantic_compilation` with actionable detail —
+   `test_terminal_classification_is_semantic_not_generic`.
+3. A genuine SQL reply with no SMQ still works under the fallback — `test_fallback_still_works_for_plain_sql`.
+4. Repeated compilation of the same input is byte-identical — `test_determinism_is_byte_identical`.
+5. Detail queries (dimensions without aggregates) are not grouped — `test_group_by_matrix`.
+
+---
+
 
 ### Implementation checklist
 
@@ -11241,19 +11586,23 @@ Rules to reproduce exactly:
 - [ ] Implement `ENABLE_SEMANTIC_LAYER_PER_DATA_SOURCE` as a JSON-object settings field with the dict validator and the exact `ValueError` message, plus `semantic_layer_enabled_for` returning `None` for unknown/blank sources.
 - [ ] Wire `enable_flag` at store-construction time and honour the request `semantic_mode` override with the three-branch `is_enabled` logic.
 - [ ] Force `semantic_mode = False` for `python` / `r` / `sas` targets in **both** `generate_sql_builtin` and `run_attempt_loop`.
-- [ ] Reproduce the semantic system-prompt block verbatim (`prompts.py:63`–`76`), including the absence of query analysis, KB examples, value mappings, schemas, attempt history and scenario rules, and the presence of `GENERATION MODE` + `_filter_block`.
-- [ ] Implement `_extract_smq` exactly: ` ```smq ` fence first, else whole text; `{"metrics"` anchor then `{`; slice to the **last** `}`; `json.loads` + `SmqPayload.model_validate`; any failure ⇒ `None`.
-- [ ] Implement the retry/fallback policy: one parse retry per generation (`SemanticSmqParseRetryOnFailure`), attempt report `stage="semantic_compilation"` / `what_was_tried="parse SMQ"` / `why_it_failed="missing payload"`, then `semantic_compilation` terminal failure unless `settings.SEMANTIC_COMPILATION_FALLBACK_TO_RAW_SQL` is true. `SemanticCompilationError` ⇒ attempt report `what_was_tried="compile SMQ"` + `continue`.
-- [ ] Implement `SemanticCompiler.compile` with the exact selection order (dimensions then measures), the `model.measures[0]` fallback, the `model.joins[0].from_table` anchor fallback, `COUNT(*) AS row_count` for an empty select list, and the WHERE accumulation order filters → timeframes → governance.
-- [ ] Implement `_join_plan` as an undirected BFS with symmetric `edge_sql`, the extra-neighbour leak, `INCOMPATIBLE_DIMENSIONS` (sorted comma-joined remainder), `join_type or "INNER"`, and verbatim join expressions.
+- [ ] Implement `app/services/semantic_smq.py` exactly as §9.10.1–§9.10.3: the two fence regexes with `re.I|re.S`, `_is_smq_object` accepting `metrics` **or** `dimensions`, `_drop_fence_tag`, the escape-aware `_find_balanced_object`, `extract_smq_json` in the documented candidate order, `parse_smq` as a second typed pass, `looks_like_smq` built on `_has_top_level_smq_key` (**never** a substring search for `metrics`), and `valid_names_hint`.
+- [ ] Reproduce the semantic system-prompt block (`prompts.py:62`–`82`), including the absence of query analysis, KB examples, value mappings, schemas, attempt history and scenario rules, the presence of `GENERATION MODE` + `_filter_block`, and the conditional `SEMANTIC_OUTPUT_CORRECTION`.
+- [ ] Implement the **payload-class guard before the fallback**: with the fallback on **and** off, a reply carrying SMQ JSON that cannot be extracted or compiled must be a semantic retry, never a SQL candidate. Prove it by asserting the validator is called zero times (§9.10.6 case 1).
+- [ ] Implement the retry feedback: every semantic report carries `<reason> + valid_names_hint(model)` (offending item **and** the valid metric/dimension names), plus an explicit "return an smq block, not SQL".
+- [ ] Implement the terminal classifier: an exhausted budget whose last attempt was a semantic retry returns `ErrorCategory.SEMANTIC_COMPILATION` with `last_semantic_error`; the generic `validation` exit applies only when the last attempt was not a semantic retry.
+- [ ] Implement `SemanticCompiler._render` with dimensions-then-measures selection, **no** measure default, `EMPTY_REQUEST` for a payload with neither key, the ordered required-table list, the deterministic `_anchor` rule, `GROUP BY` gated on `expression_has_aggregate`, and the WHERE accumulation order filters → timeframes → governance.
+- [ ] Implement `compile_guarded` as a real per-call timeout (daemon worker + `join`), returning `COMPILATION_TIMEOUT` in `detail`; expiry is a semantic retry, not an exception.
+- [ ] Implement `_join_plan` as an undirected BFS that maps the whole reachable component but emits **only** requested tables, with symmetric `edge_sql`, `INCOMPATIBLE_DIMENSIONS` over the missing required tables, `join_type or "INNER"`, and verbatim join expressions. Verify determinism by compiling the same input ≥ 20 times and comparing bytes.
 - [ ] Implement `_filter_sql` with the full operator map, the `field`/`dimension` alias, `None` ⇒ `""`, numeric inlining (including the `bool` quirk), and unknown op ⇒ `=`.
 - [ ] Implement `quote_identifier` / `quote_qualified` / `quote_string_literal` with the substring dialect matching, the `strip('[]"\'`')` cleaning, `''` escaping, and the SQL-Server-only `N''` prefix.
 - [ ] Emit no `ORDER BY`, `LIMIT`, `TOP`, `OFFSET`, `HAVING`, `DISTINCT`, table aliases, or trailing semicolon.
-- [ ] Expose the four admin endpoints with `resolve_known_source_id` first, `404 "No active semantic model"`, and `400 str(SemanticCompilationError)`.
-- [ ] Wire integration points: precomputed-exact SMQ recompilation with silent fallback to the stored SQL, `smq_query or sql` payload injection into the SQL/Python/R/SAS example blocks, `semantic_json` into the generator prompt and the critic prompt, `search_models(top_k=2)` inside `_expand_missing` (score 1.0, `required=True`, `schema_name="semantic"`, `object_type="SemanticModel"`, inserted at the head), and the `SqlErrorClassifier` semantic code map.
+- [ ] Expose the four admin endpoints with `resolve_known_source_id` first, `404 "No active semantic model"`, `400 "Invalid SMQ payload: …"` for an unusable body, and `400 str(SemanticCompilationError)`.
+- [ ] Wire integration points: precomputed-exact SMQ recompilation through `compile_guarded` with a **logged** failure and a stored-SQL fallback gated on `_looks_like_sql`, `smq_query or sql` payload injection into the SQL/Python/R/SAS example blocks, `semantic_json` into the generator prompt and the critic prompt, `search_models(top_k=2)` inside `_expand_missing` (score 1.0, `required=True`, `schema_name="semantic"`, `object_type="SemanticModel"`, inserted at the head), and the `SqlErrorClassifier` semantic code map.
+- [ ] Pass `compiled_from_semantic_model` through `_validate_candidate` into `SqlValidator.validate(skip_object_scope=…)`, and make `get_active_model` degrade to `None` on an absent/unbuilt store.
 - [ ] Implement `SemanticModelExtractionService.extract` with the LLM-first path (8 000-char schema truncation, `Return JSON only.` system message), the `COUNT|SUM|AVG|MIN|MAX` regex fallback, and the unconditional `row_count = COUNT(*)` guarantee.
-- [ ] Add conformance tests: the four existing cases in `tests/unit/test_semantic.py`, plus full-string assertions for Examples A–F, an unused-`LEFT JOIN` assertion for the BFS leak, an `INCOMPATIBLE_DIMENSIONS` reachability case, a governance-injection case, an `include_governance=False` case, a PostgreSQL/MySQL quoting case, an all-empty-filter case asserting the trailing-space `WHERE`, and a save/re-load round-trip proving `get_active_model` picks the newest `updated_at_utc` and that empty child lists are wiped.
-- [ ] Keep code comments at the points where the non-obvious rules are enforced: BFS extra-neighbour emission, no-plan-extension for filters, unenforced `timeout_ms`, and the single parse retry per generation.
+- [ ] Port the test matrix in `tests/unit/test_semantic_smq.py`: extraction/rejection cases, the malformed-SMQ guard, the non-substring guard (`SELECT [metrics] …`), the escaped-quote brace scan, the fallback-on/off behavioural cases, retry-feedback content, terminal classification, compiler determinism, the `GROUP BY` matrix, the anchor rule, the traversal-only-join case, the dialect-quoting case, the all-empty-filter case asserting the trailing-space `WHERE`, and the `skip_object_scope` case. Keep the four legacy cases in `tests/unit/test_semantic.py`, plus a save/re-load round-trip proving `get_active_model` picks the newest `updated_at_utc` and that empty child lists are wiped.
+- [ ] Keep code comments at the points where the non-obvious rules are enforced: guard-before-fallback, no-plan-extension for filters, `GROUP BY` requiring an aggregate, only-requested-tables emission, and the skip-object-scope flag.
 
 ---
 
@@ -15613,9 +15962,9 @@ def normalize_pinned_function_calls(sql, function_names=None) -> str:      # :37
 
 | Rule | Applied at |
 |---|---|
-| `quote_identifier` (dimension/measure aliases, table parts, column parts) | `services/semantic_compiler.py:63,65,93,94,133,134` |
-| `quote_qualified` (schema.table, schema.table.column) | `services/semantic_compiler.py:93,133`; `services/sql_context_hydrator.py:63,98` |
-| `quote_string_literal` (SMQ filter literals and timeframes, cast to `str`) | `services/semantic_compiler.py:78,156` |
+| `quote_identifier` (dimension/measure aliases, table parts, column parts) | `services/semantic_compiler.py:191,195,277,278,350,351` |
+| `quote_qualified` (schema.table, schema.table.column) | `services/semantic_compiler.py:277,350`; `services/sql_context_hydrator.py:63,98` |
+| `quote_string_literal` (SMQ filter literals and timeframes, cast to `str`) | `services/semantic_compiler.py:211,373` |
 | `normalize_qualifiers` | nowhere (defined; no callers) |
 | `normalize_pinned_function_calls` | nowhere (defined; no callers) |
 
@@ -16193,13 +16542,22 @@ Every test below is written so that a re-implementation can execute it. `Expecte
 | ID | Scenario | Expected |
 |---|---|---|
 | T-S1 | Successful compile | Valid SMQ + active model → dialect-quoted SQL; joins emitted per the model's join plan; literals escaped per dialect |
-| T-S2 | Unknown metric/dimension | Compile raises the documented code; the attempt is recorded; raw-SQL fallback applies only when the flag is true, otherwise `error_category=semantic_compilation` |
-| T-S3 | Missing join path | Dimensions from unconnected tables → `MISSING_JOIN_PATH` |
+| T-S2 | Unknown metric/dimension | Compile raises the documented code; the attempt is recorded with the offending name **and** the model's valid names; the loop retries semantically |
+| T-S3 | Missing join path | Dimensions from unconnected tables → `INCOMPATIBLE_DIMENSIONS`; no usable source table → `MISSING_JOIN_PATH` |
 | T-S4 | Incompatible dimensions | Dimensions that cannot coexist in one grain → documented incompatibility code |
 | T-S5 | Script target | `target_language=python` + semantic request → semantic mode disabled, raw SQL path used |
 | T-S6 | Model selection | Inactive models are never used; among active models the newest for the source wins |
-| T-S7 | Parse retry | A missing SMQ payload triggers exactly one parse retry before fallback |
-| T-S8 | Precomputed SMQ | Precomputed exact match with `smq_query` in semantic mode → compiled from SMQ, not the stored SQL |
+| T-S6a | Missing store | A source with no semantic store (or one predating the tables) → `get_active_model()` returns `None`, semantic mode off, request still served |
+| T-S7 | **Payload is never executed as SQL** | A response carrying SMQ JSON that cannot be extracted or compiled produces a semantic retry with the fallback **both on and off**, and the text is never passed to `ValidateSql`. Assert the validator call count is zero |
+| T-S7a | Truncated payload | `{"metrics":["row_count"], "dimensions":[` → semantic retry, terminal `semantic_compilation`; the reported detail contains no `Incorrect syntax` |
+| T-S7b | Guard is not a substring test | `SELECT [metrics] FROM [dbo].[audit]` is **not** classified as SMQ and proceeds as SQL under the fallback |
+| T-S7c | Genuine SQL answer | A plain `SELECT` reply with the fallback enabled still succeeds (no regression) |
+| T-S8 | Precomputed SMQ | Precomputed exact match with `smq_query` in semantic mode → compiled from SMQ; on compile failure the stored SQL is used only if it really is SQL, and the failure is logged |
+| T-S9 | `GROUP BY` matrix | aggregate + dimensions → `GROUP BY` listing every dimension; dimensions only → no `GROUP BY`; aggregate only → no `GROUP BY`; non-aggregate measure + dimensions → no `GROUP BY` |
+| T-S10 | Determinism | The same model + payload compiles to byte-identical SQL over ≥ 20 runs |
+| T-S11 | Anchor | With dimensions spanning three tables, `FROM` is the first requested dimension's table |
+| T-S12 | Compiled-SQL error preservation | With `compiled_from_semantic_model` set, a server rejection returns the server error verbatim, not a rewritten `TABLE_VALIDATION_ERROR` |
+| T-S13 | Compile budget | A compile exceeding `SemanticCompilationTimeoutMs` yields `COMPILATION_TIMEOUT` and a semantic retry, not a hang or an exception |
 
 ### 14.8 Execution, analysis and conversational modes (§10)
 
@@ -16282,6 +16640,9 @@ Everything in this section has caused, or would cause, a silent parity failure. 
 | I12 | A missing object that trips the circuit breaker (`MissingObjectBreakThreshold = 2`) terminates with `deterministic_missing_object` | `attempts.py:284-289, 390-395, 567-568` | §07 |
 | I13 | Failure results carry the failure text **as a comment wrapper** in `sql`, never as executable SQL | `app/core/errors.py:40-43, 90-93` | §07 |
 | I14 | The scenario prefix is applied to the discovery branch only for `refinement` / `drill_down` (`refinement/<base>`, `drill_down/<base>`) | `branch_taxonomy.py:82-88` | §06 |
+| I15 | **A reply carrying an SMQ payload is never executed as SQL**, whatever the raw-SQL fallback says. The payload-class guard is evaluated *before* the fallback policy; a payload that cannot be extracted or compiled is a semantic retry, and an exhausted semantic budget terminates as `semantic_compilation` | `attempts.py:241-322, 496-508`; `semantic_smq.py:203` | §9.10 |
+| I16 | `GROUP BY` is emitted only when a resolved measure actually aggregates; a dimensions-only request is returned at its natural grain | `semantic_compiler.py:220` | §9.10.4 |
+| I17 | Compiled semantic SQL skips the client-side object-scope rewrite, so the server error survives | `attempts.py:600-631`; `sql_validator.py:26-34` | §9.10.5 |
 
 ### 15.2 Known quirks in the reference implementation (decide deliberately, do not copy blindly)
 
@@ -16327,6 +16688,7 @@ Everything in this section has caused, or would cause, a silent parity failure. 
 8. **Letting a stored exact answer override an active filter.** A KB answer authored without `ProductName LIKE '%chocolate%'` must not satisfy a turn that still filters on chocolate — hence the bypass in I5.
 9. **Ignoring the token budget accounting.** The schema context budget (6 400) is enforced by measurement, not truncation of a raw string; and over-budget markdown is column-pruned rather than dropped. Context overflow degrades quality invisibly.
 10. **Assuming one data source.** The service hosts many; a single unpartitioned read (few-shots, values, semantic models, embedding cache) leaks one customer's data into another's answer.
+11. **Letting the raw-SQL fallback decide whether a payload is SQL.** "Extraction returned nothing" and "the reply is SQL" are different questions. Answer the second one with a structural payload-class guard, evaluate it *before* the fallback policy, and make an exhausted semantic budget terminate as `semantic_compilation`. This is the failure mode that produced `Incorrect syntax near 'metrics'` after every retry (§9.10).
 
 ### 15.4 Behavioural subtleties worth a comment in the code
 
@@ -16458,8 +16820,9 @@ Use this to navigate the reference implementation while building. "Section" is w
 | `app/services/value_index_service.py` | Value index read/write | §06, §11 |
 | `app/services/bm25_service.py` | Optional BM25 lexical signal | §06 |
 | `app/services/schema_index_service.py` | Keyword schema index | §06 |
-| `app/services/semantic_compiler.py` | SMQ → physical SQL compiler | §09 |
-| `app/services/semantic_model_service.py` | Semantic model storage + search | §09 |
+| `app/services/semantic_compiler.py` | SMQ → physical SQL compiler (ordered tables, deterministic anchor, guarded timeout) | §09 |
+| `app/services/semantic_smq.py` | SMQ payload handling: tolerant extraction, payload-class guard, typed parse, retry vocabulary | §9.10 |
+| `app/services/semantic_model_service.py` | Semantic model storage + search (degrades to "no active model" when the store is absent) | §09 |
 | `app/services/semantic_extraction_service.py` | Semantic model extraction from SQL | §09 |
 | `app/services/execution_service.py` | SQL execution with limits and retry | §10 |
 | `app/services/profiling_service.py` | Result-set profiling | §10 |
@@ -16648,6 +17011,8 @@ These reference documents complement this blueprint and are worth reading for ba
 | `docs/REQUEST_TO_CODE_FLOW.md` | HTTP/SSE request path (§03) |
 | `docs/plans/2026-09-20-conversational-context-and-refinement.md` | Design record for coreference, session filters and scenario routing (§05) |
 | `docs/BUILT_IN_SQL_GENERATOR_PYTHON_PORT_PLAN.md` | The original C#→Python port plan; historical context and parity risks |
+| `docs/SEMANTIC_SMQ_PIPELINE_FIX.md` | The change plan behind §9.10 (payload classification, retry feedback, terminal classification, compiler rules); includes the Python reference module |
+| `tests/unit/test_semantic_smq.py` | Executable form of the §9.10 and §14.7 expectations |
 | `CONTEXT.md` | Project-level overview and technology stack |
 
 ---

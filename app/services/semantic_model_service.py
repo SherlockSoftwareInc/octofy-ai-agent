@@ -127,13 +127,20 @@ class SemanticModelService:
         return [self._hydrate(h) for h in headers]
 
     def get_active_model(self) -> Optional[SemanticModel]:
-        headers = [
-            h for h in self.provider.fetch_all("semantic_models", self.source_id) if int(h.get("is_active") or 0) == 1
-        ]
+        """Active model, or None when the store is absent or predates the semantic tables."""
+        try:
+            headers = [
+                h for h in self.provider.fetch_all("semantic_models", self.source_id) if int(h.get("is_active") or 0) == 1
+            ]
+        except Exception:
+            return None
         if not headers:
             return None
         headers.sort(key=lambda h: h.get("updated_at_utc") or "", reverse=True)
-        return self._hydrate(headers[0])
+        try:
+            return self._hydrate(headers[0])
+        except Exception:
+            return None
 
     def search_models(self, query: str, top_k: int = 3) -> List[SemanticModel]:
         active = [m for m in self.list_models() if m.is_active]

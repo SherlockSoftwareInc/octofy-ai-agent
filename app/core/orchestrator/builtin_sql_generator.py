@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import time
 from typing import Any, Dict, Generator, Optional, Union
-
 from app.core.branch_taxonomy import DiscoveryBranch, GenerationMode, PipelineStage, RouteKind, scenario_branch
 from app.core.constants import (
     DefaultPrecomputedQueryDirectMatchThreshold,
@@ -202,16 +202,54 @@ def generate_sql_builtin(
     pre_exact = None if preserve_filters else engine.precomputed_exact(effective_query)
     if pre_exact:
         sql = pre_exact.sql
+        smq_failure = ""
         if semantic_mode and pre_exact.smq_query:
-            from app.services.semantic_compiler import SemanticCompiler
             from app.models.pipeline import SmqPayload
-            import json
+            from app.services.semantic_compiler import SemanticCompiler
 
+            # The stored answer carries an SMQ, so the semantic layer compiles it. When that
+            # is impossible the stored SQL stands in -- but only because it is real SQL the
+            # user accepted. A stored payload that is not SQL is never executed.
             try:
                 payload = SmqPayload.model_validate(json.loads(pre_exact.smq_query))
-                sql = SemanticCompiler().compile(payload, stores.semantic.get_active_model(), context.dbms_type)
-            except Exception:
-                sql = pre_exact.sql
+                model = stores.semantic.get_active_model()
+                if model is None:
+                    smq_failure = "no active semantic model for the stored SMQ"
+                else:
+                    compiled = SemanticCompiler().compile_guarded(payload, model, context.dbms_type)
+                    if compiled.success:
+                        sql = compiled.sql
+                    else:
+                        smq_failure = compiled.detail
+            except Exception as exc:
+                smq_failure = f"stored SMQ payload is unusable: {exc}"
+        if smq_failure:
+            logging.warning(
+                "Precomputed exact match %s: %s; falling back to stored SQL",
+                getattr(pre_exact, "query_id", "?"),
+                smq_failure,
+            )
+            if not _looks_like_sql(sql):
+                result = build_detailed_failure_result(
+                    message=f"Stored semantic payload could not be compiled: {smq_failure}",
+                    error_category=ErrorCategory.SEMANTIC_COMPILATION,
+                    discovery_branch=DiscoveryBranch.PRECOMPUTED_EXACT,
+                    attempts=0,
+                    token_usage=llm.token_usage.as_dict(),
+                    processing_time_ms=int((time.time() - started) * 1000),
+                    hallucination_count=0,
+                    agentic_retry_count=0,
+                    failure_report=build_failure_report(
+                        summary=smq_failure,
+                        resolution_plan=["Recompile the semantic model", "Re-save the stored answer"],
+                        attempts=[],
+                        final_guidance=smq_failure,
+                    ),
+                    source_id=source_id,
+                )
+                yield sse_result(finalize(result), result.message or "")
+                yield sse_done()
+                return
         result = BuiltInGenerateResult(
             success=True,
             sql=code_from_match(sql),
@@ -291,23 +329,45 @@ def generate_sql_builtin(
     discovery.schema_context = schema
     discovery.schema_context_for_validation = validation
 
-    result = run_attempt_loop(
+    # The attempt loop is a generator too: it yields one status event per step
+    # (attempt start / critic / database validation / recovery) and returns the
+    # final result, so those events reach the SSE stream while the loop is still
+    # running instead of only after it has finished. The closing status it used
+    # to require ("Completed in N attempt(s)") is therefore gone: the attempt
+    # events themselves already tell the client where the turn is.
+    attempt_loop = run_attempt_loop(
         context,
         discovery,
         stores,
         llm,
-        lambda stage, msg, **kw: None,
+        emit,
         time_budget_ms=MaxGenerationTimeMs,
         semantic_mode=semantic_mode,
         started_at=started,
         target_language=target_language,
     )
+    while True:
+        try:
+            yield next(attempt_loop)
+        except StopIteration as loop_done:
+            result = loop_done.value
+            break
     record_generation_outcome(context, result.sql if result.success else None)
-    # re-emit attempt is inside loop without yield; emit a closing status
-    yield emit(PipelineStage.ATTEMPT, f"Completed in {result.attempts} attempt(s)")
     payload = finalize(result)
     yield sse_result(payload, result.message or "")
     yield sse_done()
+
+
+def _looks_like_sql(text: Optional[str]) -> bool:
+    """True when text is a SQL statement, not a JSON/semantic payload.
+
+    Used to keep the precomputed fallback honest: the stored SQL may stand in for a stored
+    SMQ, but a JSON payload is never executed as SQL.
+    """
+    body = extract_sql_body(text or "")
+    if not body or body.lstrip().startswith("{"):
+        return False
+    return bool(extract_sql_object_refs(body))
 
 
 def _base_objects_from_sql(sql: str) -> list:

@@ -8,6 +8,8 @@ Related documents:
 - [REQUEST_TO_CODE_FLOW.md](REQUEST_TO_CODE_FLOW.md) — HTTP/SSE path from the client into this process
 - [GENERATE_SQL.md](GENERATE_SQL.md) — generation plus execute / profile / insight workflow
 - [DISCOVERY_STRATEGY_IMPLEMENTATION.md](DISCOVERY_STRATEGY_IMPLEMENTATION.md) — discovery branches and ranking
+- [SEMANTIC_SMQ_PIPELINE_FIX.md](SEMANTIC_SMQ_PIPELINE_FIX.md) — why a semantic payload is never executed as SQL, and the rules that enforce it (§7, step 4)
+- [SQL_GENERATION_BACKEND_BLUEPRINT.md](SQL_GENERATION_BACKEND_BLUEPRINT.md) — full build specification; §9.10 is the semantic-payload contract
 
 ---
 
@@ -154,7 +156,7 @@ Continue to Stage D
 ```
 
 - **KB exact** (`kb_exact`): normalized question matches a few-shot row. SQL is returned as-is (or materialized into Python / R / SAS).
-- **Precomputed exact** (`precomputed_exact`): same lookup against approved/modified data-group questions. In semantic mode the stored SMQ is compiled when present.
+- **Precomputed exact** (`precomputed_exact`): same lookup against approved/modified data-group questions. In semantic mode the stored `smq_query` is compiled (`compile_guarded`); on failure the failure is logged and the stored physical SQL stands in — but only after `_looks_like_sql` confirms it really is SQL, otherwise the turn ends as a `semantic_compilation` failure.
 - **KB vector exact** (`kb_exact`): nearest few-shot with cosine distance ≤ `KbExactMatchThreshold` (0.05).
 
 All three lookups use the coreference-rewritten query. A refinement/drill-down turn that carries active filters **bypasses** them: a stored answer authored without `ProductName LIKE '%chocolate%'` must not satisfy a turn that still filters on chocolate.
@@ -254,10 +256,15 @@ Budgets: **5 attempts**, **120 seconds**. Semantic compilation has a 5-second ti
 
 Each attempt:
 
-1. Build dialect-specific system + user prompts (`prompts.py`). Semantic mode asks for a fenced ` ```smq ` JSON payload instead of SQL.
+1. Build dialect-specific system + user prompts (`prompts.py`). Semantic mode asks for a fenced ` ```smq ` JSON payload instead of SQL, and appends a corrective block when the inherited session-filter value reads as an SMQ payload.
 2. Call the LLM. After a hallucination loop is detected, a presence penalty of 0.4 is applied.
 3. Extract SQL (or Python / R / SAS body). Embedded SQL in scripts is schema-qualified against discovered objects.
-4. Semantic mode: parse SMQ → `SemanticCompiler.compile()`. One parse retry, then optional raw-SQL fallback (`SEMANTIC_COMPILATION_FALLBACK_TO_RAW_SQL`).
+4. Semantic mode, in this order (`semantic_smq.py`, `attempts.py:241-322`):
+   - **payload-class guard first.** `looks_like_smq()` is a structural test (a `metrics`/`dimensions` key at JSON depth 1, or a valid object carrying one) — never a substring search for `metrics`, which would refuse `SELECT [metrics] FROM [dbo].[audit]`.
+   - **A reply that carries an SMQ payload is never executed as SQL**, whatever `SEMANTIC_COMPILATION_FALLBACK_TO_RAW_SQL` says. A payload that cannot be extracted or compiled is a *semantic retry* carrying the offending item **and** the model's valid metric/dimension names (plus "return an smq block, not SQL").
+   - The fallback owns only one case: a reply with **no** SMQ payload at all, i.e. the model genuinely answered in SQL.
+   - Compilation runs under the 5-second budget via `compile_guarded`; compile errors, timeouts and a missing active model are all semantic retries.
+   - If the retry budget is exhausted while the last attempt was a semantic retry, the turn ends as `semantic_compilation` with the recorded detail — never as `validation`, and never with the payload reaching the SQL validator.
 5. Validate in a **frozen order** (do not reorder):
 
 ```
@@ -268,6 +275,11 @@ Safety interceptor
     → LLM critic (requirements + schema)
     → database validation (SET NOEXEC ON / dialect EXPLAIN)
 ```
+
+SQL produced by the semantic compiler sets `compiled_from_semantic_model`, which makes the database step
+**skip the client-side object-scope rewrite**: the model may legitimately own tables discovery never
+selected (a model rooted in schema `BCTR` while schema selection chose `TSBC`), and rewriting the server
+error into "missing object" feedback sends the retry loop after objects that were never missing.
 
 ### 7.1 Scenario rules in the system prompt
 

@@ -6,6 +6,7 @@ from typing import List, Optional
 
 from app.core.branch_taxonomy import GenerationMode, is_refinement_scenario
 from app.models.pipeline import AgentContext, DiscoveryResult, FewShotExample, QueryAnalysis
+from app.services.semantic_smq import looks_like_smq
 
 # Phase 3.1 — strict, schema-free rule for the optimization scenario.
 OPTIMIZATION_INSTRUCTIONS = """### OPTIMIZATION INSTRUCTIONS
@@ -22,6 +23,12 @@ REFINEMENT_INSTRUCTIONS = """### REFINEMENT INSTRUCTIONS
 
 SCOPE_GUARD = """### SCOPE GUARD
 Preserve all active filters from preceding turns unless the user explicitly requests their removal."""
+
+# Semantic mode retry correction: the previous attempt did not produce a usable payload.
+SEMANTIC_OUTPUT_CORRECTION = """### SEMANTIC OUTPUT CORRECTION
+The previous attempt did not produce a usable Semantic Model Query. Return only a fenced smq
+code block containing {"metrics":[],"dimensions":[],"filters":[],"timeframes":[]}, using names
+that exist in the semantic model above. Do not return SQL."""
 
 
 def scenario_rules(context: AgentContext) -> str:
@@ -64,6 +71,11 @@ def build_system_prompt(
         semantic_blocks = [f"GENERATION MODE\n{context.generation_mode.value}"]
         if context.filter_state_text and context.filter_state_text != "(none)":
             semantic_blocks.append(_filter_block(context))
+        # The retry prompt is the main corrective signal in semantic mode, so a reply that
+        # drifted back to SQL is called out explicitly. The history embeds the offending
+        # payload, so detection parses structure rather than searching for a key name.
+        if any(looks_like_smq(line) for line in semantic_blocks if line):
+            semantic_blocks.append(SEMANTIC_OUTPUT_CORRECTION)
         semantic_extra = "\n\n".join(semantic_blocks)
         return (
             f"DBMS CONTEXT (SEMANTIC MODE)\nYou compile Semantic Model Queries for {dbms}.\n"

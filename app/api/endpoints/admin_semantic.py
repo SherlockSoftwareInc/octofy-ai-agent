@@ -49,7 +49,11 @@ def compile_smq(source_id: str, payload: dict, current_user: User = Depends(get_
         raise HTTPException(status_code=404, detail="No active semantic model")
     try:
         smq = SmqPayload.model_validate(payload.get("smq") or payload)
+    except Exception as exc:
+        # An unusable payload is reported, never downgraded to something executable.
+        raise HTTPException(status_code=400, detail=f"Invalid SMQ payload: {exc}")
+    try:
         sql = SemanticCompiler().compile(smq, model, payload.get("dbms") or "SQL Server")
-        return {"sql": sql}
     except SemanticCompilationError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+    return {"sql": sql}

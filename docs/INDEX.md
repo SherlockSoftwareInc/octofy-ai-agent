@@ -16,6 +16,7 @@ Building or re-implementing the backend?
 ## Core System
 - [SQL_GENERATION_BACKEND_BLUEPRINT.md](SQL_GENERATION_BACKEND_BLUEPRINT.md) — full implementation blueprint (build spec) for the SQL-generating backend
 - [AGENT_PROCESS.md](AGENT_PROCESS.md) — canonical generate pipeline (route, discover, attempt loop)
+- [SEMANTIC_SMQ_PIPELINE_FIX.md](SEMANTIC_SMQ_PIPELINE_FIX.md) — semantic payload classification: why an SMQ payload is never executed as SQL, retry feedback, terminal classification, compiler rules (§9.10 of the blueprint)
 - [plans/2026-09-20-conversational-context-and-refinement.md](plans/2026-09-20-conversational-context-and-refinement.md) — scenario routing, coreference rewrite, session filter state, prompt split
 - [VECTOR_SCHEMA.md](VECTOR_SCHEMA.md) — vector collection contract (`schemas`, few-shots, values, data groups)
 - [BACKEND_API.md](BACKEND_API.md)
