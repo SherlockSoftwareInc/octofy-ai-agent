@@ -1,0 +1,217 @@
+[
+  {
+    "title": "Octofy User Manual",
+    "doc": "user-manual",
+    "children": [
+      {
+        "title": "Windows and Elements",
+        "doc": "windows-and-elements",
+        "children": [
+          { "title": "Main Window", "doc": "main-window" },
+          { "title": "Visual Query Builder Window", "doc": "visual-query-builder-window" },
+          { "title": "Data Analysis Window", "doc": "data-analysis-window" },
+          { "title": "Data Preview Window", "doc": "data-preview-window" },
+          { "title": "Column Values Frequency Window", "doc": "column-values-frequency-window" },
+          { "title": "AI Assistant SQL Builder", "doc": "ai-agent-sql-builder" },
+          {
+            "title": "How to Use the AI Assistant",
+            "doc": "how-to-use-ai-assistant",
+            "children": [
+              { "title": "Chat Modes", "doc": "how-to-use-ai-assistant", "section": "chat-modes" },
+              { "title": "Chat Sessions", "doc": "how-to-use-ai-assistant", "section": "chat-sessions" },
+              { "title": "Progress and Tool Calls", "doc": "how-to-use-ai-assistant", "section": "progress-and-tool-calls" }
+            ]
+          },
+          {
+            "title": "Octofy AI Agent Backend API",
+            "doc": "octofy-ai-agent-backend-api",
+            "children": [
+              {
+                "title": "Blueprint: Rebuild with Vibe Coding",
+                "doc": "octofy-ai-agent-backend-api",
+                "section": "blueprint-rebuild-the-agent-with-vibe-coding"
+              }
+            ]
+          },
+          { "title": "AI Settings", "doc": "ai-settings" },
+          { "title": "Application Options Dialog", "doc": "application-options-dialog" }
+        ]
+      },
+      { "title": "Add Data Source", "doc": "add-data-source" },
+      { "title": "Manage Data Sources", "doc": "manage-data-sources" },
+      { "title": "Change Data Source", "doc": "change-data-source" },
+      {
+        "title": "Browse the Database",
+        "doc": "browser-the-database",
+        "children": [
+          {
+            "title": "Connecting to a Database",
+            "doc": "browser-the-database",
+            "section": "connecting-to-a-database"
+          },
+          {
+            "title": "Object Explorer",
+            "doc": "browser-the-database",
+            "section": "object-explorer"
+          },
+          {
+            "title": "Search Panel",
+            "doc": "browser-the-database",
+            "section": "search-panel"
+          },
+          {
+            "title": "Column View",
+            "doc": "browser-the-database",
+            "section": "column-view"
+          },
+          {
+            "title": "Table Menu",
+            "doc": "browser-the-database",
+            "section": "table-menu"
+          },
+          {
+            "title": "Column Menu",
+            "doc": "browser-the-database",
+            "section": "column-menu"
+          },
+          {
+            "title": "View Menu",
+            "doc": "browser-the-database",
+            "section": "view-menu"
+          }
+        ]
+      },
+      {
+        "title": "Data Analysis",
+        "doc": "data-analysis",
+        "children": [
+          {
+            "title": "Analysis Types",
+            "doc": "data-analysis",
+            "section": "analysis-types"
+          },
+          {
+            "title": "Variable Selector (How to Operate)",
+            "doc": "data-analysis",
+            "section": "variable-selector-how-to-operate"
+          },
+          {
+            "title": "Data Filter",
+            "doc": "data-analysis",
+            "section": "data-filter"
+          },
+          {
+            "title": "Exclude Blanks",
+            "doc": "data-analysis",
+            "section": "exclude-blanks"
+          },
+          {
+            "title": "Sort the Results",
+            "doc": "data-analysis",
+            "section": "sort-the-results"
+          },
+          {
+            "title": "Search Categories",
+            "doc": "data-analysis",
+            "section": "search-categories"
+          },
+          {
+            "title": "Drill Down to Raw Data",
+            "doc": "data-analysis",
+            "section": "drill-down-to-raw-data"
+          },
+          {
+            "title": "Export and Copy",
+            "doc": "data-analysis",
+            "section": "export-and-copy"
+          }
+        ]
+      },
+      {
+        "title": "Visual Query Builder",
+        "doc": "visual-query-builder",
+        "children": [
+          {
+            "title": "Ways to Generate a Query Statement",
+            "doc": "visual-query-builder",
+            "section": "ways-to-generate-a-query-statement"
+          },
+          {
+            "title": "Add Tables or Views",
+            "doc": "visual-query-builder",
+            "section": "add-tables-or-views"
+          },
+          {
+            "title": "Select Columns",
+            "doc": "visual-query-builder",
+            "section": "select-columns"
+          },
+          {
+            "title": "Alias an Object",
+            "doc": "visual-query-builder",
+            "section": "alias-an-object"
+          },
+          {
+            "title": "Build in the Visual Editor",
+            "doc": "visual-query-builder",
+            "section": "method-2-build-in-the-visual-editor"
+          },
+          {
+            "title": "Manually Edit SQL",
+            "doc": "visual-query-builder",
+            "section": "method-3-manually-edit-the-sql-statement"
+          },
+          {
+            "title": "Generate SQL with AI Agent",
+            "doc": "visual-query-builder",
+            "section": "method-4-generate-sql-with-ai-agent-if-set"
+          },
+          {
+            "title": "Parse the Statement",
+            "doc": "visual-query-builder",
+            "section": "parse-the-statement"
+          },
+          {
+            "title": "Preview Query Data",
+            "doc": "visual-query-builder",
+            "section": "preview-query-data"
+          },
+          {
+            "title": "Perform Data Analysis",
+            "doc": "visual-query-builder",
+            "section": "perform-data-analysis"
+          },
+          {
+            "title": "Preview Object Data",
+            "doc": "visual-query-builder",
+            "section": "preview-object-data"
+          },
+          {
+            "title": "Check Column Value Frequency",
+            "doc": "visual-query-builder",
+            "section": "check-column-value-frequency"
+          }
+        ]
+      },
+      {
+        "title": "Create Build-in AI Agent",
+        "doc": "create-build-in-ai-agent",
+        "children": [
+          { "title": "AI Agent Manager Window", "doc": "ai-agent-manager-window" },
+          { "title": "Schema Library Form", "doc": "schema-library-form" },
+          { "title": "Browse and Edit Schema Content", "doc": "browse-and-edit-schema-content" },
+          { "title": "Add Database Objects", "doc": "add-database-objects" },
+          { "title": "Sync and Rebuild", "doc": "sync-and-rebuild" },
+          { "title": "Rebuild the Vector Index", "doc": "rebuild-vector-index" },
+          { "title": "Learn from Past Projects", "doc": "learn-from-past-projects" },
+          { "title": "Data Groups and Precomputed Q&As", "doc": "data-groups-and-precomputed-qas" },
+          { "title": "Tool Functions", "doc": "tool-functions" },
+          { "title": "AI-Assisted Descriptions", "doc": "ai-assisted-descriptions" },
+          { "title": "Semantic Models", "doc": "semantic-models" },
+          { "title": "Add to Knowledge Base", "doc": "add-to-knowledge-base" },
+          { "title": "Manage Library Folder & Vector Database", "doc": "manage-library-folder-and-vector-db" }
+        ]
+      }
+    ]
+  }
+]
