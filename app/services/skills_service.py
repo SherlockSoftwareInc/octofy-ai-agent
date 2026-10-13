@@ -12,6 +12,7 @@ from collections import defaultdict
 from app.models.schemas import (
     DataSource, DataGroup, TableSchema, ColumnInfo, RankedTable, SkillsDiscoveryResult
 )
+from app.utils.query_vocabulary import STOP_WORDS
 
 
 class SkillsService:
@@ -406,21 +407,11 @@ class SkillsService:
         """
         # Convert to lowercase
         query_lower = query.lower()
-        
-        # Remove common stop words
-        stop_words = {'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 
-                     'of', 'with', 'by', 'from', 'up', 'about', 'into', 'through', 'during',
-                     'show', 'me', 'find', 'list', 'all', 'what', 'which', 'who', 'where',
-                     'when', 'how', 'is', 'are', 'was', 'were', 'be', 'been', 'being', 'have',
-                     'has', 'had', 'do', 'does', 'did', 'will', 'would', 'could', 'should',
-                     'i', 'want', 'need', 'data', 'information', 'records'}
-        
-        # Extract words (alphanumeric sequences)
+
+        # Extract words (alphanumeric sequences) and drop stop words
         words = re.findall(r'\b[a-z0-9]+\b', query_lower)
-        
-        # Filter stop words and keep meaningful keywords
-        keywords = [w for w in words if w not in stop_words and len(w) > 2]
-        
+        keywords = [w for w in words if w not in STOP_WORDS and len(w) > 2]
+
         return keywords
     
     def _score_group(self, group: DataGroup, query_keywords: List[str], query_full: str) -> int:
@@ -558,7 +549,7 @@ class SkillsService:
         content = file_path.read_text(encoding='utf-8')
         
         # Extract table name from first line: # Table: [schema].[table]
-        table_match = re.search(r'^#\s+Table:\s+\[?(\w+)\]?\.\[?(\w+)\]?', content, re.MULTILINE)
+        table_match = re.search(r'^#\s+Table:\s+\[([^\]]+)\]\.\[([^\]]+)\]', content, re.MULTILINE)
         if not table_match:
             # Fallback to filename
             table_name = file_path.stem
@@ -824,21 +815,10 @@ class SkillsService:
 
     def _normalize_query_terms(self, query: str) -> Set[str]:
         """Normalize query into a set of terms (lowercase, no stop words, length > 2)."""
-        stop_words = {
-            'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for',
-            'of', 'with', 'by', 'from', 'up', 'about', 'into', 'through', 'during',
-            'show', 'me', 'find', 'list', 'all', 'what', 'which', 'who', 'where',
-            'when', 'how', 'is', 'are', 'was', 'were', 'be', 'been', 'being', 'have',
-            'has', 'had', 'do', 'does', 'did', 'will', 'would', 'could', 'should',
-            'i', 'want', 'need', 'information', 'records', 'data',
-            'table', 'tables', 'view', 'views', 'column', 'columns',
-            'stored', 'stores', 'store', 'contains', 'contain', 'containing',
-            'database', 'schema', 'object', 'objects', 'field', 'fields',
-        }
         query_lower = query.lower()
         return set(
             word for word in re.findall(r'\w+', query_lower)
-            if word not in stop_words and len(word) > 2
+            if word not in STOP_WORDS and len(word) > 2
         )
 
     def _score_schema(self, schema_entry: Dict, query_terms: Set[str]) -> float:

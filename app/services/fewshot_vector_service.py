@@ -11,7 +11,7 @@ from uuid import uuid4
 from app.core.constants import KbExactMatchThreshold, KbScoreThreshold
 from app.models.pipeline import FewShotExample
 from app.services.stores.embeddings import embed_text, try_embed_text
-from app.utils.hashing import question_lookup_key
+from app.utils.hashing import kb_similarity_key
 
 logger = logging.getLogger(__name__)
 
@@ -96,12 +96,12 @@ class FewShotVectorService:
             rows = self.provider.fetch_all(DATA_TABLE_NAME, self.source_id)
         except Exception:
             return None
-        needle = question_lookup_key(question)
+        needle = kb_similarity_key(question)
         for row in rows:
             sql = (row.get("sql") or "").strip()
             if not sql:
                 continue
-            if question_lookup_key(row.get("question") or "") == needle:
+            if kb_similarity_key(row.get("question") or "") == needle:
                 return FewShotExample(
                     question=row.get("question") or "",
                     sql=sql,
@@ -113,7 +113,7 @@ class FewShotVectorService:
 
     def search(self, question: str, top_k: int = 3, max_distance: float = KbScoreThreshold) -> List[FewShotExample]:
         self._ensure_legacy_meta_dropped()
-        vector = embed_text(question, self.provider, self.source_id)
+        vector = embed_text(kb_similarity_key(question), self.provider, self.source_id)
         hits = self.provider.search_vector(
             DATA_TABLE_NAME,
             self.source_id,

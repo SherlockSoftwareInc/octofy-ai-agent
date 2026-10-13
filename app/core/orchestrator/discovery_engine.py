@@ -13,6 +13,7 @@ from app.core.constants import (
     ColumnDetailValueSeedScore,
     KbConfidenceThreshold,
     KbExactMatchThreshold,
+    KbRequiredObjectScore,
     KbScoreThreshold,
     KeywordMatchScore,
     MaxDiscoveryCacheEntries,
@@ -84,7 +85,14 @@ class DiscoveryEngine:
                             "role": "system",
                             "content": (
                                 "Return JSON keys: keywords, complexity, entities, date_ranges, "
-                                "filter_values, extracted_columns. Every list item must be a string, not an object."
+                                "filter_values, extracted_columns. Every list item must be a string, not an object. "
+                                "filter_values holds literal values the user wants to filter on (proper nouns, "
+                                "quoted strings, codes, IDs), preserving their casing: the number in \"top 10\", "
+                                "\"first 5\", \"bottom 3\" or \"last 20\" is a cardinality limit, not a filter "
+                                "value, so never place it in that array. extracted_columns holds only column names "
+                                "the request explicitly asks for: when the request names no columns (e.g. \"top "
+                                "selling products\"), leave the array empty rather than inferring plausible "
+                                "columns such as ProductName or Quantity."
                             ),
                         },
                         {"role": "user", "content": combined_query[:2000]},
@@ -313,13 +321,68 @@ class DiscoveryEngine:
             obj.required = True
             objects[key] = obj
 
-    def _objects_from_sql(self, sql: str) -> List[ScoredObject]:
+    def force_kb_example(self, result: DiscoveryResult, example: FewShotExample) -> DiscoveryResult:
+        """Keep a limit-adapted KB example in the candidate pool before hydration."""
+        others = [
+            ex for ex in result.few_shot_examples
+            if (ex.sql, ex.question) != (example.sql, example.question)
+        ]
+        result.few_shot_examples = [example, *others]
+        self._lock_example_objects(result)
+        if not str(result.branch).startswith("refinement"):
+            result.branch = DiscoveryBranch.KB_DIRECT
+        return result
+
+    def _lock_example_objects(self, result: DiscoveryResult) -> None:
+        """Force every injected example's objects into the pool, required and prioritized.
+
+        Ranking alone cannot be trusted with them: the RRF pool is capped, and the object
+        that loses is usually the one discovery never hydrated -- so the prompt authorizes
+        an object the schema context does not describe, and the critic then rejects SQL that
+        references it. The reference implementation hard-locks these objects
+        (``MergeKbRequiredObjects``); this does the same for *every* branch that injects an
+        example, not only the limit-adapted KB path.
+        """
+        locked = [
+            obj
+            for example in result.few_shot_examples or []
+            for obj in self._objects_from_sql(getattr(example, "sql", "") or "", required=True)
+        ]
+        if not locked:
+            return
+        keys = {obj.merge_key() for obj in locked}
+        merged = merge_and_dedup(list(result.objects) + locked)
+        for obj in merged:
+            if obj.merge_key() in keys:
+                obj.required = True
+                obj.priority = True
+        result.objects = merged
+
+    def _objects_from_sql(self, sql: str, required: bool = False) -> List[ScoredObject]:
+        """Objects named by an example's SQL, minus any the catalog does not have.
+
+        A stale example must not lock an object the database cannot serve, so absence is
+        checked against the live catalog; the check fails open when the catalog is empty
+        or unreadable.
+        """
+        from app.services.database_catalog import catalog_has_object
         from app.utils.sql_normalization import extract_sql_object_refs
 
+        catalog = getattr(self.stores, "catalog", None) if self.stores is not None else None
         objs = []
         for ref in extract_sql_object_refs(sql):
             schema, name = self._split(ref)
-            objs.append(ScoredObject(schema_name=schema, object_name=name, score=0.9))
+            if not name or not catalog_has_object(catalog, schema, name):
+                continue
+            objs.append(
+                ScoredObject(
+                    schema_name=schema,
+                    object_name=name,
+                    score=KbRequiredObjectScore if required else 0.9,
+                    required=required,
+                    priority=required,
+                )
+            )
         return objs
 
     def _split(self, name: str) -> tuple:
@@ -330,6 +393,10 @@ class DiscoveryEngine:
         return "dbo", cleaned
 
     def _remember(self, key: str, result: DiscoveryResult) -> DiscoveryResult:
+        # Every branch that injected an example hard-locks its objects here, so the
+        # protection cannot be forgotten on one branch (it used to cover only the
+        # limit-adapted KB path).
+        self._lock_example_objects(result)
         if len(self._discovery_cache) >= MaxDiscoveryCacheEntries:
             self._discovery_cache.clear()
         self._discovery_cache[key] = result

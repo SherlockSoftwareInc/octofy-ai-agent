@@ -11,14 +11,9 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from app.utils.logging_utils import log_llm_interaction
+from app.utils.query_vocabulary import STOP_WORDS
 
 logger = logging.getLogger(__name__)
-
-_STOPWORDS = {
-    "a", "an", "the", "and", "or", "of", "for", "to", "in", "on", "at", "by",
-    "is", "are", "was", "were", "be", "what", "which", "who", "how", "do",
-    "does", "did", "please", "me", "my", "your", "this", "that", "with",
-}
 
 _HINT_ALIASES = {
     "code": ("code", "codes"),
@@ -48,7 +43,7 @@ class ToolFunctionInvoker:
 
     @staticmethod
     def matches_tool_hint(query: str, tools: List[Dict[str, Any]]) -> bool:
-        tokens = [tok for tok in _tokenize(query) if tok not in _STOPWORDS]
+        tokens = [tok for tok in _tokenize(query) if tok not in STOP_WORDS]
         if not tokens:
             return False
         expanded = set(tokens)

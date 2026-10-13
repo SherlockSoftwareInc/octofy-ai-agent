@@ -4,12 +4,15 @@ import pytest
 
 from app.core.orchestrator.session_context import (
     SessionContextStore,
+    apply_conversation_context,
     apply_filter_lifecycle,
     extract_filters_from_sql,
+    extract_grain_from_sql,
     prepare_conversation_context,
     record_generation_outcome,
 )
 from app.core.orchestrator.preprocessing import preprocess
+from app.core.orchestrator.prompts import grain_prompt_line
 from app.models.pipeline import AgentRequest, SessionSemanticContext
 
 SUMMARY_SQL = (
@@ -128,6 +131,68 @@ def test_record_generation_outcome_feeds_the_next_turn():
         AgentRequest(query="I need all order details", session_id="chat-3"), store=store
     )
     assert "chocolate" in follow_up.rewritten_query
+
+
+def test_grain_is_read_out_of_the_generated_sql():
+    assert extract_grain_from_sql(SUMMARY_SQL) == "p.ProductName"
+    # A statement without GROUP BY is at its natural row-level grain, which is not carried.
+    assert extract_grain_from_sql("SELECT * FROM dbo.Products") == ""
+    assert extract_grain_from_sql(None) == ""
+    # The outer grouping is the statement's grain, not the subquery's.
+    assert (
+        extract_grain_from_sql(
+            "SELECT s.x, COUNT(*) FROM (SELECT x FROM t GROUP BY x) s GROUP BY s.x ORDER BY s.x"
+        )
+        == "s.x"
+    )
+    # HAVING and ORDER BY are not part of the grain.
+    assert extract_grain_from_sql("SELECT a, b FROM t GROUP BY a, b HAVING COUNT(*) > 1") == "a, b"
+    # A pathological grouping is dropped rather than quoted into the prompt.
+    assert extract_grain_from_sql("SELECT 1 FROM t GROUP BY " + ", ".join(f"c{i}" for i in range(200))) == ""
+
+
+def test_record_generation_outcome_carries_the_grain_to_the_next_turn():
+    store = SessionContextStore()
+    context = preprocess(AgentRequest(query="show sales", session_id="chat-9"))
+    context.session_id = "session:chat-9"
+    record_generation_outcome(context, SUMMARY_SQL, store=store)
+    assert store.get("session:chat-9").target_grain == "p.ProductName"
+
+    follow_up_request = AgentRequest(query="keep the same breakdown", session_id="chat-9")
+    follow_up = prepare_conversation_context(follow_up_request, store=store)
+    assert follow_up.target_grain == "p.ProductName"
+
+    next_context = preprocess(follow_up_request)
+    apply_conversation_context(next_context, follow_up)
+    assert grain_prompt_line(next_context) == "Current target grain: p.ProductName"
+
+
+def test_full_reset_drops_the_carried_grain():
+    store = SessionContextStore()
+    context = preprocess(AgentRequest(query="show sales", session_id="chat-10"))
+    context.session_id = "session:chat-10"
+    record_generation_outcome(context, SUMMARY_SQL, store=store)
+    assert store.get("session:chat-10").target_grain == "p.ProductName"
+
+    reset = prepare_conversation_context(
+        AgentRequest(query="start over", session_id="chat-10"), store=store
+    )
+    assert reset.filters_cleared is True
+    assert reset.target_grain is None
+    assert store.get("session:chat-10").target_grain is None
+
+
+def test_a_bare_filter_clear_keeps_the_carried_grain():
+    store = SessionContextStore()
+    context = preprocess(AgentRequest(query="show sales", session_id="chat-11"))
+    context.session_id = "session:chat-11"
+    record_generation_outcome(context, SUMMARY_SQL, store=store)
+
+    cleared = prepare_conversation_context(
+        AgentRequest(query="for all products", session_id="chat-11"), store=store
+    )
+    assert cleared.filters_cleared is True
+    assert cleared.target_grain == "p.ProductName"
 
 
 def test_store_is_bounded():

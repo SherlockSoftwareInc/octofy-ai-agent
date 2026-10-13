@@ -47,6 +47,49 @@ compiler determinism over 25 runs, the `GROUP BY` matrix, the anchor rule, and t
 
 ---
 
+## Change record — tolerable SMQ payloads, vocabulary gate, and KB example locking (2026-10-12)
+
+> **Read this before implementing §05–§09 and §12.** This record covers the second change set, which
+> was written against this document's own source and ported from the C# reference's Key Behavioral
+> Changes items 41–52 (`Octofy.Agent/Docs/BUILT_IN_SQL_GENERATOR.md`; handoff summary in
+> `OctofyPro/tmp/2026-10-12-change-summary.md`). The chain is one investigation: a turn ended with
+> `'Sales by Category' was not found after 2 attempts` for the Northwind view
+> `[dbo].[Sales by Category]`. Where an older passage of this document still reads as the previous
+> design, the sections amended by this record win.
+
+What changed, at a glance:
+
+| Area | Before | After | Spec |
+|---|---|---|---|
+| SMQ element shape | a wrong-shaped element made the parse return `None`, so the model blamed its Markdown fence and repeated the payload | `SmqShapeError` names the offending index (`metrics[0]`) and the accepted aliases; the loop retries with `build_smq_shape_mismatch_feedback` + `valid_names_hint` | §09 |
+| Payload-class guard | `metrics`/`dimensions` had to be a list | `_SMQ_ROOT_KEYS` accepts the singular `metric`/`dimension` and a wrong-typed value too, so an *unusable* payload is still classified as SMQ and can never be executed as SQL | §09 |
+| Typed parse | strict | tolerant: element aliases (`metric`/`measure`/`name`/`id`, `dimension`/`field`/`column`), a bare string as a one-element list, a present-but-empty array kept as "asking for nothing", an absent key as `None`; filters/timeframes lenient (`operator` for `op`, `name` for `field`) | §09 |
+| Semantic availability | semantic mode ran even against a model sharing no vocabulary with the question, so every attempt returned `UNKNOWN_METRIC` and the turn died as `semantic_compilation` while the physical schema could answer it | before attempt 1, `can_answer()` compares the question's vocabulary against the model's measures/dimensions; on no overlap the turn leaves semantic mode (`semantic_mode = False`, `context.grain_is_advisory = True`) and runs the physical-SQL path — a routing decision, fail-open on a missing model or empty vocabulary | §07 |
+| Semantic retry divergence | a repeated payload repeated forever (the physical-SQL hallucination counter never moved on that path) | `semantic_payload_fingerprint` detects the repeat, sets `loop_breaker` for the divergent rediscovery branch, and the next `llm.complete` call carries `presence_penalty=0.4` **and** `temperature=SemanticRepeatTemperature` (0.4) | §07 |
+| Injected example objects | an example's objects were authorized but could lose the RRF cap, so the prompt authorized an object the schema context never described | `_lock_example_objects` hard-locks every injected example's objects (`required` + `priority`, score `KbRequiredObjectScore` 1000.0); it runs from `_remember`, so it covers every branch that injects an example | §06 |
+| Stale examples | `_allowed_objects` authorized whatever an example named | an example object the live catalog does not have is dropped from the lock **and** from the validator allow-list (`catalog_has_object`, fail-open when the catalog is absent, unreadable or empty) | §06, §07 |
+| Row-limit adaptation | `find top 10 …` missed the stored `find top …`, and a limit-only match replayed the stored SQL verbatim | `kb_similarity_key` drops the number from `top`/`bottom`/`last`/`limit`/`first` (keeping the first three as words); a limit-only `kb_exact` hit is demoted to a forced example so generation applies the requested limit, while `precomputed_exact` stays strict | §03, §05 |
+| Multi-word object names | a sentinel or skills title carrying `Sales by Category` parsed as one word, and `[dbo].[Sales by Category]` reduced to `dbo` | `parse_table_validation_names` (bracket-aware, comma- and space-safe) plus the skills title regex `^#\s+Table:\s*\[([^\]]+)\]\.\[([^\]]+)\]` | §05, §11, §12 |
+| Schema re-hydration | a recovered object entered the pool but not the prompt/critic text, so the retry reused the attempt-1 schema | `_refresh_schema_context` rebuilds the four contexts after a recovery merge (`RefinementPromptContextCap` on refinement turns); only that retry re-hydrates | §07 |
+| Analysis prompt | the Phase-1 prompt left two rules ambiguous and the model spent 2 487 of 2 596 completion tokens arguing with itself | it now states that a ranking number is a cardinality limit and never a `filter_values` entry, and that `extracted_columns` is never inferred | §06 |
+| Output format | the SQL prompt described the reasoning-comment-then-fence contract without showing it | the section ends with a literal layout (comment block, then fenced SQL); the optimization prompt likewise ends with `<rewritten {language} code>` | §08 |
+| Prompt policy blocks | three blocks restated the same two-source rule — `CRITICAL SQL RULES (SCHEMA ADHERENCE)` ran `### 1.` then `### 5.` with 2–4 missing | one authorization block (`AUTHORIZED OBJECT SCOPE`) and one prohibition block (`ZERO HALLUCINATION POLICY`); `app/services/generation_service.py`'s own unrelated `## CRITICAL SQL RULES` (sections 1–8) is untouched | §08 |
+| Query vocabulary | `normalize_question` existed twice (a string key and a token list), the tokenizer lived in the semantic compiler, and five modules kept private stop-word lists | new `app/utils/query_vocabulary.py` owns `STOP_WORDS`, `STRUCTURAL_TOKENS`, `is_significant`, `tokenize`, `question_tokens`, `build_question_tokens`, `model_items`/`model_item_name`, `can_answer`, `closest_name`; `hashing.normalize_question` keeps the whitespace-collapsed string key | §12 |
+| Session grain | `target_grain` had no producer — `record_generation_outcome(target_grain=…)` was never passed — so the grain line and its advisory form were unreachable outside tests | `extract_grain_from_sql` reads the last `GROUP BY` of the accepted SQL (trimmed at `HAVING`/`ORDER BY`/`LIMIT`/`;`, capped at `MaxGrainLength` 200); a full reset (`detect_reset`) clears it, a bare filter clear keeps it | §05, §08 |
+| Compiler messages | `Unknown metric: x` | appends the closest valid name: `Unknown metric: x. Closest valid metric in the active semantic model: y.` | §09 |
+
+Regression coverage: `tests/unit/test_semantic_smq.py` (95 tests — §13 covers element shape, aliases, the shape
+mismatch feedback, the fingerprint, the availability gate, the attempt-after-repeat temperature/presence penalty,
+and the strict prompt contract), `tests/unit/test_kb_schema_context.py` (new, 8 — limit-only hydration before
+attempt 1, recovery re-hydration of prompt **and** critic context, example objects authorized and hard-locked,
+a catalog-unknown example object dropped, multi-word skills titles), `tests/unit/test_query_vocabulary.py`
+(new, 6), `tests/unit/test_query_analysis_prompt.py` (new, 2), `tests/unit/test_session_filters.py` (16 — grain
+extraction, carry-forward, reset), `tests/unit/test_utils_and_routing.py` (12), `tests/unit/test_kb_and_precomputed.py`
+(9 — the embedding and the exact lookup use the limit-normalized key, `precomputed_exact` deliberately does not),
+`tests/unit/test_scenario_prompts.py` (9 — the literal layouts).
+
+---
+
 ## What this document is for
 
 The reference system is large (≈60 backend modules, several thousand lines in the generation path alone). The knowledge that makes it *work* is spread across hundreds of small decisions: exact thresholds, the order of validations, the shape of each prompt, which store is authoritative for which signal, which failure is terminal and which is retryable.
@@ -580,7 +623,7 @@ Sources: `app/api/endpoints/generation.py:51-52,109,165,221,284,494,674,702`; `a
 | Field | Type | Default | Notes |
 |---|---|---|---|
 | `query` | `str` | required | Rejected with 400 if blank on generate/execute routes |
-| `context` | `Optional[DiscoveryContext]` | `None` | Client-supplied discovery context; when present the built-in pipeline replaces discovery (`generation_service.py:1903-1905`) |
+| `context` | `Optional[DiscoveryContext]` | `None` | Client-supplied discovery context; when present the **legacy** wrapper path uses it instead of running discovery (`generation_service.py:1904-1906`). The built-in orchestrator never reads it (neither `build_agent_request` nor the discovery engine consults `GenerateSQLRequest.context`) |
 | `previousSQL` | `Optional[str]` | `None` | Previous SQL; used as `existing_code` fallback |
 | `queryHistory` | `Optional[str]` | `None` | Accumulated conversation history; folded into the query |
 | `database_objects` | `Optional[List[str]]` | `None` | Prioritized / pinned `schema.table` names |
@@ -725,8 +768,8 @@ Observed `query_type` producers:
 | Value | Producer |
 |---|---|
 | `database` | default; wrapper data branches; `_to_http` when `BuiltInGenerateResult.query_type` is unchanged |
-| `general` | `_handle_general_query` (`generation_service.py:2840-2847`), router conversational results (`router.py:71-83`), multi-source disambiguation (`generation_service.py:1760-1764`) |
-| `search` | `search_data_objects` (`generation_service.py:823-829`, `:833-838`) |
+| `general` | `_handle_general_query` (`generation_service.py:2841-2848`), router conversational results (`router.py:71-83`), multi-source disambiguation (`generation_service.py:1761-1765`) |
+| `search` | `search_data_objects` (`generation_service.py:824-830`, `generation_service.py:834-839`) |
 | `ask` | `ASK_QUERY_TYPE = "ask"` in `_ask_response` (`discuss_service.py:30,264-270`) |
 | `code_advisor` | `code_advisor_service.py:123-128` |
 | `python_code` / `r_code` / `sas_code` | `apply_language_result` maps `database` → language type when `target_language` is `python`/`r`/`sas` (`app/core/errors.py:54-66`) |
@@ -765,7 +808,7 @@ Execution retry contract as seen at the HTTP boundary: `MAX_RETRY_ATTEMPTS = 5` 
 
 #### 3.4.5 `ExecutePythonResponse` — `app/models/schemas.py:304-316`
 
-Same shape as §3.4.4 minus `rows_affected`, plus `code: Optional[str]` (the working code when auto-fixed) — default `None`.
+Same shape as §3.4.4 minus `rows_affected`, plus `code: Optional[str]` (the working code when auto-fixed) — default `None`. One difference to copy exactly: `execution_time` is **required** here (`schemas.py:310`; the SQL response defaults it to `0.0`).
 
 #### 3.4.6 Conversation and user models, as far as generation touches them
 
@@ -866,11 +909,11 @@ Consequences:
 | `ROUTING` | `"routing"` | Preprocess, coreference/session filters, route decision | `builtin_sql_generator.py:96,105,107` |
 | `VALIDATE_PINS` | `"validate_pins"` | Resolve pinned `database_objects` | `builtin_sql_generator.py:120` |
 | `PREANALYSIS` | `"preanalysis"` | Query analysis / fast-path phase | `builtin_sql_generator.py:174,182` |
-| `DISCOVERY` | `"discovery"` | Object discovery and refinement scope expansion | `builtin_sql_generator.py:255,272` |
-| `ATTEMPT` | `"attempt"` | Attempt loop progress | only the closing emit at `builtin_sql_generator.py:307` |
-| `CRITIC` | `"critic"` | LLM critic pass | **not streamed** — `attempts.py:342` uses a swallowed emitter |
-| `DB_VALIDATION` | `"db_validation"` | `SET NOEXEC ON` parse check | **not streamed** — `attempts.py:331,367` |
-| `RECOVERY` | `"recovery"` | Broadened recovery pass | **not streamed** — `attempts.py:361` |
+| `DISCOVERY` | `"discovery"` | Object discovery and refinement scope expansion | `builtin_sql_generator.py:303,320` |
+| `ATTEMPT` | `"attempt"` | Attempt loop progress | the top of each attempt — `attempts.py:223-228` (`"Generation attempt N/5"`, payload also carries `attempt` and `max_attempts`) |
+| `CRITIC` | `"critic"` | LLM critic pass | `attempts.py:523` (`"LLM critic"`) |
+| `DB_VALIDATION` | `"db_validation"` | `SET NOEXEC ON` parse check | `attempts.py:510` (attempt-1 pre-check, `"Database pre-check (attempt 1)"`) and `attempts.py:548` (`"Database validation"`) |
+| `RECOVERY` | `"recovery"` | Broadened recovery pass | `attempts.py:542` (`"Broadened group-member recovery"`) |
 
 Wire order actually observed on `/generate-sql`:
 
@@ -880,14 +923,14 @@ Wire order actually observed on `/generate-sql`:
 4. optionally `preanalysis` — `"No-discovery provided-code path"` (provided-code short path).
 5. `preanalysis` — `"Running pre-analysis fast paths"`.
 6. optionally `discovery` — `"Discovering relevant objects"`, then optionally `discovery` — `"Refinement scope expansion: a.b, c.d"`.
-7. `attempt` — `"Completed in N attempt(s)"`.
+7. `attempt` — `"Generation attempt N/5"`, then the progress the loop itself emits while it runs: `db_validation` (attempt-1 pre-check), `critic`, `db_validation` again, and `recovery` when a recovery merge or a broadened group-member pass runs. The loop's former closing status (`"Completed in N attempt(s)"`) no longer exists — `builtin_sql_generator.py:344-349` records that the attempt events themselves now report progress.
 8. `result`, then `done`.
 
 Earlier-exit paths skip the later stages entirely (fast path exits after step 5 with `result`+`done`; immediate route results exit after step 1 with `result`+`done`).
 
-Emitter details (`builtin_sql_generator.py:68-81`): `step` starts at `0` and is incremented per `emit`, so `step_id` is a 1-based counter of built-in status events; `source_id` is included in every such status payload. `run_attempt_loop` is invoked with `lambda stage, msg, **kw: None` (`builtin_sql_generator.py:299`), which is why `attempt`/`critic`/`db_validation`/`recovery` progress never reaches the socket — a re-implementation that streams them would change observable behaviour.
+Emitter details (`builtin_sql_generator.py:68-81`): `step` starts at `0` and is incremented per `emit`, so `step_id` is a 1-based counter of built-in status events; `source_id` is included in every such status payload. `run_attempt_loop` receives that same `emit` (`builtin_sql_generator.py:350-360`), so `attempt`, `critic`, `db_validation` and `recovery` status events do reach the socket — a re-implementation that drops them changes observable behaviour.
 
-> ⚠️ Unverified: the documentation (`docs/AGENT_PROCESS.md:51`, `docs/REQUEST_TO_CODE_FLOW.md:94`) advertises `critic`, `db_validation` and `recovery` as streamed stage names. The code path above shows they are not emitted at the default wiring. Keep the constant list identical regardless, because `PipelineStage` is part of the public taxonomy used by tests and analytics.
+> `attempt`, `critic`, `db_validation` and `recovery` are streamed at the default wiring: the attempt loop emits them (`attempts.py:223-228,510,523,542,548`). Keep the constant list identical, because `PipelineStage` is part of the public taxonomy used by tests and analytics.
 
 #### 3.5.4 Streaming mechanics, HTTP headers, consumption
 
@@ -933,7 +976,7 @@ def event_generator():
 Error-path rules to reproduce:
 
 1. **Mid-stream generic exception** ⇒ one `error` event with `payload == {"detail": str(e)}` and `message == str(e)`; the stream then ends (no `done`). The activity row is logged with `success=False`.
-2. **Mid-stream `HTTPException`** (e.g. `resolve_known_source_id` returning 404 inside the built-in handoff at `generation_service.py:1854`) is re-raised inside the async streaming body. The response headers are already sent, so the client observes an aborted stream rather than a JSON 404. Reproduce this ordering: the wrapper's own `require_source_id` runs *before* streaming, so a plain 404 is only possible pre-stream.
+2. **Mid-stream `HTTPException`** (e.g. `resolve_known_source_id` returning 404 inside the built-in handoff at `generation_service.py:1855`) is re-raised inside the async streaming body. The response headers are already sent, so the client observes an aborted stream rather than a JSON 404. Reproduce this ordering: the wrapper's own `require_source_id` runs *before* streaming, so a plain 404 is only possible pre-stream.
 3. The `except` chain does **not** catch `GeneratorExit`/client disconnects separately; the `finally` still logs the activity row.
 4. `hasattr(final_result, "usage")` is always `False` — `GenerateSQLResponse` exposes `token_usage`, not `usage` — so `tokens_used` is **always `None`** in the activity log (`generation.py:99,155,211,267`). Re-implement either faithfully (log `None`) or fix deliberately.
 5. The final `result` payload is captured only if it validates as `GenerateSQLResponse`; otherwise the activity log writes `sql=None`.
@@ -956,21 +999,21 @@ Error-path rules to reproduce:
 
 ### 3.6 `generation_service.generate_sql_for_request` — the complete decision protocol
 
-Signature: `generate_sql_for_request(request: GenerateSQLRequest, previous_sql: Optional[str] = None, query_history: Optional[str] = None) -> Generator[Union[AgentStatus, Dict[str, Any]], None, None]` (`app/services/generation_service.py:1641`).
+Signature: `generate_sql_for_request(request: GenerateSQLRequest, previous_sql: Optional[str] = None, query_history: Optional[str] = None) -> Generator[Union[AgentStatus, Dict[str, Any]], None, None]` (`app/services/generation_service.py:1642`).
 
-> ⚠️ Note: `previous_sql` is accepted but **never read**; the function always uses `request.previousSQL` (`generation_service.py:1650`). The route passes it positionally anyway (`generation.py:71`). Keep the parameter for signature compatibility.
+> ⚠️ Note: `previous_sql` is accepted but **never read**; the function always uses `request.previousSQL` (`generation_service.py:1651`). The route passes it positionally anyway (`generation.py:71`). Keep the parameter for signature compatibility.
 
 Execute these steps strictly in order:
 
-1. **History fold (query-level)** — `combined_query = request.query`; if `query_history` is truthy: `combined_query = f"{query_history}. {request.query}"` and log `[Context] Combined query with history: …` (`:1644-1647`).
-2. **Editor state** — `normalized_db_objects = _normalize_database_objects(request.database_objects)` (trim, drop blanks, de-duplicate case-insensitively, preserve order, `:27-43`); `existing_code = request.existing_code or request.previousSQL`; `editor_mode = "debug" if request.error_message else ("optimize" if existing_code else "fresh")`; `is_editor_mode = editor_mode != "fresh"` (`:1649-1652`).
-3. **`queryMode in {"plan","ask"}`** → Discuss branch: yield `AgentStatus(step_id=1, message="Thinking about your question...")`, call `discuss_conversation(request)`, yield `{"type":"result","payload":result}`, yield `{"type":"done"}`, return (`:1655-1662`). The result has `sql=""`, `query_type="ask"`, and `tool_event` set when a markdown tool ran (`discuss_service.py:154-194,264-270`).
-4. **`queryMode == "search"`** → yield `AgentStatus(step_id=1, message="Searching database objects...")`, call `search_data_objects(combined_query)`, yield result + done, return (`:1665-1670`). Result: `query_type="search"`, `sql=""`, `objects=[{"schema","name","type"}]`, `explanation` = markdown list (`generation_service.py:807-838`).
-5. **Load source metadata** — yield `AgentStatus(step_id=1, message="Initializing agent and loading settings...")`; `data_sources = skills_service.load_data_sources_index() or []`; `primary_source = skills_service.load_primary_data_source()`; `friendly_name`/`db_description`/`db_keywords` from primary source, else first source, else `"Database"`/`"Primary database"`/`[]`; primary is prepended if missing from the list (`:1672-1709`).
-6. **Intent classification status** — yield `AgentStatus(step_id=2, message="Classifying query intent...")` (`:1714`).
-7. **`request.forceGeneral == True`** → yield `AgentStatus(step_id=3, message="Processing general query...")`, `_handle_general_query(combined_query, llm_service)` ⇒ `GenerateSQLResponse(sql="", explanation=<LLM chat text>, query_type="general")` via `llm_service.chat_completion(messages, temperature=0.7)` with system prompt `"You are a helpful AI assistant for the database."`, then result + done, return (`:1717-1722`, `:2840-2847`).
-8. **Intent classification** — `classify_query_intent(combined_query, llm_service, db_name=friendly_name, db_description=db_description, db_keywords=db_keywords, data_sources=data_sources)` (`:1726-1732`). Response parsing accepts a dict with `intent` + `related_sources` + `related_source_guids`, or a bare string; a non-dict/short response degrades to `query_intent = str(classification).strip().lower()` with empty source lists (`:1733-1740`). Valid intents are `data_query | system_metadata | off_topic`; a blank query short-circuits to `off_topic`; any LLM/parse error defaults to `data_query` (`system_query_service.py:15,197-198`, `:250-350`).
-9. **Multi-source disambiguation** — executed when `len(related_source_guids) > 1`. Build options `f"- {name} (guid: {guid})"` (name from `source_by_guid`, else `"Unknown"`), then yield a result with this exact text and `return` (`:1748-1767`):
+1. **History fold (query-level)** — `combined_query = request.query`; if `query_history` is truthy: `combined_query = f"{query_history}. {request.query}"` and log `[Context] Combined query with history: …` (`generation_service.py:1645-1648`).
+2. **Editor state** — `normalized_db_objects = _normalize_database_objects(request.database_objects)` (trim, drop blanks, de-duplicate case-insensitively, preserve order, `generation_service.py:28-44`); `existing_code = request.existing_code or request.previousSQL`; `editor_mode = "debug" if request.error_message else ("optimize" if existing_code else "fresh")`; `is_editor_mode = editor_mode != "fresh"` (`generation_service.py:1650-1653`).
+3. **`queryMode in {"plan","ask"}`** → Discuss branch: yield `AgentStatus(step_id=1, message="Thinking about your question...")`, call `discuss_conversation(request)`, yield `{"type":"result","payload":result}`, yield `{"type":"done"}`, return (`generation_service.py:1656-1663`). The result has `sql=""`, `query_type="ask"`, and `tool_event` set when a markdown tool ran (`discuss_service.py:154-194,264-270`).
+4. **`queryMode == "search"`** → yield `AgentStatus(step_id=1, message="Searching database objects...")`, call `search_data_objects(combined_query)`, yield result + done, return (`generation_service.py:1666-1671`). Result: `query_type="search"`, `sql=""`, `objects=[{"schema","name","type"}]`, `explanation` = markdown list (`generation_service.py:807-838`).
+5. **Load source metadata** — yield `AgentStatus(step_id=1, message="Initializing agent and loading settings...")`; `data_sources = skills_service.load_data_sources_index() or []`; `primary_source = skills_service.load_primary_data_source()`; `friendly_name`/`db_description`/`db_keywords` from primary source, else first source, else `"Database"`/`"Primary database"`/`[]`; primary is prepended if missing from the list (`generation_service.py:1673-1710`).
+6. **Intent classification status** — yield `AgentStatus(step_id=2, message="Classifying query intent...")` (`generation_service.py:1715`).
+7. **`request.forceGeneral == True`** → yield `AgentStatus(step_id=3, message="Processing general query...")`, `_handle_general_query(combined_query, llm_service)` ⇒ `GenerateSQLResponse(sql="", explanation=<LLM chat text>, query_type="general")` via `llm_service.chat_completion(messages, temperature=0.7)` with system prompt `"You are a helpful AI assistant for the database."`, then result + done, return (`generation_service.py:1718-1723`, `generation_service.py:2841-2848`).
+8. **Intent classification** — `classify_query_intent(combined_query, llm_service, db_name=friendly_name, db_description=db_description, db_keywords=db_keywords, data_sources=data_sources)` (`:1727-1733`). Response parsing accepts a dict with `intent` + `related_sources` + `related_source_guids`, or a bare string; a non-dict/short response degrades to `query_intent = str(classification).strip().lower()` with empty source lists (`generation_service.py:1734-1741`). Valid intents are `data_query | system_metadata | off_topic`; a blank query short-circuits to `off_topic`; any LLM/parse error defaults to `data_query` (`system_query_service.py:15,197-198`, `:250-350`).
+9. **Multi-source disambiguation** — executed when `len(related_source_guids) > 1`. Build options `f"- {name} (guid: {guid})"` (name from `source_by_guid`, else `"Unknown"`), then yield a result with this exact text and `return` (`generation_service.py:1749-1768`):
 
    ```python
    explanation = (
@@ -982,21 +1025,21 @@ Execute these steps strictly in order:
    ```
 
    No `done`-suppressing shortcuts: the branch yields `{"type":"result"}` then `{"type":"done"}`.
-10. **`source_id` resolution order** (`:1769-1777`):
+10. **`source_id` resolution order** (`generation_service.py:1770-1778`):
     1. `request.source_id` if truthy (already resolved/validated by `require_source_id` at the HTTP layer);
     2. else `related_source_guids[0]` from the classifier;
     3. else `primary_source.source_id` (if a primary source exists);
     4. else `data_sources[0].source_id` (if any);
     5. else `None`.
-11. **Classification status** — `status_message = f"Intent classified as: {query_intent}"`, then `" (sources: {', '.join(related_sources)})"` when present, then `" (source_id: {selected_source_id})"` when present; yield as `AgentStatus(step_id=3, message=status_message)` (`:1779-1784`).
-12. **`query_intent == "off_topic"`** → yield `AgentStatus(step_id=4, message="Off-topic query detected. Generating general response...")`, `_handle_general_query`, result + done, return (`:1787-1792`).
+11. **Classification status** — `status_message = f"Intent classified as: {query_intent}"`, then `" (sources: {', '.join(related_sources)})"` when present, then `" (source_id: {selected_source_id})"` when present; yield as `AgentStatus(step_id=3, message=status_message)` (`generation_service.py:1780-1785`).
+12. **`query_intent == "off_topic"`** → yield `AgentStatus(step_id=4, message="Off-topic query detected. Generating general response...")`, `_handle_general_query`, result + done, return (`generation_service.py:1788-1793`).
 13. **`query_intent == "system_metadata"`** → yield `AgentStatus(step_id=4, message="System metadata query detected. Accessing SQL Server catalogs...")`; build `database_info = f"Database: {selected_source.name}\nDescription: {selected_source.description}"` (fallback: `friendly_name`/`db_description`); `system_prompt = build_system_catalog_prompt(combined_query, database_info=...)`; loop `max_system_attempts = 2`:
     - yield `AgentStatus(step_id=10+attempt, message=f"Generating system catalog SQL (Attempt {attempt+1}/2)...")`;
     - on retry append `"\n\n### PREVIOUS ATTEMPT FAILED\nError: {last_error}\nPlease fix the query and try again."`;
     - `sql = llm_service.generate_sql_with_context(combined_query, retry_prompt)`; `validate_sql_with_db(sql, source_id=selected_source_id)`;
     - valid ⇒ result `{sql, explanation: "System metadata query generated from SQL Server catalog views.", query_type: "database", context_text: retry_prompt, discovery_branch: "system_catalog", source_id}` + done;
-    - exhausted ⇒ result `{sql: "", explanation: f"Failed to generate a valid system metadata query after 2 attempts. Last error: {last_error}", query_type: "database", context_text: system_prompt, discovery_branch: "system_catalog", source_id}` + done (`:1795-1843`).
-14. **Built-in handoff** — when `getattr(settings, "BUILTIN_SQL_GENERATOR", True)` **and** `request.queryMode == "generate"` (`:1847-1848`):
+    - exhausted ⇒ result `{sql: "", explanation: f"Failed to generate a valid system metadata query after 2 attempts. Last error: {last_error}", query_type: "database", context_text: system_prompt, discovery_branch: "system_catalog", source_id}` + done (`:1796-1843`).
+14. **Built-in handoff** — when `getattr(settings, "BUILTIN_SQL_GENERATOR", True)` **and** `request.queryMode == "generate"` (`generation_service.py:1849-1859`):
     ```python
     builtin_source = request.source_id or selected_source_id
     builtin_source = resolve_or_primary(builtin_source)
@@ -1005,8 +1048,8 @@ Execute these steps strictly in order:
         yield event
     return
     ```
-    `resolve_or_primary` (`source_resolver.py:56-70`) returns the validated id when one is given, else primary → first source → `"default"`. Because the wrapper already resolved `request.source_id`, this second lookup can raise `HTTPException(404)` **inside** the generator (see §3.5.4 rule 2). `generate_sql_builtin` is called with default `target_language="sql"`; the R/SAS/Python endpoints reach it through `generate_r_builtin` / `generate_sas_builtin` / `generate_python_builtin`, which simply forward `target_language="r"|"sas"|"python"` (`builtin_sql_generator.py:61-67,331-352`).
-15. **Legacy (pre-port) path** — reached only when `BUILTIN_SQL_GENERATOR` is `False`, or when `queryMode` is neither `plan|ask|search|generate` (note: `queryMode="code_advisor"` sent to `/generate-sql` lands here) (`:1860-2838`). This path is fully specified by the code but is *not* the default; the re-implementation only needs it if the flag is turned off. Its branch labels are `kb_direct`, `kb_gap_fill`, `dual_prong`, `table_override`, `system_catalog` and its attempt loop is `for attempt in range(5)` with the prompt blocks quoted in `generation_service.py:2525-2701`.
+    `resolve_or_primary` (`source_resolver.py:56-70`) returns the validated id when one is given, else primary → first source → `"default"`. Because the wrapper already resolved `request.source_id`, this second lookup can raise `HTTPException(404)` **inside** the generator (see §3.5.4 rule 2). `generate_sql_builtin` is called with default `target_language="sql"`; the R/SAS/Python endpoints reach it through `generate_r_builtin` / `generate_sas_builtin` / `generate_python_builtin`, which simply forward `target_language="r"|"sas"|"python"` (`builtin_sql_generator.py:61-67`, wrappers at `:403-424`).
+15. **Legacy (pre-port) path** — reached only when `BUILTIN_SQL_GENERATOR` is `False`, or when `queryMode` is neither `plan|ask|search|generate` (note: `queryMode="code_advisor"` sent to `/generate-sql` lands here) (`generation_service.py:1861-2839`). This path is fully specified by the code but is *not* the default; the re-implementation only needs it if the flag is turned off. Its branch labels are `kb_direct`, `kb_gap_fill`, `dual_prong`, `table_override`, `system_catalog` and its attempt loop is `for attempt in range(5)` with the prompt blocks quoted in `generation_service.py:2525-2701`.
 
 Decision table (mode/intent → outcome):
 
@@ -1028,9 +1071,9 @@ Decision table (mode/intent → outcome):
 | Endpoint | Service entry | `target_language` | Fast-path consequences |
 |---|---|---|---|
 | `/generate-sql` | `generate_sql_for_request` → `generate_sql_builtin` | `"sql"` | KB/precomputed matches returned as-is |
-| `/generate-r` | `generate_r_for_request` → `generate_r_builtin` | `"r"` | KB/precomputed SQL is materialized by `materialize_r_code` (`code_generation_service.py:50-63`, `builtin_sql_generator.py:87-94`) |
-| `/generate-sas` | `generate_sas_for_request` → `generate_sas_builtin` | `"sas"` | `materialize_sas_code` |
-| `/generate-python` | `generate_python_for_request` → `generate_python_builtin` | `"python"` | `materialize_python_code` |
+| `/generate-r` | `generate_r_for_request` → `generate_r_builtin` | `"r"` | KB/precomputed SQL is materialized by `materialize_r_code` (`app/utils/r_normalization.py:119`, called from `builtin_sql_generator.py:87-94`) |
+| `/generate-sas` | `generate_sas_for_request` → `generate_sas_builtin` | `"sas"` | `materialize_sas_code` (`app/utils/sas_normalization.py:111`) |
+| `/generate-python` | `generate_python_for_request` → `generate_python_builtin` | `"python"` | `materialize_python_code` (`app/utils/python_normalization.py:153`) |
 
 Within the built-in generator: `python_mode/r_mode/sas_mode` flags, `script_mode = python_mode or r_mode or sas_mode` (`builtin_sql_generator.py:71-74`), then
 
@@ -1046,30 +1089,30 @@ and again defensively in the attempt loop: `if script_mode: semantic_mode = Fals
 
 | Message | Where |
 |---|---|
-| `Thinking about your question...` | `generation_service.py:1658` |
-| `Searching database objects...` | `:1666` (and `code_generation_service.py:29,72,161`) |
-| `Initializing agent and loading settings...` | `:1672` |
-| `Classifying query intent...` | `:1714` |
-| `Processing general query...` | `:1718` |
-| `Intent classified as: {intent}` + optional ` (sources: …)` + optional ` (source_id: …)` | `:1779-1784` |
-| `Off-topic query detected. Generating general response...` | `:1788` |
-| `System metadata query detected. Accessing SQL Server catalogs...` | `:1796` |
-| `Generating system catalog SQL (Attempt {n}/2)...` | `:1808` |
-| `Multiple data sources match your request. Please choose one source ID to proceed:\n- <name> (guid: <guid>)…\n\nReply with the GUID of the data source you want to use.` | `:1755-1759` |
-| `System metadata query generated from SQL Server catalog views.` | `:1820` |
-| `Failed to generate a valid system metadata query after 2 attempts. Last error: {error}` | `:1835` |
-| (legacy) `Analyzed query. Complexity: {c}. Entities: {…}` | `:1876` |
-| (legacy) `Discovering relevant tables and schemas...` | `:1879` |
-| (legacy) `Searching knowledge base for similar queries...` | `:1912,2091` |
-| (legacy) `Evaluating knowledge base examples with AI...` | `:1924` |
-| (legacy) `No matching schemas were found for the selected objects. Please verify the table names and try again.` | `:1895` |
-| (legacy) `**Schema Validation Failed**…**Missing data points:**…**Analysis:** {analysis}` (+ optional `**Join issue:** …`) | `:2216-2218`, `:2387-2389` |
-| (legacy) `The following code might be able to retrieve the data you requested.` | `:2719` |
-| (legacy) `Failed after 5 attempts. Final error: {error}. Please try rephrasing your query or providing more context.` | `:2831` |
-| (search) `**Found {n} relevant database object(s):**\n\n• [schema].[table]…` | `:818-819` |
-| (search) `No matching database objects found for your search. Try different keywords or check the value index.` | `:821` |
+| `Thinking about your question...` | `generation_service.py:1659` |
+| `Searching database objects...` | `generation_service.py:1667` (and `code_generation_service.py:29,72,161`) |
+| `Initializing agent and loading settings...` | `generation_service.py:1673` |
+| `Classifying query intent...` | `generation_service.py:1715` |
+| `Processing general query...` | `generation_service.py:1719` |
+| `Intent classified as: {intent}` + optional ` (sources: …)` + optional ` (source_id: …)` | `generation_service.py:1780-1785` |
+| `Off-topic query detected. Generating general response...` | `generation_service.py:1789` |
+| `System metadata query detected. Accessing SQL Server catalogs...` | `generation_service.py:1797` |
+| `Generating system catalog SQL (Attempt {n}/2)...` | `generation_service.py:1809` |
+| `Multiple data sources match your request. Please choose one source ID to proceed:\n- <name> (guid: <guid>)…\n\nReply with the GUID of the data source you want to use.` | `generation_service.py:1756-1760` |
+| `System metadata query generated from SQL Server catalog views.` | `generation_service.py:1821` |
+| `Failed to generate a valid system metadata query after 2 attempts. Last error: {error}` | `generation_service.py:1836` |
+| (legacy) `Analyzed query. Complexity: {c}. Entities: {…}` | `generation_service.py:1877` |
+| (legacy) `Discovering relevant tables and schemas...` | `generation_service.py:1880` |
+| (legacy) `Searching knowledge base for similar queries...` | `generation_service.py:1913,2092` |
+| (legacy) `Evaluating knowledge base examples with AI...` | `generation_service.py:1925` |
+| (legacy) `No matching schemas were found for the selected objects. Please verify the table names and try again.` | `generation_service.py:1896` |
+| (legacy) `**Schema Validation Failed**…**Missing data points:**…**Analysis:** {analysis}` (+ optional `**Join issue:** …`) | `generation_service.py:2217-2219`, `:2388-2390` |
+| (legacy) `The following code might be able to retrieve the data you requested.` | `generation_service.py:2720` |
+| (legacy) `Failed after 5 attempts. Final error: {error}. Please try rephrasing your query or providing more context.` | `generation_service.py:2832` |
+| (search) `**Found {n} relevant database object(s):**\n\n• [schema].[table]…` | `generation_service.py:819-820` |
+| (search) `No matching database objects found for your search. Try different keywords or check the value index.` | `generation_service.py:822` |
 
-Built-in-path explanation strings come from `_to_http` (`builtin_sql_generator.py:515-539`): `explanation = result.explanation or result.message`, with language defaults `"The following Python code uses pandas to analyze your data."`, `"The following R code uses tidyverse to analyze your data."`, `"The following SAS code may resolve your request."` for successful script results.
+Built-in-path explanation strings come from `_to_http` (`builtin_sql_generator.py:587-611`): `explanation = result.explanation or result.message`, with language defaults `"The following Python code uses pandas to analyze your data."`, `"The following R code uses tidyverse to analyze your data."`, `"The following SAS code may resolve your request."` for successful script results.
 
 ### 3.7 Auth model
 
@@ -1083,12 +1126,12 @@ Two dependencies, two failure modes:
 
 `verify_api_key` resolves the key with `get_user_by_api_key(db, x_api_key)` and rejects when the user is missing **or** `not user.is_active` (`auth.py:107-115`). `get_current_user_optional` performs the same lookup but returns `None` for bad/absent keys (`auth.py:20-27`).
 
-**API key, not JWT.** `auth_service.create_access_token` is imported by `users.py:24` but the login route explicitly does *not* use it: `access_token=user.api_key`, `token_type="api-key"`, with the comment `# Return the user's API key (no JWT token)` (`users.py:56-61`). The API key travels in the `X-API-Key` header for every authenticated call; there is **no** `Authorization: Bearer` dependency on this boundary. `JWT_SECRET_KEY` exists in the settings surface but is not exercised by the generation/execution/discovery routes.
+**API key, not JWT.** `auth_service.create_access_token` is imported by `users.py:24` but the login route explicitly does *not* use it: `access_token=user.api_key`, `token_type="api-key"`, with `access_token=user.api_key` and the inline comment `# Return API key as access_token for frontend compatibility` (`users.py:58-59`). The API key travels in the `X-API-Key` header for every authenticated call; there is **no** `Authorization: Bearer` dependency on this boundary. `JWT_SECRET_KEY` exists in the settings surface but is not exercised by the generation/execution/discovery routes.
 
 `source_id` authorization:
 
 1. Every data-touching route resolves it with `require_source_id(request.source_id)` **once**, at the HTTP layer: blank → 400, unknown → 404 (`source_resolver.py:43-53`).
-2. The built-in path resolves it a second time via `resolve_or_primary` when handing off (`generation_service.py:1853-1854`), so a deleted/renamed source can surface as a mid-stream abort (see §3.5.4).
+2. The built-in path resolves it a second time via `resolve_or_primary` when handing off (`generation_service.py:1854-1855`), so a deleted/renamed source can surface as a mid-stream abort (see §3.5.4).
 3. **There is no per-user or per-role authorization of a data source.** The registry row has no owner column — `DataSourceRegistry` holds `source_id, name, type, identity_hash, connection_info, created_at, deleted_at, last_seen_at, file_path` (`app/models/user_models.py:95-123`) — and no route compares `source_id` against `current_user`. Any authenticated active user may query any known source. If the re-implementation needs tenant isolation, it must add it; it cannot be inherited from this contract.
 4. `POST /summarize-results` has **no** auth dependency at all (`summarize.py:18-19`).
 
@@ -1098,27 +1141,27 @@ Two dependencies, two failure modes:
 
 | Constant | Value | Produced where |
 |---|---|---|
-| `SAFETY` | `"safety"` | `attempts.py:279` — query interceptor blocked the statement |
+| `SAFETY` | `"safety"` | `attempts.py:453` — query interceptor blocked the statement |
 | `GENERATION` | `"generation"` | `SqlErrorClassifier.classify(stage="generation")` fallback (`sql_error_classifier.py:30-31`); no direct `ErrorCategory` call site |
 | `REQUIREMENT` | `"requirement"` | `classify(stage="requirement")` fallback (`sql_error_classifier.py:32-33`) |
 | `SCHEMA` | `"schema"` | `classify` — error text contains `invalid object` / `invalid column` (`sql_error_classifier.py:24-25`) |
-| `VALIDATION` | `"validation"` | `attempts.py:419` (all attempts exhausted), `builtin_sql_generator.py:503` (provided-code rewrite failed) |
+| `VALIDATION` | `"validation"` | `attempts.py:620` (all attempts exhausted), `builtin_sql_generator.py:575` (provided-code rewrite failed) |
 | `SYNTAX` | `"syntax"` | `classify` — `syntax` / `incorrect syntax` (`sql_error_classifier.py:22-23`) |
-| `TIMEOUT` | `"timeout"` | `attempts.py:134` (120 s budget), `builtin_sql_generator.py:437` (90 s no-discovery budget) |
-| `DETERMINISTIC_MISSING_OBJECT` | `"deterministic_missing_object"` | `attempts.py:289,395` — same missing object twice (breaker threshold 2) |
+| `TIMEOUT` | `"timeout"` | `attempts.py:212` (120 s budget), `builtin_sql_generator.py:509` (90 s no-discovery budget; the deadline is armed at `:439`) |
+| `DETERMINISTIC_MISSING_OBJECT` | `"deterministic_missing_object"` | `attempts.py:468,578` — same missing object twice (breaker threshold 2) |
 | `PRIORITY_VALIDATION_FAILED` | `"priority_validation_failed"` | `builtin_sql_generator.py:153` — pinned objects unresolved |
-| `SEMANTIC_COMPILATION` | `"semantic_compilation"` | `classify` — `SEMANTIC` or a semantic code in the message (`sql_error_classifier.py:20-21`); `attempts.py:220-231` returns `_fail("semantic_compilation", …)` using the raw string |
+| `SEMANTIC_COMPILATION` | `"semantic_compilation"` | `classify` — `SEMANTIC` or a semantic code in the message (`sql_error_classifier.py:20-21`); `attempts.py:598-599` returns `_fail(ErrorCategory.SEMANTIC_COMPILATION, …)`, and `builtin_sql_generator.py:245` sets the same category on the precomputed path |
 | `APP_FEATURE` | `"app_feature"` | `router.py:77,81` — conversational result's `error_category` mirrors the branch |
 | `OFF_TOPIC` | `"off_topic"` | `router.py:77,81` (same mechanism) |
 
 `SqlErrorClassifier.classify(error_message, stage="validation")` order of tests: `SEMANTIC`/semantic-code substring → `syntax` → `invalid object`/`invalid column` → `timeout` → stage `safety` → `generation` → `requirement` → `validation` (`sql_error_classifier.py:17-34`). Semantic codes: `UNKNOWN_METRIC`→`UnknownMetric`, `UNKNOWN_DIMENSION`→`UnknownDimension`, `INCOMPATIBLE_DIMENSIONS`→`IncompatibleDimensions`, `MISSING_JOIN_PATH`→`MissingJoinPath` (`sql_error_classifier.py:10-15,45-50`).
 
-#### 3.8.2 `BuiltInFailureReport` / `BuiltInAttemptReport` / `ScoredObject` — `app/models/pipeline.py:167-224`
+#### 3.8.2 `BuiltInFailureReport` / `BuiltInAttemptReport` / `ScoredObject` — `app/models/pipeline.py:171-208`
 
 | Model | Field | Type | Default |
 |---|---|---|---|
 | `BuiltInAttemptReport` | `attempt_number` | `int` | required |
-| | `stage` | `str` | required — observed: `"generation"`, `"db_validation"`, `"semantic_compilation"`, `"critic"` (`attempts.py:181,213,239,248,399-406`) |
+| | `stage` | `str` | required — observed: `"generation"` (`attempts.py:286`), `"semantic_compilation"` (`:338,358,373,387,407`), `"critic"` (`:536`), `"db_validation"` (`:584`) |
 | | `what_was_tried` | `str` | required |
 | | `why_it_failed` | `Optional[str]` | `None` |
 | | `recovery_action` | `Optional[str]` | `None` |
@@ -1140,7 +1183,7 @@ Two dependencies, two failure modes:
 | | `final_resolution_guidance` | `str` | `""` |
 | | `candidate_objects` | `List[ScoredObject]` | `[]` |
 
-`build_failure_report(*, summary, resolution_plan, attempts, final_guidance, candidates=None)` (`errors.py:23-37`) builds the model; observed guidance values include `"priority_validation_failed"`, `"timeout"`, `"The 120s generation budget was exceeded."`, `"All generation attempts were exhausted."`, `"Inspect candidates"`/`"Adjust pins"` (plan), and the raw last error (`attempts.py:126-131,410-416,585-591`).
+`build_failure_report(*, summary, resolution_plan, attempts, final_guidance, candidates=None)` (`errors.py:23-37`) builds the model; observed guidance values include `"priority_validation_failed"`, `"timeout"`, `"The 120s generation budget was exceeded."`, `"All generation attempts were exhausted."`, `"Inspect candidates"`/`"Adjust pins"` (plan), and the raw last error (`attempts.py:204-209,611-617,950-956`).
 
 #### 3.8.3 Mapping failures to `GenerateSQLResponse`
 
@@ -1152,7 +1195,7 @@ def wrap_failure_sql_comment(message: str) -> str:
     return f"/*\n{body}\n*/"
 ```
 
-`_to_http` (`builtin_sql_generator.py:515-539`) then maps `BuiltInGenerateResult` → `GenerateSQLResponse`:
+`_to_http` (`builtin_sql_generator.py:587-611`) then maps `BuiltInGenerateResult` → `GenerateSQLResponse`:
 
 | `GenerateSQLResponse` | Source |
 |---|---|
@@ -1413,7 +1456,7 @@ Precedence inside `get_default_settings()`: `.env` value → `Settings` field �
 | `EMBEDDING_MODEL` | `str` | `"text-embedding-3-small"` | Model id sent to `embeddings.create`; **also part of the L2 cache hash key** |
 | `EMBEDDING_DIMENSIONS` | `int` | `1536` | Display/UI only — see the trap below |
 
-> ⚠️ **Dimension trap.** `EMBEDDING_DIMENSIONS` is read by nothing but `settings_service` (grep: only `config.py:49` and `settings_service.py:212-213,442,461`). The vector contract's dimension is the **hardcoded constant** `EmbeddingDimensions = 1536` (`constants.py:66` → `schema_contracts.py:9 VECTOR_DIM`), and `MilvusProvider` falls back to `EmbeddingDimensions` when a field has no dim (`milvus_provider.py:143`). Changing `EMBEDDING_DIMENSIONS` in `.env` changes nothing in the vector store; changing the *model* without changing `constants.EmbeddingDimensions` produces vectors of the wrong length. On Milvus the insert fails; on SQLite the vectors are stored as JSON and `cosine_similarity` returns `0.0` for length mismatch (`score_utils.py:11-12`) — i.e. **silent zero-similarity, not an error**.
+> ⚠️ **Dimension trap.** `EMBEDDING_DIMENSIONS` is read by nothing but `settings_service` (grep: only `config.py:49` and `settings_service.py:212-213,442,461`). The vector contract's dimension is the **hardcoded constant** `EmbeddingDimensions = 1536` (`constants.py:72` → `schema_contracts.py:9 VECTOR_DIM`), and `MilvusProvider` falls back to `EmbeddingDimensions` when a field has no dim (`milvus_provider.py:143`). Changing `EMBEDDING_DIMENSIONS` in `.env` changes nothing in the vector store; changing the *model* without changing `constants.EmbeddingDimensions` produces vectors of the wrong length. On Milvus the insert fails; on SQLite the vectors are stored as JSON and `cosine_similarity` returns `0.0` for length mismatch (`score_utils.py:11-12`) — i.e. **silent zero-similarity, not an error**.
 
 #### 4.2.4 SQL Server / target data source
 
@@ -1424,7 +1467,7 @@ Precedence inside `get_default_settings()`: `.env` value → `Settings` field �
 Engine construction (`app/core/database.py`):
 
 ```python
-# 93-100  when Server + Database were found in the skills folder
+# 93-98  when Server + Database were found in the skills folder
 driver   = "ODBC Driver 17 for SQL Server"
 conn_str = (f"Driver={{{driver}}};Server={server};Database={database};"
             "Trusted_Connection=yes;Encrypt=yes;TrustServerCertificate=yes")
@@ -1447,7 +1490,7 @@ if not conn_str.startswith("mssql"):
 | `POSTGRES_DB` | `str` | `"octofy_users"` | |
 
 ```python
-# app/core/user_database.py:17-26
+# app/core/user_database.py:17-29
 POSTGRES_URL = f"postgresql://{user}:{password}@{host}:{port}/{db}"
 engine       = create_engine(POSTGRES_URL, pool_pre_ping=True)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
@@ -1480,16 +1523,16 @@ This is an **import-time** side effect: `create_engine` is lazy (no connection),
 
 | Field | Type | Default | Consumed by | Behaviour |
 |---|---|---|---|---|
-| `BUILTIN_SQL_GENERATOR` | `bool` | `True` | `generation_service.py:1848`, `api/endpoints/discovery.py:21` | Master switch for the whole built-in pipeline; `False` routes to the legacy path |
-| `PRECOMPUTED_QUERY_DIRECT_MATCH_THRESHOLD` | `float` | `0.93` | `constants.precomputed_direct_match_threshold()` (`constants.py:87-89`) | Cosine **similarity** at/above which a precomputed hit is `is_exact_match` (`vector_search_service.py:117-118,142`) |
-| `PRECOMPUTED_QUERY_FEW_SHOT_THRESHOLD` | `float` | `0.82` | `constants.precomputed_few_shot_threshold()` (`constants.py:92-94`) → `discovery_engine.py:233` | Similarity at/above which the branch is upgraded to `precomputed_related(...)` |
-| `OBJECT_SEARCH_VECTOR_SCORE_THRESHOLD` | `float` | `0.50` | `settings.object_search_vector_score_threshold()` (`config.py:117-118`), used by `effective_object_search_threshold()` (`constants.py:80-84`) | Cosine **distance** ceiling for `schemas` hits; clamped to `[0.0, 1.0]` in **both** places |
+| `BUILTIN_SQL_GENERATOR` | `bool` | `True` | `generation_service.py:1849`, `api/endpoints/discovery.py:21` | Master switch for the whole built-in pipeline; `False` routes to the legacy path |
+| `PRECOMPUTED_QUERY_DIRECT_MATCH_THRESHOLD` | `float` | `0.93` | `constants.precomputed_direct_match_threshold()` (`constants.py:93-95`) | Cosine **similarity** at/above which a precomputed hit is `is_exact_match` (`vector_search_service.py:117-118,142`) |
+| `PRECOMPUTED_QUERY_FEW_SHOT_THRESHOLD` | `float` | `0.82` | `constants.precomputed_few_shot_threshold()` (`constants.py:98-100`) → `discovery_engine.py:241` | Similarity at/above which the branch is upgraded to `precomputed_related(...)` |
+| `OBJECT_SEARCH_VECTOR_SCORE_THRESHOLD` | `float` | `0.50` | `settings.object_search_vector_score_threshold()` (`config.py:117-118`), used by `effective_object_search_threshold()` (`constants.py:86-90`) | Cosine **distance** ceiling for `schemas` hits; clamped to `[0.0, 1.0]` in **both** places |
 | `ENABLE_BM25_RETRIEVAL` | `bool` | `False` | `Bm25Service.enabled` (`bm25_service.py:24-29`) | Adds a 5th RRF list |
 | `BM25_WEIGHT` | `float` | `0.5` | `rrf.default_weights()` (`rrf.py:26-30`) | Overrides `RRF_WEIGHT_BM25_DEFAULT` for the `bm25` list only |
 | `BM25_K1` | `float` | `1.2` | `Bm25Service.k1` (`bm25_service.py:32-36`) | Okapi k1 |
 | `BM25_B` | `float` | `0.75` | `Bm25Service.b` (39-43) | Okapi b |
 | `ENABLE_SEMANTIC_LAYER_PER_DATA_SOURCE` | `Dict[str, bool]` | `{}` | `settings.semantic_layer_enabled_for(source_id)` (`config.py:108-115`) → `build_source_stores` → `SemanticModelService(enable_flag=…)` | Per-source enable map; accepts a JSON object string via the `mode="before"` validator (96-106). Malformed JSON or a non-object raises `ValueError` at import |
-| `SEMANTIC_COMPILATION_FALLBACK_TO_RAW_SQL` | `bool` | `True` | `constants.semantic_compilation_fallback_to_raw_sql()` (`constants.py:97-99`) → `attempts.py:217-219` | When SMQ compilation fails, `False` aborts instead of falling back to raw SQL |
+| `SEMANTIC_COMPILATION_FALLBACK_TO_RAW_SQL` | `bool` | `True` | `constants.semantic_compilation_fallback_to_raw_sql()` (`constants.py:103-105`) → `attempts.py:329` | When SMQ compilation fails, `False` aborts instead of falling back to raw SQL |
 | `ENABLE_AI_DATA_ANALYSIS` | `bool` | `True` | `execution_service.py:455`, `validation_service.py:274` | Master switch for profiling + insight generation after execution |
 | `ENABLE_JOIN_PATH_VALIDATION` | `bool` | `True` | `generation_service.py:2146,2318` | Legacy path only: enhanced join-path validation vs. the legacy sufficiency check |
 
@@ -1554,9 +1597,9 @@ Clamp rules (exact, all three layers):
 
 | Threshold | Clamp | Where |
 |---|---|---|
-| `OBJECT_SEARCH_VECTOR_SCORE_THRESHOLD` | `max(0.0, min(1.0, x))` | `config.py:117-118` (getter), `constants.py:80-84` (override), `settings.py:366` (PUT) |
-| direct-match / few-shot thresholds | **none** — stored verbatim as `float(...)` | `constants.py:87-94` |
-| per-call override to `effective_object_search_threshold(override)` | `max(0.0, min(1.0, override))` when `override is not None` | `constants.py:80-84` |
+| `OBJECT_SEARCH_VECTOR_SCORE_THRESHOLD` | `max(0.0, min(1.0, x))` | `config.py:117-118` (getter), `constants.py:86-90` (override), `settings.py:366` (PUT) |
+| direct-match / few-shot thresholds | **none** — stored verbatim as `float(...)` | `constants.py:93-100` |
+| per-call override to `effective_object_search_threshold(override)` | `max(0.0, min(1.0, override))` when `override is not None` | `constants.py:86-90` |
 
 ---
 
@@ -1568,18 +1611,19 @@ Header comment, verbatim: `"""Built-in SQL generator constants. Values must matc
 
 | Constant | Value | Meaning / consumer |
 |---|---|---|
-| `MaxRetries` | `5` | Attempt-loop bound: `for attempt in range(1, MaxRetries + 1)` (`attempts.py:123`); also reported as `BuiltInGenerateResult.attempts` default (`attempts.py:421`) |
-| `MaxGenerationTimeMs` | `120_000` | Wall-clock budget for the attempt loop (`attempts.py:86`, `builtin_sql_generator.py:300`) |
-| `NoDiscoveryTimeBudgetMs` | `90_000` | Shorter budget for the `existing_code`-only ("no discovery") fast path; converted with `/1000.0` (`builtin_sql_generator.py:367`) |
-| `SemanticCompilationTimeoutMs` | `5_000` | Per-call SMQ compile budget, **enforced** by `SemanticCompiler.compile_guarded(..., timeout_ms=…)` (`attempts.py:306`, `semantic_compiler.py:124`); the attempt loop passes it and treats expiry as a semantic retry (§9.10.4) |
+| `MaxRetries` | `5` | Attempt-loop bound: `for attempt in range(1, MaxRetries + 1)` (`attempts.py:201`); also reported as `BuiltInGenerateResult.attempts` default (`app/models/pipeline.py:216`) |
+| `MaxGenerationTimeMs` | `120_000` | Wall-clock budget for the attempt loop (`attempts.py:104`, `builtin_sql_generator.py:356`) |
+| `NoDiscoveryTimeBudgetMs` | `90_000` | Shorter budget for the `existing_code`-only ("no discovery") fast path; converted with `/1000.0` (`builtin_sql_generator.py:439`) |
+| `SemanticCompilationTimeoutMs` | `5_000` | Per-call SMQ compile budget, **enforced** by `SemanticCompiler.compile_guarded(..., timeout_ms=…)` (`attempts.py:400`, `semantic_compiler.py:134-143`); the attempt loop passes it and treats expiry as a semantic retry (§9.10.4) |
 
 #### 4.3.2 Knowledge-base thresholds (cosine distance unless noted)
 
 | Constant | Value | Meaning / consumer |
 |---|---|---|
-| `KbExactMatchThreshold` | `0.05` | A `few_shots` vector hit with distance ≤ 0.05 is flagged `is_exact_match` (`fewshot_vector_service.py:129`); also re-exported via `builtin_sql_generator.Kb_distance_exact()` (355-358) |
-| `KbConfidenceThreshold` | `0.70` | KB confidence gate for the `kb_direct` exit (`discovery_engine.py:164-167`) — see §4.8.4 for the dual-convention quirk |
-| `KbScoreThreshold` | `0.35` | Maximum cosine distance accepted from `few_shots` search (`fewshot_vector_service.py:114`), passed by callers as `max_distance` (`discovery_engine.py:69,159`) |
+| `KbExactMatchThreshold` | `0.05` | A `few_shots` vector hit with distance ≤ 0.05 is flagged `is_exact_match` (`fewshot_vector_service.py:129`); also re-exported via `builtin_sql_generator.Kb_distance_exact()` (427-428) |
+| `KbConfidenceThreshold` | `0.70` | KB confidence gate for the `kb_direct` exit (`discovery_engine.py:172-177`) — see §4.8.4 for the dual-convention quirk |
+| `KbScoreThreshold` | `0.35` | Maximum cosine distance accepted from `few_shots` search (`fewshot_vector_service.py:114`), passed by callers as `max_distance` (`discovery_engine.py:70,167`) |
+| `KbRequiredObjectScore` | `1000.0` | Score given to an injected example's objects when they are hard-locked (`required=True`) by `_objects_from_sql` / `_lock_example_objects` (`constants.py:17`, `discovery_engine.py:361-386`) |
 
 #### 4.3.3 Vector / precomputed
 
@@ -1588,7 +1632,7 @@ Header comment, verbatim: `"""Built-in SQL generator constants. Values must matc
 | `DefaultObjectSearchVectorScoreThreshold` | `0.50` | Model default for the admin API (`api/endpoints/settings.py:350`) |
 | `DefaultPrecomputedQueryDirectMatchThreshold` | `0.93` | Admin API default (`settings.py:348`) |
 | `DefaultPrecomputedQueryFewShotThreshold` | `0.82` | Admin API default (`settings.py:349`) |
-| `PrecomputedQueryTopK` | `3` | Default `top_k` of `VectorSearchService.search_precomputed` (`vector_search_service.py:113`); the discover path also slices `precomputed[:3]` (`discovery_engine.py:232`) |
+| `PrecomputedQueryTopK` | `3` | Default `top_k` of `VectorSearchService.search_precomputed` (`vector_search_service.py:113`); the discover path also slices `precomputed[:3]` (`discovery_engine.py:240`) |
 
 #### 4.3.4 Reciprocal Rank Fusion
 
@@ -1606,39 +1650,40 @@ Header comment, verbatim: `"""Built-in SQL generator constants. Values must matc
 
 | Constant | Value | Meaning / consumer |
 |---|---|---|
-| `ActiveDataGroupTopN` | `3` | Data groups activated per query (`data_group_store.py:70`, `discovery_engine.py:121,124`) |
+| `ActiveDataGroupTopN` | `3` | Data groups activated per query (`data_group_store.py:70`, `discovery_engine.py:129,132`) |
 | `SchemaContextTokenBudget` | `6_400` | `SqlContextHydrator` token budget for schema context (`sql_context_hydrator.py:17`) |
 | `PromptContextDiscoveryCap` | `8` | Default cap on hydrated objects in the prompt (`sql_context_hydrator.py:17`) |
-| `RefinementPromptContextCap` | `12` | Widened cap used **only** for refinement/drill-down turns, so both the editor SQL's base tables and the newly discovered objects fit (`builtin_sql_generator.py:280`) |
-| `MissingObjectBreakThreshold` | `2` | A missing object reported ≥ 2 times by the critic breaks the attempt loop (`attempts.py:568`) |
-| `MissingGroupMemberValidationStatus` | `"MISSING_GROUP_MEMBER"` | `CombinedValidationResult.status` value that triggers a broadening retry (`attempts.py:359`) |
-| `FuzzyMatchMinConfidence` | `0.85` | Minimum `SequenceMatcher` confidence to accept a fuzzy object-name resolution (`object_name_resolver.py:47`) |
-| `MaxRecoveryExpansion` | `5` | Maximum objects added per recovery expansion (`attempts.py:285,363,392,397`) |
+| `RefinementPromptContextCap` | `12` | Widened cap used **only** for refinement/drill-down turns, so both the editor SQL's base tables and the newly discovered objects fit (`builtin_sql_generator.py:330`) |
+| `MissingObjectBreakThreshold` | `2` | A missing object reported ≥ 2 times by the critic breaks the attempt loop (`attempts.py:920`, `_breaker_tripped`) |
+| `MissingGroupMemberValidationStatus` | `"MISSING_GROUP_MEMBER"` | `CombinedValidationResult.status` value that triggers a broadening retry (`attempts.py:540`) |
+| `FuzzyMatchMinConfidence` | `0.85` | Minimum `SequenceMatcher` confidence to accept a fuzzy object-name resolution (`object_name_resolver.py:47`; the matcher itself is `DatabaseCatalog.find_closest`, `database_catalog.py:64-76`) |
+| `MaxRecoveryExpansion` | `5` | Maximum objects added per recovery expansion (`attempts.py:464,544,575,580`) |
 | `MaxAutoExtractedObjects` | `5` | Cap on qualified object names auto-extracted from a query (`preprocessing.py:76`) |
-| `CatalogCacheTtlSeconds` | `300` | TTL of the live SQL Server object catalog cache (`database_catalog.py:20`) |
-| `MaxDiscoveryCacheEntries` | `256` | Discovery-result cache size; on overflow the cache is **cleared**, not LRU-evicted (`discovery_engine.py:333-334`) |
-| `MaxQueryAnalysisCacheEntries` | `100` | Same clear-on-overflow policy for query analysis (`discovery_engine.py:115-116`) |
-| `RelativeColumnScoreThreshold` | `0.85` | A column hit is kept only if `score >= best * 0.85` for its parent object (`discovery_engine.py:308`) |
-| `ColumnDetailValueSeedScore` | `0.80` | Score given to tables seeded from `value_index` hits (`discovery_engine.py:196,258`) |
-| `KeywordMatchScore` | `1.0` | **Effectively dead**: the only use multiplies it by `0` (`discovery_engine.py:278`: `obj.score + KeywordMatchScore * 0`). Keep the constant, but do not "fix" the `* 0` |
-| `ApplyColumnBoost` | `0.15` | Additive boost for objects with matched columns (`discovery_engine.py:281`) |
-| `ApplyColumnBoostCap` | `1.0` | Upper clamp for the boost (`discovery_engine.py:278,281`) |
-| `SemanticModelDiscoveryTopK` | `3` | **Unused** — declared only (`constants.py:51`); the semantic service hardcodes `top_k: int = 3` in its own signature (`semantic_model_service.py:138`) |
+| `CatalogCacheTtlSeconds` | `300` | TTL of the live SQL Server object catalog cache (`database_catalog.py:50`) |
+| `MaxDiscoveryCacheEntries` | `256` | Discovery-result cache size; on overflow the cache is **cleared**, not LRU-evicted (`discovery_engine.py:400-401`) |
+| `MaxQueryAnalysisCacheEntries` | `100` | Same clear-on-overflow policy for query analysis (`discovery_engine.py:123-124`) |
+| `RelativeColumnScoreThreshold` | `0.85` | A column hit is kept only if `score >= best * 0.85` for its parent object (`discovery_engine.py:316`) |
+| `ColumnDetailValueSeedScore` | `0.80` | Score given to tables seeded from `value_index` hits (`discovery_engine.py:204,266`) |
+| `KeywordMatchScore` | `1.0` | **Effectively dead**: the only use multiplies it by `0` (`discovery_engine.py:286`: `obj.score + KeywordMatchScore * 0`). Keep the constant, but do not "fix" the `* 0` |
+| `ApplyColumnBoost` | `0.15` | Additive boost for objects with matched columns (`discovery_engine.py:289`) |
+| `ApplyColumnBoostCap` | `1.0` | Upper clamp for the boost (`discovery_engine.py:286,289`) |
+| `SemanticModelDiscoveryTopK` | `3` | **Unused** — declared only (`constants.py:54`); the semantic service hardcodes `top_k: int = 3` in its own signature (`semantic_model_service.py:145`) |
 
 #### 4.3.6 Hallucination / recovery
 
 | Constant | Value | Meaning / consumer |
 |---|---|---|
-| `HallucinationExitThreshold` | `2` | Exit the loop after 2 hallucination verdicts (`attempts.py:302`) |
-| `HallucinationExitThresholdWithBreaker` | `1` | Same, when a circuit breaker is active (`attempts.py:302`) |
-| `PresencePenaltyAfterLoop` | `0.4` | Presence penalty applied to the retry LLM call when a hallucination was already counted (`attempts.py:173`) |
+| `HallucinationExitThreshold` | `2` | Exit the loop after 2 hallucination verdicts (`attempts.py:481`) |
+| `HallucinationExitThresholdWithBreaker` | `1` | Same, when a circuit breaker is active (`attempts.py:481`) |
+| `PresencePenaltyAfterLoop` | `0.4` | Presence penalty applied to the retry LLM call when a hallucination was already counted **or** the semantic payload repeated (`attempts.py:273`) |
+| `SemanticRepeatTemperature` | `0.4` | Temperature of the LLM call after a repeated semantic payload (`attempts.py:277-278`); a presence penalty alone does not move a provider pinned to a low default |
 
 #### 4.3.7 Semantic layer
 
 | Constant | Value | Meaning / consumer |
 |---|---|---|
-| `SemanticSmqParseRetryOnFailure` | `True` | **Unused** — declared only (`constants.py:59`); nothing in the repository reads it. SMQ-parse retries are bounded by `MaxRetries` together with the payload-class guard, not by this flag (see §9.10.2–§9.10.3) |
-| `SemanticCompilationFallbackToRawSql` | `True` | **Unused as a constant** — the runtime behaviour is driven by `settings.SEMANTIC_COMPILATION_FALLBACK_TO_RAW_SQL` through `semantic_compilation_fallback_to_raw_sql()` (`constants.py:97-99`), and only for a reply that carries **no** SMQ payload (§9.10.2) |
+| `SemanticSmqParseRetryOnFailure` | `True` | **Unused** — declared only (`constants.py:65`); nothing in the repository reads it. SMQ-parse retries are bounded by `MaxRetries` together with the payload-class guard, not by this flag (see §9.10.2–§9.10.3) |
+| `SemanticCompilationFallbackToRawSql` | `True` | **Unused as a constant** — the runtime behaviour is driven by `settings.SEMANTIC_COMPILATION_FALLBACK_TO_RAW_SQL` through `semantic_compilation_fallback_to_raw_sql()` (`constants.py:103-105`), and only for a reply that carries **no** SMQ payload (§9.10.2) |
 
 #### 4.3.8 Embedding cache / dimensions
 
@@ -1654,7 +1699,7 @@ Header comment, verbatim: `"""Built-in SQL generator constants. Values must matc
 | Constant | Value | Meaning / consumer |
 |---|---|---|
 | `OlderAnswerTruncateChars` | `200` | Older (non-final) assistant answers in the folded history are truncated to 200 chars (`preprocessing.py:44-45`) |
-| `CanonicalQuestionMaxWords` | `25` | **Unused** — declared only (`constants.py:70`); grep across the repo finds no reader |
+| `CanonicalQuestionMaxWords` | `25` | **Unused** — declared only (`constants.py:76`); grep across the repo finds no reader |
 | `SimplePreAnalysisMaxCollapsedChars` | `180` | A collapsed query longer than 180 chars cannot take the simple fast path (`router.py:58`) |
 | `SimplePreAnalysisMaxWords` | `40` | Same gate on word count (`router.py:60`) |
 | `LikelyDbQueryMaxWords` | `50` | A query ≤ 50 words with a strong language-agnostic DB signal is treated as a DB query (`router.py:126`) |
@@ -1668,7 +1713,7 @@ Header comment, verbatim: `"""Built-in SQL generator constants. Values must matc
 #### 4.3.11 Resolution helpers (the only indirection layer)
 
 ```python
-# app/core/constants.py:80-99
+# app/core/constants.py:86-105
 def effective_object_search_threshold(override: Optional[float] = None) -> float:
     if override is None:
         return settings.object_search_vector_score_threshold()      # clamped [0,1]
@@ -1806,7 +1851,7 @@ CREATE INDEX ix_user_activities_id            ON user_activities (id);
 | Table | Generator pipeline | HTTP/admin layer |
 |---|---|---|
 | `data_source_registry` | **Yes** — `source_resolver.resolve_known_source_id` (16-26) and `app/core/database.py:31-34` resolve the `source_id` and its folder before every engine/bundle build | CRUD via `api/endpoints/data_sources.py` |
-| `users` | No | Yes — `app/core/auth.py:5`, JWT + `X-API-Key` verification, admin gating |
+| `users` | No | Yes — `app/core/auth.py:8-11` (`X-API-Key`) and `:63` (`get_current_active_admin`); the JWT encode/decode is in `app/services/auth_service.py:64,84` |
 | `conversations` | **No** — conversation history arrives in the request payload; `generation_service.py` never imports `Conversation` (its only match for "Conversation" is the prompt literal at line 1040) | Yes — `api/endpoints/conversations.py`, `user_service.py` |
 | `user_activities` | No | Yes — `activity_service.py` writes/reads; endpoints in `users.py` |
 
@@ -2184,7 +2229,7 @@ In `schemas`, `description` is the **embedding payload** (the text above), never
 
 * `VECTOR_DB_ENABLED = False` → returns a `NullVectorStore` whose every method returns empty/`None`/`-1` (679-762).
 * Otherwise it lazily instantiates `MilvusVectorStore` and caches it in `_vector_store_instance`; `refresh_vector_store()` clears it (780-783).
-* It exposes a wide, legacy method surface (`search_schemas`, `search_fewshots`, `search_values`, `get_all_schemas`, `insert_fewshot_item`, `add_schema_embedding`, `clear_schemas_collection`, `check_similarity`, `move_contribution_to_knowledge_base`, `export_all_data`, …). **The built-in generation pipeline does not use it** — the pipeline uses the `stores` bundle (§4.6). Keep the facade only for admin/ingest compatibility.
+* It exposes a wide, legacy method surface (`search_schemas`, `search_fewshots`, `search_values`, `get_all_schemas`, `insert_fewshot_item`, `search_fewshots_with_threshold`, `get_schema_by_name`, `get_all_objects_v2`, `insert_fewshot_item`, `clear_schemas_collection`, `check_similarity`, `move_contribution_to_knowledge_base`, `export_all_data`, …). **The built-in generation pipeline does not use it** — the pipeline uses the `stores` bundle (§4.6). Keep the facade only for admin/ingest compatibility.
 
 ---
 
@@ -2236,16 +2281,21 @@ Import semantics (`stores/__init__.py`): the package exports `SourceStores`, `bu
 | `semantic` | `SemanticModelService(provider, source_id, enable_flag=settings.semantic_layer_enabled_for(source_id))` | Eager to construct; model resolution **lazy** per `is_enabled()`/`get_active_model()` call | `enable_flag=None` re-reads `settings` at call time (`semantic_model_service.py:26-28`) |
 | `bm25` | `Bm25Service(enabled=settings.ENABLE_BM25_RETRIEVAL, k1=settings.BM25_K1, b=settings.BM25_B)` | Eager, stateless, nothing precomputed | If `enabled=False`, `rank()` returns `[]` |
 
-**Two build paths, different caching.** `resolve_source_stores` is `lru_cache(maxsize=64)` and is used by admin/precomputed/semantic endpoints and `skills_importer` (which calls `cache_clear()` after a rebuild). The **generation path calls `build_source_stores` directly** — `generation_service.py:1855` (SQL) and `code_generation_service.py:55,98,187` (Python/R/SAS) — so every generate request performs a fresh, uncached `fetch_all("schemas", source_id)`. Reproduce this as-is (it is an observable performance characteristic, not a bug to "fix" silently).
+**Two build paths, different caching.** `resolve_source_stores` is `lru_cache(maxsize=64)` and is used by admin/precomputed/semantic endpoints and `skills_importer` (which calls `cache_clear()` after a rebuild). The **generation path calls `build_source_stores` directly** — `generation_service.py:1856` (SQL) and `code_generation_service.py:55,98,187` (Python/R/SAS) — so every generate request performs a fresh, uncached `fetch_all("schemas", source_id)`. Reproduce this as-is (it is an observable performance characteristic, not a bug to "fix" silently).
 
 #### 4.6.1 Read methods exposed by each store
 
 ```python
-# DatabaseCatalog                         app/services/database_catalog.py
-list_objects(force: bool = False) -> List[dict]          # TTL-300s cache of live INFORMATION_SCHEMA objects
-object_exists(schema_name: str, object_name: str) -> bool
-find_closest(name: str, limit: int = 5) -> List[dict]    # SequenceMatcher; adds "confidence"
-# _load_live() -> live SQL, else vector_store.get_all_objects_v2(source_id), else []
+# DatabaseCatalog                         app/services/database_catalog.py:43
+list_objects(force: bool = False) -> List[dict]          # :47  TTL-300s cache of live INFORMATION_SCHEMA objects
+object_exists(schema_name: str, object_name: str) -> bool  # :56
+find_closest(name: str, limit: int = 5) -> List[dict]    # :64  SequenceMatcher; adds "confidence"
+# _load_live() (:78) -> live SQL, else vector_store.get_all_objects_v2(source_id) (:104), else []
+
+# module-level helpers (outside the class; used by the attempt loop and the discovery engine)
+split_object_ref(ref: str) -> Tuple[str, str]            # :13  bracket-aware (schema, object); "dbo" default
+catalog_has_object(catalog, schema, name) -> bool        # :26  False only when the catalog lists objects and lacks this one;
+                                                         #      fails open with no catalog / unreadable / empty listing
 
 # SchemaIndexService                      app/services/schema_index_service.py
 load_from_rows(rows: List[dict]) -> None                 # parent rows only; key = "schema|object".lower()
@@ -2419,7 +2469,7 @@ Embedding consumers and the exact text they embed:
 | `schemas` column | `column_embedding_text(...)` (skills-folder rebuild omits `Values:`) | same |
 | `few_shots` | the raw `question` | `FewShotVectorService.upsert/replace` |
 | `value_index` | the raw `value` | `ValueIndexService.upsert` |
-| `data_group_metadata`/`_vectors_cache` | `description or group_name` (semantic), `" ".join(keywords)` (functional), `" ".join(members)` (object) | `DataGroupStore.upsert` |
+| `data_group_metadata`/`data_group_vectors_cache` | `description or group_name` (semantic), `" ".join(keywords)` (functional), `" ".join(members)` (object) | `DataGroupStore.upsert` |
 | `vec_data_group_query_vectors_cache` | the raw `question` | `PrecomputedQueryStore.upsert` |
 | `semantic_embeddings` | `semantic_embedding_source(...)` | `SemanticModelService.save` |
 
@@ -2438,11 +2488,11 @@ Embedding consumers and the exact text they embed:
 | Store | Metric | Raw orientation | Value surfaced | Normalisation | Consumer |
 |---|---|---|---|---|---|
 | `schemas` — `search_objects` | cosine distance | lower better | `ScoredObject.score = 1 − _distance`, `vector_score = _distance` | threshold via `effective_object_search_threshold()` (distance ≤ 0.50 by default), `top_k*4` (min 20) requested then parent-rolled and re-sorted desc by `score` | `discovery_engine.discover` |
-| `schemas` — `search_columns_scored` | cosine distance | lower better | raw hit dicts with `_distance` | `filter_fn` keeps `entity_type == "Column"`; caller converts `1 − distance` (`discovery_engine._merge_column_hits:297`) | column evidence |
-| `few_shots` — `search` | cosine distance | lower better | `FewShotExample.score = _distance` | `max_distance = KbScoreThreshold = 0.35`; `is_exact_match = distance ≤ 0.05` | `kb_vector_top1`, `discover` |
-| `few_shots` — `try_get_exact` | none (string equality) | — | `score = 1.0`, `is_exact_match = True` | `question_lookup_key` = lower-case + `\s+ → " "` + strip; first match wins; rows with empty `sql` are skipped | `kb_exact` fast path |
-| `vec_data_group_queries` — `try_get_precomputed_exact` | none (string equality) | — | `score = 1.0`, `is_exact_match = True` | status must be `Approved` **or** `Modified` | precomputed fast path |
-| `vec_data_group_query_vectors_cache` — `search_precomputed` | cosine **similarity** | higher better | `FewShotExample.score = sim`; `is_exact_match = sim ≥ direct_threshold (0.93)` | status must be exactly `Approved`; sorted desc; sliced to `top_k = 3` | `discover`, `precomputed_related` branch |
+| `schemas` — `search_columns_scored` | cosine distance | lower better | raw hit dicts with `_distance` | `filter_fn` keeps `entity_type == "Column"`; caller converts `1 − distance` (`discovery_engine._merge_column_hits:299-322`, conversion at `:305`) | column evidence |
+| `few_shots` — `search` | cosine distance | lower better | `FewShotExample.score = _distance` | the query is embedded as `kb_similarity_key(question)`, not raw (`fewshot_vector_service.py:116`); `max_distance = KbScoreThreshold = 0.35`; `is_exact_match = distance ≤ 0.05` | `kb_vector_top1`, `discover` |
+| `few_shots` — `try_get_exact` | none (string equality) | — | `score = 1.0`, `is_exact_match = True` | `kb_similarity_key` = lower-case + whitespace-collapsed with the count dropped from `top`/`bottom`/`last`/`limit`/`first` N (`top`/`bottom`/`last` keep their keyword) (`app/utils/hashing.py:43-51`); first match wins; rows with empty `sql` are skipped (`fewshot_vector_service.py:99-104`) | `kb_exact` fast path (a limit-only match is demoted to `forced_kb`, see §05.15) |
+| `vec_data_group_queries` — `try_get_precomputed_exact` | none (string equality) | — | `score = 1.0`, `is_exact_match = True` | status must be `Approved` **or** `Modified`; the key stays **strict** (`question_lookup_key`, `vector_search_service.py:93,99`) — limit-insensitive matching deliberately does not reach this path | precomputed fast path |
+| `vec_data_group_query_vectors_cache` — `search_precomputed` | cosine **similarity** | higher better | `FewShotExample.score = sim`; `is_exact_match = sim ≥ direct_threshold (0.93)` | the query is embedded **raw**, so a limit-normalized question does not match a stored one (`vector_search_service.py:119`); status must be exactly `Approved`; sorted desc; sliced to `top_k = 3` | `discover`, `precomputed_related` branch |
 | `value_index` — `search` | none (substring) | — | raw row dicts, provider order | `needle = query.strip().lower()`; keep rows where `needle in plain_value.lower()`; stop at `top_k`; scan capped at `fetch_cap = 16384` | filter-value seeds (+0.80 score), prompt value mappings |
 | `data_group_*` — `DataGroupStore.search` | cosine **similarity** | higher better | `row["score"] = sim` | `cosine_similarity(query_vector, semantic_vector_json)`; desc; `top_n = 3`. Rows with an unparsable/missing vector are skipped | `resolve_active_data_groups` |
 | `data_group_*` — keyword fallback | token overlap ratio | higher better | `row["overlap"] = len(Q ∩ keywords) / max(len(Q),1)` | only used when vector search returned nothing; keeps `overlap > 0`, `top 3` | `resolve_active_data_groups` |
@@ -2454,15 +2504,15 @@ Embedding consumers and the exact text they embed:
 #### 4.8.3 Boosts and clamps applied after retrieval
 
 ```python
-# app/core/orchestrator/discovery_engine.py:278-288
+# app/core/orchestrator/discovery_engine.py:286-289
 obj.score = min(ApplyColumnBoostCap, obj.score + KeywordMatchScore * 0)   # no-op by design
 obj.score = min(ApplyColumnBoostCap, obj.score + ApplyColumnBoost)        # +0.15 when matched_columns exist
 obj.required = True
 ```
 
-* Column hits per parent are filtered by `score >= best * RelativeColumnScoreThreshold (0.85)` before being recorded as `matched_columns` (308-312).
+* Column hits per parent are filtered by `score >= best * RelativeColumnScoreThreshold (0.85)` before being recorded as `matched_columns` (316-320).
 * `merge_and_dedup` keeps the higher `score` and unions `matched_columns`; `rrf_merge` accumulates RRF scores and ORs `priority`/`required` (rrf.py:74-93, 56-66).
-* Table-override and pins enter with `score = 1.0, priority=True, required=True` (`discovery_engine.py:142-153,222-227`); objects recovered from a KB/precomputed SQL get `score = 0.9` (`_objects_from_sql`, 316-323).
+* Table-override and pins enter with `score = 1.0, priority=True, required=True` (`discovery_engine.py:150-161,231-235`); objects recovered from a KB/precomputed SQL get `score = 0.9` (`_objects_from_sql`, 361-386), except when the caller asks for the hard-lock (`required=True`), which scores them `KbRequiredObjectScore = 1000.0` (`constants.py:17`). An object the live catalog does not have is dropped before scoring — see §06.4.6.
 
 #### 4.8.4 Status filtering rules that change scoring
 
@@ -2474,7 +2524,7 @@ obj.required = True
 | `contribution_library` | `pending` / `approved` / `rejected` (admin only; never read by discovery) | `schemas.py:508` |
 | `SKILLS import default` | a QA row without a status is written as `status="Approved"` | `skills_folder.py:185` |
 
-**KB-confidence quirk — reproduce verbatim, do not "fix".** `FewShotExample.score` means *distance* for `fewshots.search` but *1.0* for `try_get_exact`. `DiscoveryEngine` handles this with a deliberately defensive condition (`discovery_engine.py:164-167`):
+**KB-confidence quirk — reproduce verbatim, do not "fix".** `FewShotExample.score` means *distance* for `fewshots.search` but *1.0* for `try_get_exact`. `DiscoveryEngine` handles this with a deliberately defensive condition (`discovery_engine.py:172-175`):
 
 ```python
 if best_kb and (1.0 - best_kb.score) >= KbConfidenceThreshold:            # 0.70
@@ -2483,7 +2533,7 @@ if best_kb and (1.0 - best_kb.score) >= KbConfidenceThreshold:            # 0.70
         # → branch kb_direct, exit
 ```
 
-Net effect with `KbConfidenceThreshold = 0.70`: the first gate is `distance ≤ 0.30`; the second accepts `distance ≤ 0.30` **or** `distance ≥ 0.70`. The comment on line 165 states the intent ("kb confidence is 1 − distance when score is distance"). Keep the expression byte-for-byte.
+Net effect with `KbConfidenceThreshold = 0.70`: the first gate is `distance ≤ 0.30`; the second accepts `distance ≤ 0.30` **or** `distance ≥ 0.70`. The comment on line 173 states the intent ("kb confidence is 1 − distance when score is distance"). Keep the expression byte-for-byte.
 
 ---
 
@@ -2500,7 +2550,7 @@ SKILLS_BASE_PATH = Path("skills/data-sources")     # CWD-relative!
 def _slugify(name): return re.sub(r'[^\w\s-]', '', name.lower()).replace(' ', '-')
 ```
 
-`SkillsService.__init__(skills_path="skills/data-sources")` (`skills_service.py:20`) is likewise CWD-relative, while `skills_folder.default_data_sources_root()` is **repo-root-relative**. Reproduce both as written: the server must run with the repository root as CWD, or the two resolvers disagree.
+`SkillsService.__init__(skills_path="skills/data-sources")` (`skills_service.py:21`) is likewise CWD-relative, while `skills_folder.default_data_sources_root()` is **repo-root-relative**. Reproduce both as written: the server must run with the repository root as CWD, or the two resolvers disagree.
 
 #### 4.9.2 Directory tree (observed on disk)
 
@@ -2531,9 +2581,9 @@ Shipped examples: `skills/data-sources/jcm/` (schemas `Ausper`, `dbo`, `FIM`, `R
 
 #### 4.9.3 File formats
 
-**`_index.md`** — parsed with `re.split(r'\n### ', content)`, skipping the first chunk (`skills_service.py:57-95`). Per section: first line = display name; then `**Type:**`, `**Status:**`, `**Description:**`, `**Keywords:**` (comma-split), `**Skill File:** [label](relative/path)`, `**Source ID:**`. When `**Source ID:**` is absent the skill file is parsed for `source_id`. The `## Data Source GUIDs` table in the shipped file is **not** parsed. Missing `_index.md` → empty list (`:48-50`).
+**`_index.md`** — parsed with `re.split(r'\n### ', content)`, skipping the first chunk (`skills_service.py:58-60`; the loader is `:39-99`). Per section: first line = display name; then `**Type:**`, `**Status:**`, `**Description:**`, `**Keywords:**` (comma-split), `**Skill File:** [label](relative/path)`, `**Source ID:**`. When `**Source ID:**` is absent the skill file is parsed for `source_id`. The `## Data Source GUIDs` table in the shipped file is **not** parsed. Missing `_index.md` → empty list (`:49-51`).
 
-**`<slug>/_data-source.md`** — YAML front matter is hand-parsed (only `key: value` between leading `---` lines, `:229-247`) for `source_id`; the body supplies `# <Title>`, `**Type:**`, `**Server:**`, `**Database:**`, `**Friendly Name:**`, `**Keywords:**`, and a `## Description` block (`:180-227`). Server/Database become `DataSource.connection_info = {"server": …, "database": …}`. Written by `skills_admin_service.create_data_source` (184-223); its canonical generated shape is:
+**`<slug>/_data-source.md`** — YAML front matter is hand-parsed (only `key: value` between leading `---` lines, `:230-248`) for `source_id`; the body supplies `# <Title>`, `**Type:**`, `**Server:**`, `**Database:**`, `**Friendly Name:**`, `**Keywords:**`, and a `## Description` block (`:181-228`). Server/Database become `DataSource.connection_info = {"server": …, "database": …}`. Written by `skills_admin_service.create_data_source` (184-223); its canonical generated shape is:
 
 ````markdown
 ---
@@ -2573,7 +2623,7 @@ source_id: <uuid4>
 All table schemas are stored in the `schemas/` directory, organized by database schema:
 ````
 
-**`schemas/<schema>/<schema>.<object>.md`** — the object markdown. Header line is `# Table: [<schema>].[<object>]` (the parser's regex is `^#\s+Table:\s+\[?(\w+)\]?\.\[?(\w+)\]?`, `skills_service.py:561`), then `**Data Source:**`, `**Schema:**`, `**Type:**` (`Table`/`View`/`Function`), optionally `**Record Count:**`, a `## Description` section (which in this repository embeds a markdown column table with the header `| Ord | Name | Data Type | Description |`), and optionally `## Columns`, `## Common Queries`, `## Related Tables`. `_parse_columns_from_table` reads the embedded pipe table; `_parse_columns_section` reads `## Columns` (`:579-588`).
+**`schemas/<schema>/<schema>.<object>.md`** — the object markdown. Header line is `# Table: [<schema>].[<object>]` (the parser's regex is `^#\s+Table:\s+\[([^\]]+)\]\.\[([^\]]+)\]` — square brackets required, object names may contain spaces — `skills_service.py:552`), then `**Data Source:**`, `**Schema:**`, `**Type:**` (`Table`/`View`/`Function`), optionally `**Record Count:**`, a `## Description` section (which in this repository embeds a markdown column table with the header `| Ord | Name | Data Type | Description |`), and optionally `## Columns`, `## Common Queries`, `## Related Tables`. `_parse_columns_from_table` reads the embedded pipe table (`:577-579`, helper at `:642`); `_parse_columns_section` reads `## Columns` (`:568-573`, helper at `:592-640`).
 
 **`data-groups/<group>-group.md`** — `# <Group Name>`, `**Category:**` (e.g. `Semantic`, `Auto-generated`), `**Keywords:**`, optional `**Data Source:**`, `## Description`, `## Schema Notes` / `## Schema Migration Notes`, and a `## Data Objects` list of `- **[dbo.Customers](../schemas/dbo/dbo.Customers.md)** - Table` bullets (`:287-320`; the table regex is `\*\*\[(.+?)\]\((.+?\.md)\)\*\*`).
 
@@ -2605,9 +2655,9 @@ All table schemas are stored in the `schemas/` directory, organized by database 
 
 `rebuild_vectors_from_folder` reads this file (`skills_folder.py:146-191`) and accepts either a bare list or an object with `groups` / `data_groups` keys; per group it reads `name|group_name`, `description`, `keywords`, `members`, and the QA list from `qas` / `precomputed` / `precomputed_queries`, mapping `id|query_id`, `question`, `sql_query|sql`, `smq_query`, and `status` (defaulting to `"Approved"`).
 
-**`<slug>/.data-groups`** — one `Name|filename.md` per line, consumed by `SkillsService.load_data_groups_for_source` (`:138-162`), which resolves `<slug>/data-groups/<filename>`.
+**`<slug>/.data-groups`** — one `Name|filename.md` per line, consumed by `SkillsService.load_data_groups_for_source` (`:122-163`; the line loop is `:147-161`), which resolves `<slug>/data-groups/<filename>`.
 
-**`exclude_objects.txt`** — optional, one `schema.object` per line; loaded by `ingest_service.py:91` and `schema_scan_service.py:105-116` to skip objects during scans. It is **not** consulted by the discovery/generation path.
+**`exclude_objects.txt`** — optional, one `schema.object` per line; loaded by `ingest_service.py:91` and `schema_scan_service.py:98-128` (`_load_exclude_list`) to skip objects during scans. It is **not** consulted by the discovery/generation path.
 
 #### 4.9.4 Which files the generator reads at runtime
 
@@ -2615,7 +2665,7 @@ All table schemas are stored in the `schemas/` directory, organized by database 
 |---|---|---|
 | `skills/data-sources/_index.md` | `skills_service.load_data_sources_index` | Source list, `source_id` → name mapping (`database.py`, `source_resolver` fallback, admin) |
 | `<slug>/_data-source.md` | `skills_service._parse_data_source_file`, `data_source_registry_service._read_database_from_data_source_md`, `skills_folder.resolve_data_source_folder` | Connection info + folder resolution, per request/source resolution |
-| `<slug>/schemas/<schema>/<schema>.<object>.md` | `skills_folder.markdown_lookup_for_objects` (called from `builtin_sql_generator.py:285`) | **Every generation request**, for the discovered objects — sets `ScoredObject.markdown`, keyed `f"{schema}.{object}".lower()` |
+| `<slug>/schemas/<schema>/<schema>.<object>.md` | `skills_folder.markdown_lookup_for_objects` (called from `builtin_sql_generator.py:335`) | **Every generation request**, for the discovered objects — sets `ScoredObject.markdown`, keyed `f"{schema}.{object}".lower()` |
 | `<slug>/schemas/<schema>/<schema>.fn.<object>.md` | `skills_folder.object_markdown_path` (Function objects try `.fn.` first) | same |
 | `<slug>/data-groups/.data-group-index.json` | `skills_folder.rebuild_vectors_from_folder` | Import / explicit rebuild only |
 | `<slug>/exclude_objects.txt` | `ingest_service`, `schema_scan_service` | Scan/ingest only |
@@ -2689,7 +2739,7 @@ email-validator==2.1.0
 ### Implementation checklist
 
 1. **Settings** — port `Settings` with the exact field names, types and defaults from §4.2; keep `env_file` at `<repo>/.env`, the `extra="forbid"` behaviour, the `AliasChoices` for `EMBEDDING_BASE_URL`, and the `mode="before"` JSON validator for `ENABLE_SEMANTIC_LAYER_PER_DATA_SOURCE`. Add `semantic_layer_enabled_for()` and the clamped `object_search_vector_score_threshold()`. Do **not** implement a reader for `config/agent_settings.json`.
-2. **Constants** — transcribe all 51 names from §4.3 with the exact literals; keep the four lazy-import resolution helpers and their clamp rules; keep `CanonicalQuestionMaxWords`, `SemanticModelDiscoveryTopK`, `CODE_ADVISOR_*`, `MILVUS_COLLECTION_*` and `SemanticCompilationFallbackToRawSql` even though they are unused; do not "fix" `KeywordMatchScore * 0`.
+2. **Constants** — transcribe all 53 names from §4.3 with the exact literals; keep the four lazy-import resolution helpers and their clamp rules; keep `CanonicalQuestionMaxWords`, `SemanticModelDiscoveryTopK`, `CODE_ADVISOR_*`, `MILVUS_COLLECTION_*` and `SemanticCompilationFallbackToRawSql` even though they are unused; do not "fix" `KeywordMatchScore * 0`.
 3. **Postgres** — `POSTGRES_URL` construction, `pool_pre_ping=True`, `Base = declarative_base()`, `init_user_db()` + `_run_migrations()`, the four tables with the DDL in §4.4.2, and the startup sequence (init → default admin → registry migration → vector probe). Import `activity_models` before `create_all` so `user_activities` exists. No `api_keys`, `settings` or `connections` tables.
 4. **Registry service** — reproduce `compute_data_source_identity_hash` (sql/excel/other natural keys, SHA-256 hex), `get_or_create_source_id`, `mark_deleted`, `update_last_seen`, `find_by_source_id`, `find_active_by_name`, `find_by_connection_info` (database-only match + legacy markdown fallback), `resolve_source_id`, `list_all`.
 5. **Vector contract** — transcribe `COLLECTIONS` (17 entries), `COLLECTION_BY_NAME`, `RUNTIME_VECTOR_COLLECTIONS`, `RETIRED_COLLECTIONS`, `ADDED_FIELDS_VS_BUILTIN`, `PARTITION_FIELD`, `METRIC="COSINE"`, `VECTOR_DIM=1536`, `SCHEMA_VERSION="1.1.0"`, `sqlite_ddl`, and the six text/key helpers.
@@ -2714,13 +2764,13 @@ Stages covered here:
 |---|---|---|---|
 | A | Preprocess → conversational context → route | `preprocessing.py`, `session_context.py`, `coreference.py`, `scenario.py`, `router.py` | `immediate_result` (Conversational) · normal Continue |
 | B | Pin validation | `builtin_sql_generator.py:117-166`, `object_name_resolver.py`, `database_catalog.py` | `priority_validation_failed` failure result · substituted pin list |
-| C | Fast paths | `builtin_sql_generator.py:180-246`, `discovery_engine.py:62-70`, `fewshot_vector_service.py`, `vector_search_service.py` | `kb_exact` · `precomputed_exact` · `kb_exact` (vector) · Continue |
-| C′ | Provided-code / no-discovery path | `builtin_sql_generator.py:172-178`, `builtin_sql_generator.py:361-512` | `no_discovery` success or failure |
+| C | Fast paths | `builtin_sql_generator.py:180-294`, `discovery_engine.py:62-70`, `fewshot_vector_service.py`, `vector_search_service.py` | `kb_exact` · `precomputed_exact` · `kb_exact` (vector) · Continue (a KB hit that survives only limit normalization continues as `kb_direct`, §5.15.1) |
+| C′ | Provided-code / no-discovery path | `builtin_sql_generator.py:172-178`, `builtin_sql_generator.py:433-585` | `no_discovery` success or failure |
 
 Entry point for everything in this section is the generator
 `generate_sql_builtin(request, stores, llm=None, *, target_language="sql")`
-(`app/core/orchestrator/builtin_sql_generator.py:61-310`). The HTTP wrapper reaches it from
-`generation_service.generate_sql_for_request()` at `app/services/generation_service.py:1848-1858`
+(`app/core/orchestrator/builtin_sql_generator.py:61-370`). The HTTP wrapper reaches it from
+`generation_service.generate_sql_for_request()` at `app/services/generation_service.py:1849-1859`
 (only when `settings.BUILTIN_SQL_GENERATOR` is true and `request.queryMode == "generate"`), and the
 Python / R / SAS endpoints reach it through `app/services/code_generation_service.py:50-56`, `:93-99`
 with `target_language` set. All three reuse this exact front half.
@@ -2802,7 +2852,7 @@ SSE envelope (`app/utils/sse.py:7-27`):
 
 Note there is **no** status event for a KB/precomputed/vector hit, and **no** status event for the
 pin-validation failure (that path emits `result` + `done` only). `sse_result()` on the three fast paths
-is called **without** a message argument (`builtin_sql_generator.py:198, 226, 244`), so the `message`
+is called **without** a message argument (`builtin_sql_generator.py:204, 274, 292`), so the `message`
 field of those result events is `""`; the user-visible text lives in `payload.explanation`.
 
 ### 5.1 Stage A-1 — `build_agent_request` (HTTP model → internal model)
@@ -2902,7 +2952,7 @@ return f"{query}\n" + "\n".join(chunks)
 | Separator inside a chunk | `" | "` (space-pipe-space) — same token the parser reverses |
 | Line separator | `"\n"` |
 | Prepended text | the (possibly rewritten) current query + `"\n"` — no heading, no label |
-| Truncate length | `OlderAnswerTruncateChars = 200` (`app/core/constants.py:69`) |
+| Truncate length | `OlderAnswerTruncateChars = 200` (`app/core/constants.py:75`) |
 | Truncation applies to | **all turns except the last one** (`i != last_idx`), and only the *answer* |
 | Failed turn | answer rendered as `[failed]` |
 | Canceled turn | answer rendered as `[canceled]` (checked only when `failed` is false) |
@@ -2955,14 +3005,14 @@ return AgentContext(
 |---|---|
 | Pinned-object auto-extraction | Fires **only when `request.database_objects` is empty**. Uses `OBJECT_NAME = re.compile(r"(?:\[(?P<schema1>[^\]]+)\]|(?P<schema2>\w+))\.(?:\[(?P<object1>[^\]]+)\]|(?P<object2>\w+))")` (`app/utils/regexes.py:20-22`) — **no** `IGNORECASE`, single dot, both sides either bracketed (`[...]`, any char except `]`) or `\w+`. |
 | Qualification | `qualified = f"{schema}.{obj}"` where `schema`/`obj` come from the bracketed group when present, else the `\w+` group. Brackets are dropped: `[dbo].[Order Details]` → `dbo.Order Details`. |
-| Max count | `MaxAutoExtractedObjects = 5` (`app/core/constants.py:42`); scanning returns as soon as 5 distinct names are collected. |
+| Max count | `MaxAutoExtractedObjects = 5` (`app/core/constants.py:45`); scanning returns as soon as 5 distinct names are collected. |
 | Dedup | case-insensitive on the qualified string (`key = qualified.lower()`), first spelling wins. |
 | Note text | `Auto-extracted objects: {', '.join(extracted)}` appended to `schema_metadata.resolution_notes`. |
 | **Where the extracted names go** | `schema_metadata.resolved_object_names` **only**. They are *not* written back to `request.database_objects`, so they never become Stage-B pins and never become discovery pins. `resolved_object_names` and `resolution_notes` are write-only in this port (nothing reads them: only `router._note` appends more notes). |
 | Provisional generation mode | `debugging` iff `error_message and existing_code`; else `optimization` iff `existing_code`; else `fresh_start`. `route()` overwrites `context.generation_mode` with the classified scenario (§5.7). |
 | `is_error_recovery` | `True` only for the `debugging` provisional mode. |
 | `combined_query` | `fold_conversation(masked_query, history)` (§5.3). Overwritten later by `apply_conversation_context` when the turn was rewritten. |
-| DBMS type detection | **None.** `AgentContext.dbms_type` uses its model default `"SQL Server"` (`app/models/pipeline.py:145`) and **no** statement in the repository assigns `context.dbms_type` (verified by searching for `.dbms_type =`). Every dialect consumer (`SqlValidator`, `SemanticCompiler`, the prompt builders, `SqlContextHydrator`) reads that field. |
+| DBMS type detection | **None.** `AgentContext.dbms_type` uses its model default `"SQL Server"` (`app/models/pipeline.py:146`) and **no** statement in the repository assigns `context.dbms_type` (verified by searching for `.dbms_type =`). Every dialect consumer (`SqlValidator`, `SemanticCompiler`, the prompt builders, `SqlContextHydrator`) reads that field. |
 | `stores` parameter | `preprocess(request, stores=None)` accepts and **ignores** `stores`. It is a signature-compatibility stub. |
 | `AgentContext` fields left at defaults | `intent=None`, `dbms_type="SQL Server"`, `session_id=None`, `rewritten_query=None`, `coreference_notes=[]`, `active_filters=[]`, `filter_state_text=""`. |
 
@@ -2991,13 +3041,13 @@ class SessionSemanticContext(BaseModel):
 | `session_id` | `session_key()` namespaced key | store dict key |
 | `source_id` | `prepare_conversation_context`, `record_generation_outcome` | nothing (informational) |
 | `active_filters` | `prepare_conversation_context` (put), `record_generation_outcome` (merge) | next turn's inheritance |
-| `active_domains` | **never written** — always `[]` (`session_context.py:318` only copies `previous.active_domains`) | nothing |
-| `target_grain` | `record_generation_outcome(target_grain=…)`, which the orchestrator **never** passes | nothing |
+| `active_domains` | **never written** — always `[]` (`session_context.py:360` only copies `previous.active_domains`) | nothing |
+| `target_grain` | `record_generation_outcome`, which derives it from the accepted SQL with `extract_grain_from_sql(sql)` (the last `GROUP BY`'s projection, capped at `MaxGrainLength = 200`; `""` when there is none, in which case the stored grain is left alone) | `prepare_conversation_context` (which clears it on a full reset, §5.8) → `ConversationContextResult.target_grain` → `apply_conversation_context` → `context.target_grain`, rendered by `grain_prompt_line` in the SQL/semantic prompts |
 | `turn_index` | `prepare_conversation_context` | next turn's `turn_index`; also the `origin_turn` stamp for filters extracted from generated SQL |
 | `last_sql` | `prepare_conversation_context` (`request.existing_code or previous.last_sql`), `record_generation_outcome` | filter extraction fallback when this turn has no editor SQL |
 | `updated_at` | `SessionContextStore.put` (`time.time()`) | nothing — **no TTL logic exists** |
 
-Store (`session_context.py:54-123`):
+Store (`session_context.py:87-123`):
 
 | Property | Value |
 |---|---|
@@ -3009,7 +3059,7 @@ Store (`session_context.py:54-123`):
 | Eviction | **LRU only, 256 entries, no TTL.** `updated_at` is recorded but never compared to anything |
 | `clear(session_id=None)` | clears one key, or the whole store when `session_id` is falsy |
 
-Keying (`session_key`, `session_context.py:252-263`):
+Keying (`session_key`, `session_context.py:287-298`):
 
 ```python
 if not request.session_id: return None
@@ -3024,14 +3074,14 @@ return f"session:{request.session_id}"
   against filters parsed out of the caller's own `existing_code` on every request (see §5.6 / §5.7), so
   filter preservation is not opt-in — only *cross-turn persistence* is.
 
-Turn index: `turn_index = (previous.turn_index + 1) if previous else 1` (`session_context.py:275`). The
+Turn index: `turn_index = (previous.turn_index + 1) if previous else 1` (`session_context.py:310`). The
 stored context after turn *N* therefore has `turn_index == N`.
 
 ### 5.6 Filter extraction from SQL (deterministic)
 
-`extract_filters_from_sql(sql, turn_index=1)` (`session_context.py:133-185`).
+`extract_filters_from_sql(sql, turn_index=1)` (`session_context.py:137-189`).
 
-**Pattern 1 — table/alias discovery** (`session_context.py:57-60`):
+**Pattern 1 — table/alias discovery** (`session_context.py:61-64`):
 
 ```python
 _ALIAS_TABLE = re.compile(
@@ -3043,14 +3093,14 @@ _ALIAS_TABLE = re.compile(
 * Group 1 is at most **two** dotted parts (`table` or `schema.table`); a 3-part
   `db.schema.table` is truncated by the regex itself.
 * The entity name kept is the **last** part after splitting on `"."`, with `[` / `]` stripped and
-  whitespace trimmed (`_normalize_identifier`, `:129-130`).
+  whitespace trimmed (`_normalize_identifier`, `:133-134`).
 * Group 2 is the alias; it is registered only when non-empty **and** its uppercase form is not one of
   `{"ON", "WHERE", "INNER", "LEFT", "RIGHT", "FULL", "CROSS", "JOIN", "GROUP", "ORDER"}`
-  (`:151`). This stop-list is what keeps `FROM dbo.Orders WHERE …` from creating an alias named `WHERE`.
+  (`:155`). This stop-list is what keeps `FROM dbo.Orders WHERE …` from creating an alias named `WHERE`.
 * `single_table = tables[0] if len(tables) == 1 else ""` — an unqualified predicate maps to the table only
   when the statement references exactly one table.
 
-**Pattern 2 — literal predicates** (`session_context.py:61-66`):
+**Pattern 2 — literal predicates** (`session_context.py:65-70`):
 
 ```python
 _PREDICATE = re.compile(
@@ -3069,7 +3119,7 @@ _PREDICATE = re.compile(
 | Value | `N'…'` / `'…'` (doubled `''` escapes allowed, newlines allowed), or an integer/decimal with optional leading `-` |
 | Consequence | Join predicates (`o.CustomerID = c.CustomerID`) and computed RHS expressions are **never** matched, because the RHS must be a literal |
 
-Per match (`:157-184`):
+Per match (`:159-188`):
 
 ```python
 column = _normalize_identifier(match.group("column"))
@@ -3088,8 +3138,8 @@ if len(filters) >= MaxActiveFilters: break                # MaxActiveFilters = 1
 ```
 
 Inputs: `request.existing_code` first; if that yields **no** filters and a previous session context exists,
-the extraction is retried on `previous.last_sql` (`session_context.py:278-281`). Output: `List[ActiveFilter]`
-with `source="sql"`, `origin_turn=turn_index`, capped at `MaxActiveFilters = 12` (`:55`).
+the extraction is retried on `previous.last_sql` (`session_context.py:314-315`). Output: `List[ActiveFilter]`
+with `source="sql"`, `origin_turn=turn_index`, capped at `MaxActiveFilters = 12` (`:56`).
 
 Worked example (from `tests/unit/test_session_filters.py:15-44`) — for
 
@@ -3111,7 +3161,7 @@ the extracted set is exactly:
 
 with **no** `OrderID` filter (join predicate) and alias resolution `p → Products`, `o → Orders`.
 
-`ActiveFilter` helpers (`app/models/pipeline.py:33-70`, `:121-129`):
+`ActiveFilter` helpers (`app/models/pipeline.py:33-71`, `:122-130`):
 
 ```python
 def render(self):        return f"{self.attribute} {self.operator} {self.value}".strip()
@@ -3138,7 +3188,7 @@ So `ProductName` + `'%chocolate%'` ⇒ `phrase() == "chocolate Products"`, while
 ### 5.7 Filter lifecycle — inheritance, clear, replacement
 
 `apply_filter_lifecycle(filters, query, turn_index) -> (filters, cleared, replaced, notes)`
-(`session_context.py:211-246`).
+(`session_context.py:246-285`).
 
 **Step 1 — clear/negation.** If `detect_filter_clear(query)` is true the whole list is dropped:
 
@@ -3179,7 +3229,7 @@ Full phrase lists (verbatim regexes):
 | 6 | `\bunfiltered\b` |
 | 7 | `\bfor\s+(all\|every)\b` |
 
-**Step 2 — replacement.** `_REPLACEMENT_PATTERNS` (`session_context.py:69-78`), searched in order; the first
+**Step 2 — replacement.** `_REPLACEMENT_PATTERNS` (`session_context.py:73-82`), searched in order; the first
 pattern with a match whose captured value is non-empty and not a stop-word wins:
 
 | # | Regex |
@@ -3190,8 +3240,9 @@ pattern with a match whose captured value is non-empty and not a stop-word wins:
 | 4 | `\bchange\s+(?:it\s+)?to\s+(?P<value>[A-Za-z][\w\-]*)` |
 | 5 | `\bfor\s+(?P<value>[A-Za-z][\w\-]*)\s+instead\b` |
 
-`_REPLACEMENT_STOPWORDS = {"all", "every", "the", "a", "an", "me", "them", "this", "that", "now", "instead"}`
-(`:80`) — a match whose value is a stop-word is skipped and the next pattern is tried. Example:
+`_REPLACEMENT_STOPWORDS = STOP_WORDS` (`:84`) — not an inline set any more: it is the app-wide
+`STOP_WORDS` frozenset from `app.utils.query_vocabulary`, the single list every keyword extractor shares
+(§12.11.2). A match whose value is a stop-word is skipped and the next pattern is tried. Example:
 `"now do this for coffee"` ⇒ value `coffee`; `"for all products"` is caught by the clear rule first.
 
 For every filter whose operator (lower-cased) is in `_VALUE_OPERATORS = {"=", "like", "<>", "!="}` the value
@@ -3224,7 +3275,7 @@ Lifecycle summary:
 
 ### 5.8 Conversational context — one turn end to end
 
-`prepare_conversation_context(request, llm=None, store=None)` (`session_context.py:266-324`):
+`prepare_conversation_context(request, llm=None, store=None)` (`session_context.py:301-366`):
 
 ```python
 store = store or _session_store
@@ -3254,25 +3305,33 @@ else:
 coref.filters_cleared = cleared
 coref.replacement_applied = replaced
 coref.session_id = key
+carried_grain = None
+if previous and not detect_reset(request.query):     # a full reset drops the grain
+    carried_grain = previous.target_grain
+coref.target_grain = carried_grain
 
 if key:
     store.put(SessionSemanticContext(
         session_id=key, source_id=request.source_id,
         active_filters=coref.active_filters,
         active_domains=list(previous.active_domains) if previous else [],
-        target_grain=previous.target_grain if previous else None,
+        target_grain=carried_grain,
         turn_index=turn_index,
         last_sql=request.existing_code or (previous.last_sql if previous else None),
     ))
 return coref
 ```
 
+A **full reset** (`detect_reset`, e.g. `start over` / `new query`) clears the carried grain along with the
+filters: the next turn must not be told to keep a breakdown the user just dropped. A **bare filter clear**
+(`for all products`, `no filters`) removes a predicate only, so the grain is carried forward unchanged.
+
 Merge precedence (`merge_filters`, `coreference.py:262-278`): iterate `inherited + discovered`; the key is
 `(entity.lower(), attribute.lower())`; a later entry with the same key **replaces** the earlier one in place,
 otherwise it is appended. Keys include the entity, so an LLM-carried filter with an empty `entity` does
 **not** collide with the inherited `Products.ProductName` entry — both survive. Preserve that behaviour.
 
-`apply_conversation_context(context, result)` (`session_context.py:327-336`) is the bridge back onto the
+`apply_conversation_context(context, result)` (`session_context.py:369-379`) is the bridge back onto the
 context used by routing and prompts:
 
 ```python
@@ -3281,18 +3340,19 @@ context.rewritten_query = result.rewritten_query
 context.coreference_notes = list(result.notes)
 context.active_filters  = list(result.active_filters)
 context.filter_state_text = result.filter_state_text()          # "- attr op value" lines, or "(none)"
+context.target_grain    = result.target_grain                   # consumed by grain_prompt_line (§8.3)
 if result.was_rewritten and result.rewritten_query:
     context.combined_query = fold_conversation(result.rewritten_query, context.request.conversation_history)
 ```
 
-`ConversationContextResult.filter_state_text()` (`app/models/pipeline.py:100-103`):
+`ConversationContextResult.filter_state_text()` (`app/models/pipeline.py:101-103`):
 
 ```python
 if not self.active_filters: return "(none)"
 return "\n".join(f"- {f.render()}" for f in self.active_filters)
 ```
 
-`AgentContext.effective_query` (`app/models/pipeline.py:162-164`): `self.rewritten_query or self.request.query`
+`AgentContext.effective_query` (`app/models/pipeline.py:166-168`): `self.rewritten_query or self.request.query`
 — after `apply_conversation_context` this is the rewritten query whenever a rewrite happened, and otherwise
 the original. `route()` classifies on `effective_query`; `apply_conversation_context` runs **before**
 `route()` (`builtin_sql_generator.py:102-109`).
@@ -3473,7 +3533,7 @@ Worked examples (parity contract, `tests/unit/test_coreference_resolution.py:61-
 #### 5.9.3 What is **not** rewritten, and the exact phrase lists
 
 * A **directed optimization edit** is never rewritten. The gate is evaluated in
-  `prepare_conversation_context` *before* the coreference call (`session_context.py:287-296`):
+  `prepare_conversation_context` *before* the coreference call (`session_context.py:322-323`):
 
   ```python
   preflight = classify_scenario(request.query, bool(request.existing_code), allow_llm=False)
@@ -3527,7 +3587,7 @@ Worked examples (parity contract, `tests/unit/test_coreference_resolution.py:61-
 
 ### 5.10 Injection of the resolved context into prompts
 
-`_scenario_section(context)` (`app/core/orchestrator/prompts.py:45-52`) is what every system prompt renders:
+`_scenario_section(context)` (`app/core/orchestrator/prompts.py:141-148`) is what every system prompt renders:
 
 ```python
 rules = scenario_rules(context)
@@ -3539,7 +3599,7 @@ if context.filter_state_text and context.filter_state_text != "(none)":
 return "\n\n".join(parts)
 ```
 
-`_filter_block` (`prompts.py:37-42`):
+`_filter_block` (`prompts.py:71-76`):
 
 ```python
 lines = context.filter_state_text or "(none)"
@@ -3549,14 +3609,14 @@ if context.filter_state_text and context.filter_state_text != "(none)":
 return "\n\n".join(blocks)
 ```
 
-`SCOPE_GUARD` verbatim (`prompts.py:23-24`):
+`SCOPE_GUARD` verbatim (`prompts.py:26-27`):
 
 ```
 ### SCOPE GUARD
 Preserve all active filters from preceding turns unless the user explicitly requests their removal.
 ```
 
-`scenario_rules(context)` (`prompts.py:27-34`):
+`scenario_rules(context)` (`prompts.py:61-68`):
 
 | `generation_mode` | Injected block |
 |---|---|
@@ -3564,7 +3624,7 @@ Preserve all active filters from preceding turns unless the user explicitly requ
 | `refinement`, `drill_down` | `REFINEMENT_INSTRUCTIONS` |
 | `fresh_start`, `debugging` | `""` (nothing) |
 
-`OPTIMIZATION_INSTRUCTIONS` verbatim (`prompts.py:11-15`):
+`OPTIMIZATION_INSTRUCTIONS` verbatim (`prompts.py:14-18`):
 
 ```
 ### OPTIMIZATION INSTRUCTIONS
@@ -3574,7 +3634,7 @@ Preserve every filter, join, entity and the output grain exactly as written.
 Change only syntax, structure, formatting or performance characteristics.
 ```
 
-`REFINEMENT_INSTRUCTIONS` verbatim (`prompts.py:18-21`):
+`REFINEMENT_INSTRUCTIONS` verbatim (`prompts.py:21-24`):
 
 ```
 ### REFINEMENT INSTRUCTIONS
@@ -3587,11 +3647,11 @@ Where the filter block actually appears:
 
 | Prompt builder | Contains `ACTIVE SESSION FILTERS` + `SCOPE GUARD`? |
 |---|---|
-| `build_system_prompt` (SQL) | **yes**, via `_scenario_section(context)` (`prompts.py:87`) |
-| `build_system_prompt(..., semantic=True)` | **yes**, appended after `GENERATION MODE` (`prompts.py:64-67`) |
-| `build_python_system_prompt` / `build_r_system_prompt` / `build_sas_system_prompt` | **yes**, via `_scenario_section` (`prompts.py:238, 349, 456`) |
+| `build_system_prompt` (SQL) | **yes**, via `_scenario_section(context)` (`prompts.py:191`) |
+| `build_system_prompt(..., semantic=True)` | **yes**, appended after `GENERATION MODE` (`prompts.py:161-163`) |
+| `build_python_system_prompt` / `build_r_system_prompt` / `build_sas_system_prompt` | **yes**, via `_scenario_section` (`prompts.py:361, 474, 583`) |
 | `build_refinement_system_prompt` | **yes** (it delegates to `build_system_prompt`) |
-| `build_optimization_system_prompt` (no-discovery path) | **no** — it renders `scenario_rules(context) or OPTIMIZATION_INSTRUCTIONS` and `EDITOR SQL`, never `_filter_block` (`prompts.py:139-152`) |
+| `build_optimization_system_prompt` (no-discovery path) | **no** — it renders `scenario_rules(context) or OPTIMIZATION_INSTRUCTIONS` and `EDITOR SQL`, never `_filter_block` (`prompts.py:243-276`) |
 
 `filter_state_text` is set **only** by `apply_conversation_context`; the empty default means
 `SCOPE GUARD` appears only when the session actually holds filters. Parity test:
@@ -3599,9 +3659,9 @@ Where the filter block actually appears:
 
 ### 5.11 Write-back — `record_generation_outcome`
 
-`session_context.py:339-358`. Called from the KB-exact path (`builtin_sql_generator.py:197`),
-the precomputed-exact path (`:225`), the KB-vector path (`:243`) and after the attempt loop
-(`:305`, with `result.sql if result.success else None`).
+`session_context.py:382-406`. Called from the KB-exact path (`builtin_sql_generator.py:203`),
+the precomputed-exact path (`:273`), the KB-vector path (`:291`) and after the attempt loop
+(`:367`, with `result.sql if result.success else None`).
 
 ```python
 store = store or _session_store
@@ -3611,14 +3671,17 @@ current = store.get(key) or SessionSemanticContext(session_id=key, source_id=con
 generated = extract_filters_from_sql(sql, current.turn_index) if sql else []
 current.active_filters = merge_filters(current.active_filters, generated)   # generated wins per (entity, attribute)
 current.last_sql = sql or current.last_sql
-if target_grain: current.target_grain = target_grain                        # never passed by the orchestrator
+grain = extract_grain_from_sql(sql)            # last GROUP BY projection, or ""
+if grain: current.target_grain = grain         # "" leaves the stored grain alone
 if context.request.source_id: current.source_id = context.request.source_id
 store.put(current)
 ```
 
 Effects: the generated SQL's literal predicates become part of the session (with
-`origin_turn = current.turn_index`, i.e. the turn that produced them) and `last_sql` becomes the newly
-generated SQL, so the next turn can inherit filters even when the client stops sending `existing_code`.
+`origin_turn = current.turn_index`, i.e. the turn that produced them), `last_sql` becomes the newly
+generated SQL, so the next turn can inherit filters even when the client stops sending `existing_code`, and
+`target_grain` becomes the accepted statement's `GROUP BY` projection — the grain is *derived* from the SQL,
+so it is populated by the orchestrator rather than passed in.
 Parity test: `tests/unit/test_session_filters.py:113-130`.
 
 ### 5.12 Scenario classification (Stage A, called from `route` and from the coreference preflight)
@@ -3626,7 +3689,7 @@ Parity test: `tests/unit/test_session_filters.py:113-130`.
 `GenerationMode` (`app/core/branch_taxonomy.py:46-57`):
 `fresh_start`, `optimization`, `refinement`, `drill_down`, `debugging`.
 `REFINEMENT_SCENARIOS = (REFINEMENT, DRILL_DOWN)` and `is_refinement_scenario(mode)` accepts enum or string
-(`:57-64`). `ScenarioDecision` (`app/models/pipeline.py:106-118`) carries `scenario`, `confidence`,
+(`:57-64`). `ScenarioDecision` (`app/models/pipeline.py:107-118`) carries `scenario`, `confidence`,
 `signals[]`, `source` (`deterministic` | `llm` | `default`) and the `is_refinement` property.
 
 `classify_scenario(query, has_existing_code, error_message=None, llm=None, allow_llm=True)`
@@ -3744,7 +3807,7 @@ coreference threshold is **8 words** (`VAGUE_QUERY_MAX_WORDS`) — do not confla
 ### 5.13 Router — complete ordered decision table
 
 `route(context, llm=None) -> RouteDecision` (`app/core/orchestrator/router.py:91-156`).
-`RouteDecision` fields (`app/models/pipeline.py:227-232`): `route`, `context`, `immediate_result`,
+`RouteDecision` fields (`app/models/pipeline.py:231-236`): `route`, `context`, `immediate_result`,
 `skip_discovery=False`, `skip_preanalysis=False`. `RouteKind` values
 (`app/core/branch_taxonomy.py:38-43`): `CodeFixing`, `Optimize`, `Refine`, `Generate`, `Conversational`.
 
@@ -3947,7 +4010,7 @@ Note `find_closest` is called with the **raw pin string**, not the parsed `schem
 
 | Member | Behaviour |
 |---|---|
-| `list_objects(force=False)` | module-global `_cache: Dict[source_id, (timestamp, List[dict])]`; returns the cached list while `now - timestamp < CatalogCacheTtlSeconds` (**300 s**, `constants.py:43`); otherwise `_load_live()` and re-cache. The cache has **no size bound** and is process-global across requests. |
+| `list_objects(force=False)` | module-global `_cache: Dict[source_id, (timestamp, List[dict])]`; returns the cached list while `now - timestamp < CatalogCacheTtlSeconds` (**300 s**, `constants.py:46`); otherwise `_load_live()` and re-cache. The cache has **no size bound** and is process-global across requests. |
 | `object_exists(schema_name, object_name)` | case-insensitive compare of `f"{schema}.{object}"` over `list_objects()` |
 | `find_closest(name, limit=5)` | `needle = name.lower()` with brackets stripped; for each object `candidate = f"{schema}.{object}".lower()`; `ratio = SequenceMatcher(None, needle, candidate).ratio()`; `bare = SequenceMatcher(None, needle.split(".")[-1], object_name.lower()).ratio()`; **`score = max(ratio, bare)`**; sorted descending; returns `[{"confidence": score, **obj}]` for the top `limit` |
 | `_load_live()` | `SELECT TABLE_SCHEMA, TABLE_NAME, TABLE_TYPE FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_TYPE IN ('BASE TABLE','VIEW')` through `get_database_engine(source_id)`; `object_type = "View" if "VIEW" in typ.upper() else "Table"` |
@@ -4009,21 +4072,21 @@ effective_query  = context.effective_query
 
 | Condition | Meaning |
 |---|---|
-| `context.is_refinement` | `generation_mode ∈ {refinement, drill_down}` (`AgentContext.is_refinement`, `models/pipeline.py:156-160`) |
+| `context.is_refinement` | `generation_mode ∈ {refinement, drill_down}` (`AgentContext.is_refinement`, `models/pipeline.py:160-164`) |
 | `context.active_filters` non-empty | filters were inherited from the session **or** parsed from this turn's editor SQL |
 | `preserve_filters` | every stored-answer lookup is **skipped** (`None`), because a stored answer authored without the active filter must not satisfy the turn |
 
 `effective_query` is the coreference-rewritten query — all three lookups use it, never `request.query`.
 
-Order (first hit wins, each hit returns immediately):
+Order (first match wins; C1 is the one lookup that can continue instead of returning, when the stored row matches only after limit normalization — §5.15.1):
 
 | Order | Lookup | Call | Threshold / filter | Branch on hit | Message (payload) |
 |---|---|---|---|---|---|
-| C1 | `kb_exact` | `stores.fewshots.try_get_exact(effective_query)` | exact normalised-question key | `kb_exact` | `KB exact match` |
+| C1 | `kb_exact` | `stores.fewshots.try_get_exact(effective_query)` | exact key after limit normalization (`kb_similarity_key`); a limit-only match continues as `kb_direct` | `kb_exact` | `KB exact match` |
 | C2 | `precomputed_exact` | `stores.vector_search.try_get_precomputed_exact(effective_query)` | `status ∈ {Approved, Modified}` + exact key | `precomputed_exact` | `Precomputed exact match` |
 | C3 | `kb_vector_top1` | `stores.fewshots.search(effective_query, top_k=1, max_distance=KbScoreThreshold)` then `hits[0]` | cosine distance ≤ `KbScoreThreshold` (**0.35**) at search time, then `score <= KbExactMatchThreshold` (**0.05**) | `kb_exact` | `KB vector exact match` |
 
-Common payload shape for all three (`builtin_sql_generator.py:187-245`):
+Common payload shape for all three (`builtin_sql_generator.py:185-294`):
 `success=True`, `sql=code_from_match(...)`, `message=<text above>`, `discovery_branch=<branch>`,
 `attempts=0`, `processing_time_ms=elapsed`, `token_usage=llm.token_usage.as_dict()`, `source_id=source_id`;
 then `record_generation_outcome(context, result.sql)`, `yield sse_result(finalize(result))`,
@@ -4037,14 +4100,21 @@ endpoints (`materialize_python_code` / `materialize_r_code` / `materialize_sas_c
 * Vector-free: it probes `sqlite_master` / `fetch_all("few_shots", source_id)` and scans scalar columns.
 * First drops the legacy `few_shots_meta` table when present (`_ensure_legacy_meta_dropped`).
 * Missing `few_shots` table ⇒ `None`.
-* Key: `question_lookup_key(question)` (`app/utils/hashing.py:30-36`) =
-  `re.sub(r"\s+", " ", text.strip().lower())` — **lowercase + whitespace collapse only**; punctuation,
-  articles and word order are significant. (`"  Hello   World "` and `"hello world"` are equal;
-  `"count customers?"` ≠ `"count customers"`.)
+* Key: `kb_similarity_key(question)` (`app/utils/hashing.py:43-54`) — whitespace-collapse + lower, taken **after**
+  the limit tokens are normalized: `_RANKING_COUNT = r"\b(top|bottom|last)\s+\d+\b"` is substituted with the
+  keyword (`top 10` → `top`, `bottom 3` → `bottom`, `last 20` → `last`) and `_OTHER_LIMIT =
+  r"\b(?:limit|first)\s+\d+\b"` is removed entirely (`limit 20`, `first 10` drop out). A word without a
+  number is untouched, so `last month` survives. Punctuation, articles and word order remain significant
+  (`"  Hello   World "` and `"hello world"` are equal; `"count customers?"` ≠ `"count customers"`).
+* A stored row that matches **only** after that normalization is not replayed verbatim: the driver tests
+  `kb_match_drops_limit(query, row.question)` and, on a hit, keeps the example for hydration through
+  `force_kb_example` (branch `kb_direct`, objects hard-locked — §06.4.6) while clearing `kb_exact`, so the
+  limit is regenerated by the model instead of being replayed from the stored SQL
+  (`builtin_sql_generator.py:185-191, 327-328`).
 * Rows are iterated in table order; rows with an **empty/whitespace-only `sql` are skipped**; the first
   matching row wins.
 * Returned `FewShotExample(question=row.question, sql=stripped_sql, score=1.0, is_exact_match=True, source="few_shot")`.
-* Related but separate: `CanonicalQuestionMaxWords = 25` (`constants.py:70`) governs the **critic's**
+* Related but separate: `CanonicalQuestionMaxWords = 25` (`constants.py:76`) governs the **critic's**
   `canonical_question` length, not this key.
 
 #### 5.15.2 C2 — `precomputed_exact` and the semantic SMQ step
@@ -4056,7 +4126,7 @@ Returned `FewShotExample(question=row["question"], sql=row.get("sql_query") or "
 is_exact_match=True, smq_query=row.get("smq_query") or "", source="precomputed")`.
 Unlike C1 this lookup does **not** skip rows with an empty `sql_query`.
 
-Semantic compile step (`builtin_sql_generator.py:200-263`):
+Semantic compile step (`builtin_sql_generator.py:208-276`):
 
 ```python
 pre_exact = None if preserve_filters else engine.precomputed_exact(effective_query)
@@ -4064,16 +4134,21 @@ if pre_exact:
     sql = pre_exact.sql
     smq_failure = ""
     if semantic_mode and pre_exact.smq_query:
-        payload = SmqPayload.model_validate(json.loads(pre_exact.smq_query))
-        model = stores.semantic.get_active_model()
-        if model is None:
-            smq_failure = "no active semantic model for the stored SMQ"
-        else:
-            compiled = SemanticCompiler().compile_guarded(payload, model, context.dbms_type)
-            if compiled.success:
-                sql = compiled.sql
+        try:
+            payload = parse_smq(pre_exact.smq_query)      # same entry point as the live path
+            if payload is None:
+                raise SmqShapeError("stored SMQ payload is not an SMQ")
+            model = stores.semantic.get_active_model()
+            if model is None:
+                smq_failure = "no active semantic model for the stored SMQ"
             else:
-                smq_failure = compiled.detail
+                compiled = SemanticCompiler().compile_guarded(payload, model, context.dbms_type)
+                if compiled.success:
+                    sql = compiled.sql
+                else:
+                    smq_failure = compiled.detail
+        except Exception as exc:
+            smq_failure = f"stored SMQ payload is unusable: {exc}"
     if smq_failure:
         logging.warning(...)                    # recorded, never silent
         if not _looks_like_sql(sql):            # never execute a JSON payload
@@ -4089,8 +4164,11 @@ if pre_exact:
   absent from `ENABLE_SEMANTIC_LAYER_PER_DATA_SOURCE`); `False` ⇒ disabled; otherwise enabled iff
   `get_active_model()` is not `None`.
 * `smq_query` is a JSON string of `{"metrics": [], "dimensions": [], "filters": [], "timeframes": []}`.
-* The stored SMQ is compiled when it is usable; the **stored physical SQL** stands in only when it is
-  absent, unusable, or fails to compile **and** it really is SQL (`_looks_like_sql`:
+* The stored SMQ is parsed with `parse_smq` — the same entry point as the live attempt loop — so an
+  alias-shaped or singular-keyed payload compiles instead of being discarded, and a stored value that is
+  not an SMQ raises `SmqShapeError`, which becomes `smq_failure`. It is compiled when it is usable; the
+  **stored physical SQL** stands in only when it is absent, unusable, or fails to compile **and** it really
+  is SQL (`_looks_like_sql`:
   a non-empty body with at least one `FROM`/`JOIN` reference). A compile failure is logged.
   When the stored answer is not usable SQL either, the turn ends as a `semantic_compilation`
   failure (`attempts=0`, branch `precomputed_exact`) instead of emitting a payload as SQL.
@@ -4112,7 +4190,7 @@ if pre_exact:
 | `is_exact_match` flag | set when `_distance <= KbExactMatchThreshold (0.05)` | informational; the fast path does its own check |
 | fast-path gate | `kb_top and kb_top.score <= KbExactMatchThreshold` (**0.05**) | distance ≤ 0.05 ⇒ similarity ≥ 0.95 ⇒ treat as exact |
 
-The gate calls `Kb_distance_exact()` (`builtin_sql_generator.py:355-358`), a thin wrapper returning
+The gate calls `Kb_distance_exact()` (`builtin_sql_generator.py:427-431`), a thin wrapper returning
 `KbExactMatchThreshold`.
 
 #### 5.15.4 Refinement-with-active-filters bypass
@@ -4147,7 +4225,7 @@ On entry: `yield emit(PipelineStage.PREANALYSIS, "No-discovery provided-code pat
 Note this happens **before** `Running pre-analysis fast paths`, so the provided-code path never consults the
 KB / precomputed stores.
 
-`_generate_from_provided_sql` (`builtin_sql_generator.py:361-512`) — full behaviour:
+`_generate_from_provided_sql` (`builtin_sql_generator.py:433-585`) — full behaviour:
 
 ```python
 existing  = context.request.existing_code or ""
@@ -4202,7 +4280,7 @@ if optimization_scenario:                                         # 4) never bre
 return build_detailed_failure_result(message=err or "validation failed", error_category=VALIDATION,
     discovery_branch=NO_DISCOVERY, attempts=2,
     failure_report=build_failure_report(summary=err or "validation failed", resolution_plan=[], attempts=[],
-                                        final_guidance=err or "validation failed"), …)
+                                        final_guidance=err or ""), …)
 ```
 
 Decision table:
@@ -4234,7 +4312,7 @@ Key subtleties:
 | A-2 `parse_query_history` / `fold_conversation` | `request.query`, `request.queryHistory` | `List[ConversationTurn]`, `combined_query: str` | none | none | — |
 | A-3 `preprocess` | `AgentRequest` (+ ignored `stores`) | `AgentContext` (`schema_metadata`, `generation_mode`, `is_error_recovery`, `combined_query`) | none observable (`resolved_object_names` / `resolution_notes` are write-only) | none | — |
 | A-4 `prepare_conversation_context` | `AgentRequest`, `llm`, store | `ConversationContextResult` | **writes the session store** (`store.put`, LRU touch/evict) | in-process `_session_store` (256 LRU, no TTL) | #2 or #3 |
-| A-4b `apply_conversation_context` | `AgentContext`, result | mutated `AgentContext` (`session_id`, `rewritten_query`, `coreference_notes`, `active_filters`, `filter_state_text`, `combined_query`) | none | — | — |
+| A-4b `apply_conversation_context` | `AgentContext`, result | mutated `AgentContext` (`session_id`, `rewritten_query`, `coreference_notes`, `active_filters`, `filter_state_text`, `target_grain`, `combined_query`) | none | — | — |
 | A-5 `route` | `AgentContext`, `llm` | `RouteDecision` | mutates `context.generation_mode`, `context.intent`, `context.is_error_recovery`, appends `resolution_notes` | none | #1 already sent; conversational rows produce `result`+`done` |
 | B pin validation | `request.database_objects`, `stores.catalog`, `llm.token_usage` | `ResolvedName[]` → new pin list + notes | mutates `request.database_objects`, extends `resolution_notes` | `DatabaseCatalog._cache` (global, keyed by `source_id`, TTL 300 s, unbounded); `list_objects` may hit `INFORMATION_SCHEMA` or the vector store | #4, or `result`+`done` on failure |
 | C fast paths | `context.effective_query`, `context.is_refinement`, `context.active_filters`, `semantic_mode`, stores | a `BuiltInGenerateResult` or `None` | `record_generation_outcome` on a hit; `DiscoveryEngine.clear_analysis_cache()` runs just before (per-request instance ⇒ no-op) | `few_shots` / `vec_data_group_queries` scanned with `fetch_all` (no row cache); C3 uses the vector search path (provider-side embedding cache) | #6 (only) |
@@ -4248,20 +4326,21 @@ multiple workers must accept per-process session state (standard for this port).
 
 | Name | Value | Location |
 |---|---|---|
-| `OlderAnswerTruncateChars` | `200` | `app/core/constants.py:69` |
-| `MaxAutoExtractedObjects` | `5` | `:42` |
-| `CatalogCacheTtlSeconds` | `300` | `:43` |
-| `FuzzyMatchMinConfidence` | `0.85` | `:40` |
+| `OlderAnswerTruncateChars` | `200` | `app/core/constants.py:75` |
+| `MaxAutoExtractedObjects` | `5` | `:45` |
+| `CatalogCacheTtlSeconds` | `300` | `:46` |
+| `FuzzyMatchMinConfidence` | `0.85` | `:43` |
 | `KbExactMatchThreshold` | `0.05` (cosine distance) | `:12` |
 | `KbScoreThreshold` | `0.35` (cosine distance ceiling) | `:14` |
-| `DefaultPrecomputedQueryDirectMatchThreshold` | `0.93` | `:18` |
-| `SimplePreAnalysisMaxCollapsedChars` | `180` | `:73` |
-| `SimplePreAnalysisMaxWords` | `40` | `:74` |
-| `LikelyDbQueryMaxWords` | `50` | `:75` |
+| `DefaultPrecomputedQueryDirectMatchThreshold` | `0.93` | `:21` |
+| `SimplePreAnalysisMaxCollapsedChars` | `180` | `:79` |
+| `SimplePreAnalysisMaxWords` | `40` | `:80` |
+| `LikelyDbQueryMaxWords` | `50` | `:81` |
 | `NoDiscoveryTimeBudgetMs` | `90_000` | `:8` |
-| `CanonicalQuestionMaxWords` | `25` | `:70` |
-| `MaxSessionContexts` | `256` | `session_context.py:54` |
-| `MaxActiveFilters` | `12` | `session_context.py:55` |
+| `CanonicalQuestionMaxWords` | `25` | `:76` |
+| `MaxSessionContexts` | `256` | `session_context.py:55` |
+| `MaxActiveFilters` | `12` | `session_context.py:56` |
+| `MaxGrainLength` | `200` | `session_context.py:59` |
 | `MAX_REWRITE_CHARS` | `400` | `coreference.py:27` |
 | `MAX_TURNS_FOR_REWRITE` | `3` | `coreference.py:28` |
 | `VAGUE_QUERY_MAX_WORDS` | `8` | `coreference.py:29` |
@@ -4314,7 +4393,8 @@ multiple workers must accept per-process session state (standard for this port).
       (guard only when `filter_state_text` is neither empty nor `"(none)"`); the filter block is **absent**
       from the no-discovery optimization prompt.
 - [ ] `record_generation_outcome`: merge the generated SQL's literal filters under turn `turn_index`, set
-      `last_sql`, touch `source_id`, `put` the state; no-op without a session key.
+      `last_sql`, set `target_grain` from `extract_grain_from_sql(sql)` when it yields a value, touch
+      `source_id`, `put` the state; no-op without a session key.
 - [ ] Scenario classifier: ordered table 1-9 with the exact confidences (1.0 / 1.0 / 0.95 / 0.9 / 0.85-0.9 /
       0.85 / 0.9 / 0.7 / 0.5) and sources; `_STRUCTURAL_ADDITION` beats refinement; `refine` signals
       concatenate the filter-clear matches; LLM fallback only when no signal, `allow_llm`, an LLM exists and
@@ -4356,10 +4436,11 @@ deterministic except the optional `analyze_query` LLM call.
 
 | File | Responsibility |
 |---|---|
-| `app/core/orchestrator/builtin_sql_generator.py` | Stage D driver: pre-analysis exits, `analyze_query`, `resolve_active_data_groups`, `discover`, hydration wiring (`:182-292`) |
+| `app/core/orchestrator/builtin_sql_generator.py` | Stage D driver: pre-analysis exits, `analyze_query`, `resolve_active_data_groups`, `discover`, hydration wiring (`:182-342`) |
 | `app/core/orchestrator/discovery_engine.py` | `DiscoveryEngine`: analysis, groups, KB-first decision tree, column evidence, caches |
 | `app/utils/rrf.py` | `rrf_score`, `rrf_merge`, `merge_and_dedup` |
-| `app/utils/hashing.py` | `discovery_cache_key`, `query_analysis_cache_key`, `as_text_token`, `question_lookup_key` |
+| `app/utils/hashing.py` | `discovery_cache_key`, `query_analysis_cache_key`, `as_text_token`, `question_lookup_key`, `kb_similarity_key`, `kb_match_drops_limit` |
+| `app/utils/query_vocabulary.py` | `tokenize`, `is_significant`, `question_tokens`, `build_question_tokens`, `can_answer`, `closest_name`, `model_items`, `model_item_name`, `STOP_WORDS`, `STRUCTURAL_TOKENS` |
 | `app/utils/regexes.py` | `complexity_tier`, `COMPLEX_KEYWORDS`, `extract_qualified_object_names` |
 | `app/services/vector_search_service.py` | `search_objects` (parent roll-up), `search_columns_scored`, `search_precomputed`, `try_get_precomputed_exact` |
 | `app/services/fewshot_vector_service.py` | `try_get_exact`, `search` (KB few-shot vector search) |
@@ -4374,38 +4455,40 @@ deterministic except the optional `analyze_query` LLM call.
 | `app/services/object_name_resolver.py`, `database_catalog.py`, `relationship_graph.py` | Pin resolution, catalog TTL, FK graph (legacy/adjacent helpers) |
 | `app/core/orchestrator/attempts.py` | `_expand_missing` / `_merge_recovery` recovery API consumed by Stage E |
 
-Stage D call order (`builtin_sql_generator.py:182-292`):
+Stage D call order (`builtin_sql_generator.py:182-342`):
 
 ```
 182  emit(PREANALYSIS, "Running pre-analysis fast paths")
 183  preserve_filters = context.is_refinement and bool(context.active_filters)
 185  kb_exact      = None if preserve_filters else engine.kb_exact(effective_query)          -> exit kb_exact
-202  pre_exact     = None if preserve_filters else engine.precomputed_exact(effective_query) -> exit precomputed_exact
-231  kb_top        = None if preserve_filters else engine.kb_vector_top1(effective_query)    -> exit kb_exact (score <= 0.05)
-248  analysis      = engine.analyze_query(context.combined_query, existing_code, skip=decision.skip_preanalysis)
-253  groups        = engine.resolve_active_data_groups(context.combined_query)
-256  anchor        = existing_code if (is_error_recovery or existing_code) else combined_query
-257  discovery     = engine.discover(anchor, analysis, pins, table_override, top_k, existing_sql=existing_code)
-267  if is_refinement and existing_code: merge editor-SQL base objects; branch = scenario_branch(branch, mode)
-277  discovery.active_groups = groups
-278  discovery.query_analysis = analysis
-279  hydrator = SqlContextHydrator(cap=12) if is_refinement else SqlContextHydrator(cap=8)
-284  hydrator.set_value_mappings(discovery.value_mappings)
-285  markdown_lookup = markdown_lookup_for_objects(source_id, discovery.objects)
-286  selected, supp, schema, validation = hydrator.build_contexts(discovery.objects, markdown_lookup)
-289-292 discovery.{selected_object_context, supplementary_objects, schema_context, schema_context_for_validation} = ...
-294  run_attempt_loop(context, discovery, stores, llm, ...)      # Stage E
+187  if kb_exact and kb_match_drops_limit(...): forced_kb = kb_exact; kb_exact = None       -> regenerate to apply the limit
+208  pre_exact     = None if preserve_filters else engine.precomputed_exact(effective_query) -> exit precomputed_exact
+279  kb_top        = None if preserve_filters else engine.kb_vector_top1(effective_query)    -> exit kb_exact (score <= 0.05)
+296  analysis      = engine.analyze_query(context.combined_query, existing_code, skip=decision.skip_preanalysis)
+301  groups        = engine.resolve_active_data_groups(context.combined_query)
+304  anchor        = existing_code if (is_error_recovery or existing_code) else combined_query
+305  discovery     = engine.discover(anchor, analysis, pins, table_override, top_k, existing_sql=existing_code)
+315  if is_refinement and existing_code: merge editor-SQL base objects; branch = scenario_branch(branch, mode)
+325  discovery.active_groups = groups
+326  discovery.query_analysis = analysis
+327  if forced_kb: engine.force_kb_example(discovery, forced_kb)   # lock the example's objects, branch -> kb_direct
+329  hydrator = SqlContextHydrator(cap=12) if is_refinement else SqlContextHydrator(cap=8)
+334  hydrator.set_value_mappings(discovery.value_mappings)
+335  markdown_lookup = markdown_lookup_for_objects(source_id, discovery.objects)
+336  selected, supp, schema, validation = hydrator.build_contexts(discovery.objects, markdown_lookup)
+339-342 discovery.{selected_object_context, supplementary_objects, schema_context, schema_context_for_validation} = ...
+350  run_attempt_loop(context, discovery, stores, llm, ...)      # Stage E
 ```
 
 Two facts that shape the whole section:
 
-1. `DiscoveryEngine` is constructed **per request** (`builtin_sql_generator.py:168`, `:543`). Its
+1. `DiscoveryEngine` is constructed **per request** (`builtin_sql_generator.py:168`, `:615`). Its
    `_discovery_cache` / `_analysis_cache` are instance dictionaries, so `engine.clear_analysis_cache()`
    at `:169` clears an empty dict — it is defensive, not a cross-request invalidation. The advertised caps
    (256 / 100) therefore only bite for long-lived engine instances (tests, `discover_for_api` reuse).
 2. `discover(..., existing_sql=...)` accepts `existing_sql` but **never reads it**
-   (`discovery_engine.py:133-247`). Recovery-from-SQL is expressed by passing the editor SQL as the
-   `query` argument (`anchor`, `:256`).
+   (`discovery_engine.py:141-255`). Recovery-from-SQL is expressed by passing the editor SQL as the
+   `query` argument (`anchor`, `builtin_sql_generator.py:304`).
 
 > ⚠️ Unverified: whether `existing_sql` was intended to feed a drift check. Faithful re-implementation
 > should keep the parameter (call sites pass it) and keep it unused.
@@ -4415,7 +4498,7 @@ Two facts that shape the whole section:
 ### 06.1 `analyze_query` end to end
 
 `DiscoveryEngine.analyze_query(combined_query, existing_code, skip=False) -> QueryAnalysis`
-(`discovery_engine.py:72-118`).
+(`discovery_engine.py:73-126`).
 
 #### 06.1.1 Skip path (router)
 
@@ -4426,11 +4509,12 @@ if skip:
 
 - The skip flag is `RouteDecision.skip_preanalysis`, set only by
   `should_use_simple_preanalysis_fast_path()` (`router.py:53-68`, `:122-124`).
-- The skip path **does not write the cache** (`discovery_engine.py:73-74` returns before the cache store).
+- The skip path **does not write the cache** (`discovery_engine.py:74-75` returns before the cache store).
 - The returned analysis is entirely empty: `keywords=[]`, `entities=[]`, `date_ranges=[]`,
   `filter_values=[]`, `extracted_columns=[]`, `complexity="simple"`.
 - Consequence in `discover`: the discovery cache key falls back to `[query]` for its entity part
-  (`:155`) and `discover_with_column_evidence` takes the **whole-query** column branch (`:271`), because
+  (`discovery_engine.py:163`) and `discover_with_column_evidence` takes the **whole-query** column branch
+  (`discovery_engine.py:279`), because
   `extracted_columns` is empty. `filter_values` is empty, so no value-index seeding happens at all.
 
 `should_use_simple_preanalysis_fast_path` rules (all must hold), `router.py:53-68`:
@@ -4451,14 +4535,14 @@ if skip:
 
 | Item | Value |
 |---|---|
-| Key function | `query_analysis_cache_key(combined_query, existing_code)` (`hashing.py:53-57`) |
+| Key function | `query_analysis_cache_key(combined_query, existing_code)` (`hashing.py:78-82`) |
 | Key content | `f"{(combined_query or '').strip()}\|{(existing_code or '').strip()}"` |
 | Key when raw length > 512 | `sha256_text(raw)` (hex digest) |
 | Cache | `self._analysis_cache: Dict[str, QueryAnalysis]` |
-| Cap | `MaxQueryAnalysisCacheEntries = 100` (`constants.py:45`) |
-| Eviction policy | **full clear** when `len(cache) >= 100` *before* insert (`:115-116`); not LRU |
-| Hit return | `self._analysis_cache[key].model_copy(deep=True)` (`:77`) |
-| Store return | `analysis.model_copy(deep=True)` (`:118`) — the stored object is never handed out by reference |
+| Cap | `MaxQueryAnalysisCacheEntries = 100` (`constants.py:48`) |
+| Eviction policy | **full clear** when `len(cache) >= 100` *before* insert (`discovery_engine.py:123-124`); not LRU |
+| Hit return | `self._analysis_cache[key].model_copy(deep=True)` (`:78`) |
+| Store return | `analysis.model_copy(deep=True)` (`:126`) — the stored object is never handed out by reference |
 
 Note the key includes `existing_code`, so the same question asked with a different editor SQL
 re-analyses; and the raw (non-hashed) key embeds the entire query text for short turns.
@@ -4469,7 +4553,7 @@ re-analyses; and the raw (non-hashed) key embeds the entire query text for short
 analysis = QueryAnalysis(complexity=complexity_tier(combined_query))
 ```
 
-`complexity_tier` (`regexes.py:119-126`):
+`complexity_tier` (`regexes.py:180-187`):
 
 ```python
 lowered = f" {(text or '').lower()} "
@@ -4500,26 +4584,38 @@ otherwise the heuristic value survives.
 
 #### 06.1.4 LLM contract
 
-Only executed when `self.llm is not None` (`:79`). Messages (`:81-92`), byte-for-byte:
+Only executed when `self.llm is not None` (`:80`). Messages (`:82-99`), byte-for-byte:
 
 ```python
 [
   {"role": "system",
-   "content": ("Return JSON keys: keywords, complexity, entities, date_ranges, "
-               "filter_values, extracted_columns. Every list item must be a string, not an object.")},
+   "content": (
+       "Return JSON keys: keywords, complexity, entities, date_ranges, "
+       "filter_values, extracted_columns. Every list item must be a string, not an object. "
+       "filter_values holds literal values the user wants to filter on (proper nouns, "
+       "quoted strings, codes, IDs), preserving their casing: the number in \"top 10\", "
+       "\"first 5\", \"bottom 3\" or \"last 20\" is a cardinality limit, not a filter "
+       "value, so never place it in that array. extracted_columns holds only column names "
+       "the request explicitly asks for: when the request names no columns (e.g. \"top "
+       "selling products\"), leave the array empty rather than inferring plausible "
+       "columns such as ProductName or Quantity."
+   )},
   {"role": "user", "content": combined_query[:2000]},
 ]
 ```
+
+The last two sentences are guardrails ported from the C# engine's analysis prompt: a cardinality
+limit is not a filter value, and a projection the request never named must not be inferred.
 
 Call path and defaults: `LlmClient.complete_json(messages)` → `complete(messages)` →
 `temperature=0.0`, `max_tokens=2048`, `presence_penalty=None`, `model=None`
 (`llm_client.py:18-25`, `:64-78`). `complete_json` strips a leading markdown fence, then
 `json.loads`; on failure it slices from the first `{` to the last `}` and retries; if that fails it
 returns `{}` (`llm_client.py:64-78`). `complete` wraps the provider call and, on exception, raises
-`RuntimeError` (`:57-59`) — that exception is caught by `analyze_query` (`:113-114`), so a provider
+`RuntimeError` (`:57-59`) — that exception is caught by `analyze_query` (`:121-122`), so a provider
 outage degrades to the heuristic-only analysis instead of failing the turn.
 
-Field parsing rules (`:93-112`):
+Field parsing rules (`discovery_engine.py:101-120`):
 
 | JSON field | Type expected | Handling | Result field |
 |---|---|---|---|
@@ -4530,10 +4626,11 @@ Field parsing rules (`:93-112`):
 | `filter_values` | list | `_stringify_terms` | `analysis.filter_values` |
 | `extracted_columns` | list | custom loop (below) | `analysis.extracted_columns` |
 
-`_stringify_terms(values)` (`discovery_engine.py:37-49`):
+`_stringify_terms(values)` (`discovery_engine.py:38-50`):
 
 ```python
-out, seen = [], set()
+out: List[str] = []
+seen = set()
 for item in values or []:
     text = as_text_token(item)          # str -> strip(); dict -> first of name/entity/value/text/label/keyword/column
     if not text: continue
@@ -4549,14 +4646,15 @@ return out
 `None` → `""`. This is what keeps an LLM that returns `[{"name": "category"}]` working
 (`tests/unit/test_discovery_cache_key.py:8-35`).
 
-`extracted_columns` loop verbatim (`:100-112`):
+`extracted_columns` loop verbatim (`discovery_engine.py:108-120`):
 
 ```python
-cols, seen = [], set()
+cols = []
+seen = set()
 for col in data.get("extracted_columns") or []:
     c = as_text_token(col).strip("[]\"'`")
     if "." in c:
-        c = c.split(".")[-1]          # keep only the bare column name
+        c = c.split(".")[-1]
     keyc = c.lower()
     if c and keyc not in seen:
         seen.add(keyc)
@@ -4574,12 +4672,12 @@ dropped; the 20-cap breaks *after* appending, so exactly 20 max.
 
 | Field | Consumers |
 |---|---|
-| `complexity` | discovery cache key (`:155`); prompt header `QUERY ANALYSIS` (`prompts.py:89-90`) |
-| `keywords` | prompt header only (`prompts.py:90`) |
-| `entities` | discovery cache key (`:155`) |
+| `complexity` | discovery cache key (`discovery_engine.py:163`); prompt header `QUERY ANALYSIS` (`prompts.py:193-194`) |
+| `keywords` | prompt header only (`prompts.py:194`) |
+| `entities` | discovery cache key (`discovery_engine.py:163`) |
 | `date_ranges` | **no consumer in Stage D/E prompt builders** (stored only) |
-| `filter_values` | column evidence value-index seeding (`:190-200`, `:252-264`), `value_mappings` (`:241-245`) |
-| `extracted_columns` | column-entity vector search (`:266-269`), discovery cache key, and Stage E recovery column expansion (`attempts.py:284`, `:546-548`) |
+| `filter_values` | column evidence value-index seeding (`discovery_engine.py:198-208`, `:260-272`), `value_mappings` (`discovery_engine.py:249-253`) |
+| `extracted_columns` | column-entity vector search (`discovery_engine.py:274-277`), discovery cache key, and Stage E recovery column expansion (`attempts.py:458-462`), plus the semantic availability gate (`attempts.py:158-166`) |
 
 #### 06.1.6 Pseudocode
 
@@ -4609,7 +4707,7 @@ analyze_query(combined_query, existing_code, skip):
 
 ### 06.2 `resolve_active_data_groups`
 
-`resolve_active_data_groups(query) -> ActiveDataGroupContext` (`discovery_engine.py:120-131`).
+`resolve_active_data_groups(query) -> ActiveDataGroupContext` (`discovery_engine.py:128-139`).
 
 ```
 groups = stores.data_groups.search(query, top_n=ActiveDataGroupTopN)          # 3
@@ -4671,22 +4769,24 @@ strings themselves, so a keyword of `"credit risk"` never matches the token `cre
   Member strings are stored verbatim from `members_json` (e.g. `"dbo.Orders"`, `"Orders"`). The key is
   the **lowercase full member string** — the same shape later tested in `discover`.
 - `summary` is `""` when no groups, else `"Active data groups: " + ", ".join(names)`. It is injected
-  into the prompt as `ACTIVE BUSINESS CONTEXT` (`prompts.py:92-93`).
+  into the prompt as `ACTIVE BUSINESS CONTEXT` (`prompts.py:196-197`).
 
-`ActiveDataGroupContext` (`models/pipeline.py:245-248`): `top_groups: List[Dict[str, Any]]`,
+`ActiveDataGroupContext` (`models/pipeline.py:249-252`): `top_groups: List[Dict[str, Any]]`,
 `member_groups: Dict[str, List[str]]`, `summary: str`.
 
 #### 06.2.4 How groups feed discovery
 
-- `discover` calls `resolve_active_data_groups(query)` again (its own copy, `:204`) to build the
-  `data_group` RRF list; the driver's copy is overwritten back onto the result afterwards
-  (`builtin_sql_generator.py:277`). Both use `context.combined_query` (the driver) and the
+- `discover` calls `resolve_active_data_groups(query)` again (its own copy, `discovery_engine.py:212`) to
+  build the `data_group` RRF list; the driver's copy is overwritten back onto the result afterwards
+  (`builtin_sql_generator.py:325`). Both use `context.combined_query` (the driver) and the
   **anchor** string (discover — which may be the editor SQL), so during error recovery / refinement the
   two group contexts can differ; the driver's version is what reaches the prompt.
 - Group members become `ScoredObject`s with `score = float(g.get("score") or 0.5)`
-  (`:206-209`) — note `or`, so a group score of exactly `0.0` becomes `0.5`. `schema`/`object` are
-  split by `_split` (`:325-330`): brackets stripped, split on the first `.`, default schema `dbo`.
-- If **any** merged object matches a member key, the branch becomes `group_anchored` (`:229-231`).
+  (`discovery_engine.py:213-217`) — note `or`, so a group score of exactly `0.0` becomes `0.5`.
+  `schema`/`object` are split by `_split` (`discovery_engine.py:388-393`): brackets stripped, split on
+  the first `.`, default schema `dbo`.
+- If **any** merged object matches a member key, the branch becomes `group_anchored`
+  (`discovery_engine.py:236-239`).
 
 Group index build source: `skills/data-sources/<name>/data-groups/.data-group-index.json`
 (`stores/skills_folder.py:146-191`). Each entry is upserted through `DataGroupStore.upsert`
@@ -4706,12 +4806,12 @@ Group index build source: `skills/data-sources/<name>/data-groups/.data-group-in
 ### 06.3 Stage-C exits that precede `discover` (branch completeness)
 
 These three checks run before Stage D retrieval and produce branches that never reach `discover`
-(`builtin_sql_generator.py:182-246`). Re-implement them or `kb_exact` / `precomputed_exact` will be
+(`builtin_sql_generator.py:182-294`). Re-implement them or `kb_exact` / `precomputed_exact` will be
 unreachable.
 
 | Order | Call | Condition | Branch | Notes |
 |---|---|---|---|---|
-| 1 | `engine.kb_exact(effective_query)` → `stores.fewshots.try_get_exact` | normalized-question equality on the `few_shots` table | `kb_exact` | Vector-free scan; skips rows with empty SQL; `score=1.0`, `is_exact_match=True` |
+| 1 | `engine.kb_exact(effective_query)` → `stores.fewshots.try_get_exact` | `kb_similarity_key` equality on the `few_shots` table (limit tokens normalized away) | `kb_exact` | Vector-free scan; skips rows with empty SQL; `score=1.0`, `is_exact_match=True`. A row that matches only after the limit normalization is **not** returned here — `kb_match_drops_limit` turns it into `forced_kb` and the turn regenerates (§5.15.1) |
 | 2 | `engine.precomputed_exact(...)` → `vector_search.try_get_precomputed_exact` | `question_lookup_key(row.question) == question_lookup_key(query)` **and** `status in {"Approved","Modified"}` | `precomputed_exact` | `score=1.0`, `is_exact_match=True`, carries `smq_query`; semantic mode compiles the SMQ instead of returning stored SQL |
 | 3 | `engine.kb_vector_top1(...)` → `fewshots.search(query, top_k=1, max_distance=0.35)` | hit exists **and** `hit.score <= KbExactMatchThreshold` (0.05) | `kb_exact` | `score` is cosine distance |
 
@@ -4719,14 +4819,15 @@ All three are suppressed when `preserve_filters` is true:
 `context.is_refinement and bool(context.active_filters)` (`:183`) — a stored answer authored without
 the inherited filter must not satisfy the turn (`tests/parity/test_refinement_scope_expansion.py:125-143`).
 
-`question_lookup_key` = `re.sub(r"\s+", " ", text.strip().lower())` (`hashing.py:30-36`).
+`question_lookup_key` = `re.sub(r"\s+", " ", text.strip().lower())` (`hashing.py:34-40`) — the **plain** key
+used by C2; C1 uses the limit-normalized `kb_similarity_key` instead (§12.15.1).
 
 ---
 
 ### 06.4 `discover` — complete control flow and branch decision tree
 
 `DiscoveryEngine.discover(query, analysis, pins=None, table_override=None, top_k=8, existing_sql=None)`
-(`discovery_engine.py:133-247`). `top_k` comes from `request.top_k` (default 8,
+(`discovery_engine.py:141-255`). `top_k` comes from `request.top_k` (default 8,
 `preprocessing.py:61`).
 
 #### 06.4.1 Step 0 — `table_override` short-circuit
@@ -4740,7 +4841,7 @@ if table_override:
     return DiscoveryResult(objects=objects, branch=DiscoveryBranch.TABLE_OVERRIDE)
 ```
 
-`table_override` is `request.table_override` (`builtin_sql_generator.py:261`), from the HTTP
+`table_override` is `request.table_override` (`builtin_sql_generator.py:309`), from the HTTP
 `table_override` field (`preprocessing.py:54`, `:65`). Properties to preserve:
 
 - No retrieval, no KB lookup, no cache read **or write**, no `query_analysis`, no
@@ -4758,7 +4859,7 @@ if cache_key in self._discovery_cache:
     return self._discovery_cache[cache_key].model_copy(deep=True)
 ```
 
-`discovery_cache_key` (`hashing.py:39-50`):
+`discovery_cache_key` (`hashing.py:64-75`):
 
 ```
 entity_part = ",".join(sorted(lowercase of each non-empty as_text_token(entity)))
@@ -4772,7 +4873,8 @@ Key facts: entities are sorted and lowercased; `top_k` participates; extracted c
 (SHA-256 hex) and prefixed `cols:`; when `entities` is empty the caller substitutes `[query]`; the
 cache key **does not contain the raw query** when entities exist, so two different questions with the
 same entities/complexity/top_k/columns share a cached DiscoveryResult. Cache writes happen only in
-`_remember` (`:332-336`), i.e. never for `table_override`.
+`_remember` (`discovery_engine.py:395-403`), i.e. never for `table_override`; `_remember` also hard-locks the objects of every
+injected example (`_lock_example_objects`, §06.4.6) before storing and returning the result.
 
 #### 06.4.3 Step 2 — collect the three pre-branch signals
 
@@ -4783,7 +4885,9 @@ column_objects = self.discover_with_column_evidence(query, analysis)
 precomputed    = self.stores.vector_search.search_precomputed(query)
 ```
 
-`fewshots.search` (`fewshot_vector_service.py:114-133`) embeds the query and calls
+`fewshots.search` (`fewshot_vector_service.py:114-133`) embeds the query with `kb_similarity_key(question)`
+— the limit-normalized key (§12.15.1), so `find top 10 selling products` and `find top selling products`
+produce the same vector — and calls
 `provider.search_vector("few_shots", source_id, vector, top_k=3, min_score=0.35)`. Both provider
 implementations treat `min_score` as a **maximum cosine distance** filter
 (`sqlite_vec_provider.py:171-173`, `milvus_provider.py:272-274`). Each hit becomes
@@ -4891,14 +4995,21 @@ so a fresh-start dual_prong turn keeps the bare label.
 
 #### 06.4.6 Extracting tables from a matched few-shot SQL (verified: regex, not a parser)
 
-`_objects_from_sql` (`discovery_engine.py:316-323`):
+`_objects_from_sql(sql, required=False)` (`discovery_engine.py:361-386`):
 
 ```python
+from app.services.database_catalog import catalog_has_object
 from app.utils.sql_normalization import extract_sql_object_refs
+
+catalog = getattr(self.stores, "catalog", None) if self.stores is not None else None
 objs = []
 for ref in extract_sql_object_refs(sql):
     schema, name = self._split(ref)
-    objs.append(ScoredObject(schema_name=schema, object_name=name, score=0.9))
+    if not name or not catalog_has_object(catalog, schema, name):
+        continue                              # a stale example cannot name an object the database lacks
+    objs.append(ScoredObject(schema_name=schema, object_name=name,
+                             score=KbRequiredObjectScore if required else 0.9,
+                             required=required, priority=required))
 return objs
 ```
 
@@ -4913,8 +5024,23 @@ Rules: only `FROM` and `JOIN` introduce objects (not `INTO`/`UPDATE`/`DELETE`/CT
 identifiers support spaces (`[Order Details]`); 1–3 part names allowed and only the **last two** parts
 are kept (`"db.dbo.Orders"` → `"dbo.Orders"`); a bare name stays bare and `_split` defaults it to
 `dbo`; de-duplication is case-insensitive on the qualified string; ordering follows textual order.
-Objects get `score=0.9`, `object_type="Table"` (default), no `matched_columns`, `priority=False`,
-`required=False`.
+Objects get `score=0.9` on the ordinary candidate pass; with `required=True` they get the hard-lock score
+`KbRequiredObjectScore = 1000.0` (`constants.py:17`) plus `required=True, priority=True`. Either way
+`object_type="Table"` (default) and no `matched_columns`. An object the live catalog does not have is
+dropped rather than scored — the check fails **open** when there is no catalog, it is unreadable, or it
+lists nothing (`app/services/database_catalog.py:26-40`).
+
+`_lock_example_objects(result)` (`discovery_engine.py:336-359`) is what calls it with `required=True`: it
+collects the objects of **every** injected example, merges them into `result.objects` with
+`merge_and_dedup`, and force-sets `required=True, priority=True` on each — the reference implementation's
+`MergeKbRequiredObjects`. Ranking alone cannot be trusted with them: the RRF pool is capped, and the object
+that loses is usually the one discovery never hydrated, so the prompt would authorize an object the schema
+context does not describe and the critic would then reject SQL that references it. It is called from
+`_remember`, so it covers **every** branch that injects an example (`kb_direct`, `kb_gap_fill`,
+`dual_prong`, `group_anchored`), and from `force_kb_example` (`:324-334`), which the driver calls for a
+limit-adapted KB example (a stored question that matched only once its `top N` / `limit N` token was
+ignored, §5.15.1): reorder that example to the head, lock its objects, and set the branch to `kb_direct`
+unless the branch already carries a refinement prefix.
 
 Fallbacks when that yields nothing:
 
@@ -4930,24 +5056,24 @@ Fallbacks when that yields nothing:
   `ObjectNameResolver` (`builtin_sql_generator.py:118-131`).
 - They are added **only** in the `dual_prong` branch, after `merge_and_dedup(merged + column_objects)`,
   by prepending `ScoredObject(score=1.0, priority=True, required=True)` and re-running
-  `merge_and_dedup` (`:222-227`).
-- `kb_direct` and `kb_gap_fill` **ignore pins entirely** (early return before `:222`).
+  `merge_and_dedup` (`discovery_engine.py:230-235`).
+- `kb_direct` and `kb_gap_fill` **ignore pins entirely** (early return before `:230`).
 - `merge_and_dedup` keeps the higher score, so a pin (1.0) beats a column-evidence copy (≤1.0, and
   strictly greater comparison means a 1.0 column object keeps the pin only if the pin is first — the
   pin is first, so on a tie the pin survives as the incumbent). See 06.6.3.
-- Because the final slice is `merged[:8]` (`:236`), a low-ranked pin is never dropped by the cap only
+- Because the final slice is `merged[:8]` (`discovery_engine.py:244`), a low-ranked pin is never dropped by the cap only
   because the pin list is prepended; the tied tail of the merged list is what can be cut.
 
 ---
 
 ### 06.5 Column evidence (`discover_with_column_evidence`)
 
-`discovery_engine.py:249-289`. This function is the reason a question that mentions a *value*
+`discovery_engine.py:257-297`. This function is the reason a question that mentions a *value*
 (`"chocolate"`) or a *column* (`Quantity`) can pull in a table the pure schema vector missed.
 
 #### 06.5.1 Value-index seeds
 
-For every `filter_value` (LLM-extracted), call `stores.values.search(fv, top_k=5)`.
+For every entry of `analysis.filter_values` (LLM-extracted), call `stores.values.search(fv, top_k=5)`.
 
 `ValueIndexService.search` (`value_index_service.py:41-53`) — **no vectors, no scoring**:
 
@@ -4977,7 +5103,7 @@ Semantics that must be reproduced exactly:
 - `fetch_cap` defaults to `16384` and truncates the scanned row set; the early `break` at `top_k`
   means at most 5 hits are examined per filter value.
 
-Seed assembly (`:252-264`):
+Seed assembly (`discovery_engine.py:259-272`):
 
 ```python
 key = f"{hit.get('schema_name')}|{hit.get('table_name')}".lower()
@@ -5030,7 +5156,7 @@ Budgets to keep identical: 20 hits per extracted column (max 20 columns → ≤ 
 
 #### 06.5.3 `_merge_column_hits` — parent roll-up, score, and the 85% relative filter
 
-`discovery_engine.py:291-314` verbatim behaviour:
+`discovery_engine.py:299-322` verbatim behaviour:
 
 ```python
 by_parent = {}
@@ -5070,7 +5196,7 @@ Fidelity points:
   real behavioural quirk: a value-seeded parent keeps 0.80 even if a column hit scored 0.99.
 - The **relative-score filter (0.85)**: within one parent, a column whose similarity is below
   `best * 0.85` is dropped. `if best` guards a `best == 0` parent (then every column is kept).
-  `RelativeColumnScoreThreshold = 0.85` (`constants.py:46`).
+  `RelativeColumnScoreThreshold = 0.85` (`constants.py:49`).
 - `required = True` is set for every parent that got at least one column hit (after the filter) and
   also for parents whose columns were all filtered out.
 - Column order: hit order from the provider (descending similarity for SQLite/Milvus), de-duplicated
@@ -5117,13 +5243,13 @@ def rrf_score(rank: int, weight: float, k: float = RrfK) -> float:
 
 | Constant | Value | Source |
 |---|---|---|
-| `RrfK` (`k`) | `60.0` | `constants.py:23` |
-| `RRF_WEIGHT_VALUE_INDEX` | `1.0` | `constants.py:24` |
-| `RRF_WEIGHT_FEW_SHOT` | `1.0` | `constants.py:25` |
-| `RRF_WEIGHT_SCHEMA_VECTOR` | `1.0` | `constants.py:26` |
-| `RRF_WEIGHT_DATA_GROUP` | `2.0` | `constants.py:27` |
-| `RRF_WEIGHT_BM25_DEFAULT` | `0.5` | `constants.py:28` |
-| `MaxRerankTables` | `8` | `constants.py:29` |
+| `RrfK` (`k`) | `60.0` | `constants.py:26` |
+| `RRF_WEIGHT_VALUE_INDEX` | `1.0` | `constants.py:27` |
+| `RRF_WEIGHT_FEW_SHOT` | `1.0` | `constants.py:28` |
+| `RRF_WEIGHT_SCHEMA_VECTOR` | `1.0` | `constants.py:29` |
+| `RRF_WEIGHT_DATA_GROUP` | `2.0` | `constants.py:30` |
+| `RRF_WEIGHT_BM25_DEFAULT` | `0.5` | `constants.py:31` |
+| `MaxRerankTables` | `8` | `constants.py:32` |
 
 `rank` is the **0-based** index in the list, so rank 0 contributes `weight / 61`, not `weight / 60`.
 `default_weights()` (`rrf.py:25-30`) copies the dictionary and replaces `bm25` with
@@ -5136,17 +5262,17 @@ an object present at rank 0 in all five lists is
 
 #### 06.6.2 Lists, ranks, and the merge key
 
-The five lists passed by `discover` (`:211-220`) and their ordering:
+The five lists passed by `discover` (`discovery_engine.py:219-228`) and their ordering:
 
 | List name | Weight | Source | Ordering |
 |---|---|---|---|
 | `schema_vector` | 1.0 | `vector_search.search_objects(query, top_k=top_k)` | `score` descending (similarity) |
 | `value_index` | 1.0 | one per filter value, `values.search(fv, top_k=5)`, flat score 0.80 | filter-value order, then provider row order |
-| `few_shot` | 1.0 | `_objects_from_sql` over up to 3 KB hits, flat 0.9 | KB-hit order, then SQL textual order |
+| `few_shot` | 1.0 | `_objects_from_sql` over up to 3 KB hits, flat 0.9 on this pass | KB-hit order, then SQL textual order; every injected example's objects are then re-merged by `_lock_example_objects` as `required=True, priority=True` (§06.4.6) |
 | `data_group` | 2.0 | top-3 groups × their members | group rank, then member order |
 | `bm25` | `BM25_WEIGHT` | `bm25.rank(query, schema_list + column_objects)` | BM25 score descending (or `[]`) |
 
-`ScoredObject.merge_key()` (`models/pipeline.py:193-196`):
+`ScoredObject.merge_key()` (`models/pipeline.py:197-200`):
 
 ```python
 stripped = self.object_name.split(" (Segment")[0].strip()
@@ -5194,8 +5320,9 @@ no minimum-score filter inside `rrf_merge`.
 
 #### 06.6.4 `merge_and_dedup` semantics
 
-`rrf.py:74-93`. Used three times in Stage D (`:179`, `:221`, `:227`) and once in recovery
-(`attempts.py:555-558`).
+`rrf.py:74-93`. Used four times in Stage D (`discovery_engine.py:187`, `:229`, `:235`, `:354` — the
+last locks every injected example's objects) and once in recovery
+(`attempts.py:907-910`).
 
 ```python
 unique = {}
@@ -5229,16 +5356,16 @@ return list(unique.values())
   unioning columns, but **losing the RRF object's `object_type`/`description`** (the column evidence
   object defaults to `Table` and carries no description). Order still follows the RRF ranking.
 
-#### 06.6.5 `max_rerank_tables`, pinning, and the 5% floor
+#### 06.6.5 `MaxRerankTables`, pinning, and the 5% floor
 
 Three different caps/order-keeping rules exist; keep them separate:
 
 | Mechanism | Where | Rule |
 |---|---|---|
-| RRF result cap | `rrf_merge(..., max_results=8)` (`:219`) | top 8 by fused score |
-| Final object cap | `objects=merged[:MaxRerankTables]` (`:236`) | first 8 in post-`merge_and_dedup` insertion order (RRF order first, then column-only extras) |
-| Uncapped branches | `table_override` (`:142-153`), `kb_direct` (`:170-176`) | no slice at all |
-| Pin pinning | `merge_and_dedup(pin_objs + merged)` (`:222-227`) | pins first ⇒ they keep position and win ties/score |
+| RRF result cap | `rrf_merge(..., max_results=8)` (`discovery_engine.py:219`) | top 8 by fused score |
+| Final object cap | `objects=merged[:MaxRerankTables]` (`discovery_engine.py:244`) | first 8 in post-`merge_and_dedup` insertion order (RRF order first, then column-only extras) |
+| Uncapped branches | `table_override` (`discovery_engine.py:150-161`), `kb_direct` (`discovery_engine.py:172-184`) | no slice at all |
+| Pin pinning | `merge_and_dedup(pin_objs + merged)` (`discovery_engine.py:230-235`) | pins first ⇒ they keep position and win ties/score |
 | Required/priority slot pinning | `SqlContextHydrator.cap_objects` (`sql_context_hydrator.py:25-41`) | required/priority/column-matched/SemanticModel objects are emitted **first**, before the cap is applied |
 | 5% score floor | `cap_objects` (`:29-31`) | for non-required objects, `floor = best * 0.05`; objects with `score < floor` are dropped; `best == 0` ⇒ floor 0 |
 
@@ -5266,11 +5393,11 @@ remove supplementary (non-required) objects.
 
 Index build/source: there is **no persistent BM25 index**. `rank()` builds everything in memory from
 the objects handed to it, so the corpus for Stage D is exactly `schema_list + column_objects`
-(`discovery_engine.py:210`) — i.e. the vector-search parents plus the column-evidence parents. Objects
+(`discovery_engine.py:218`) — i.e. the vector-search parents plus the column-evidence parents. Objects
 that only appear in the value-index seed list, the few-shot list, or the data-group list are **not**
 ranked by BM25 (they are the same parents as `column_objects` in practice, so the loss is small).
 
-Algorithm (`bm25_service.py:45-77`):
+Algorithm (`bm25_service.py:45-74`):
 
 ```python
 if not self.enabled: return []
@@ -5308,10 +5435,10 @@ ranks, not scores). `idf` uses the `+1` smoothed form with `len(docs)` as `N`.
 
 | Level | Allowed values | Where |
 |---|---|---|
-| `ScoredObject.object_type` | free string; engine default `"Table"`; `"SemanticModel"` for injected models | `models/pipeline.py:179`, `attempts.py:551` |
-| Vector row `object_type` | `Table`, `View`, `Function` | `schema_contracts.normalize_object_type` (`:318-329`) |
-| Vector row `entity_type` | parent rows: `Table` / `View` / `Function`; column rows: `"Column"` | `schema_rows.py:48`, `:66`; `skills_folder.py:121` |
-| `table_type` on `TableSchema` | lowercase `table` / `view` / `function` | `object_type_to_table_type` (`:332-334`) |
+| `ScoredObject.object_type` | free string; engine default `"Table"`; `"SemanticModel"` for injected models | `models/pipeline.py:183`, `attempts.py:903` |
+| Vector row `object_type` | `Table`, `View`, `Function` | `stores/schema_contracts.normalize_object_type` (`:318-329`) |
+| Vector row `entity_type` | parent rows: `Table` / `View` / `Function`; column rows: `"Column"` | `stores/schema_rows.py:48`, `:66`; `skills_folder.py:121` |
+| `table_type` on `TableSchema` | lowercase `table` / `view` / `function` | `stores/schema_contracts.object_type_to_table_type` (`:332-334`) |
 
 `normalize_object_type` maps `table→Table`, `view→View`, `function→Function`,
 `stored_procedure`/`storedprocedure→Function`, anything unknown → `Table`. Column-entity rows are the
@@ -5343,16 +5470,22 @@ requested `ObjectType` (`TABLE`, `VIEW`, `STORED_PROCEDURE`, `FUNCTION`);
 
 #### 06.8.2 Allowed schemas
 
-- `DiscoveryResult.allowed_schemas` exists (`models/pipeline.py:265`) but is **never written** by the
+- `DiscoveryResult.allowed_schemas` exists (`models/pipeline.py:269`) but is **never written** by the
   Python port — `grep` finds only its declaration.
   > ⚠️ Unverified: any intended population of `allowed_schemas`. Treat it as a dead field unless the
   > re-implementation chooses to fill it; nothing reads it today.
-- The effective allow-list at validation time is derived from the discovered objects:
-  `allowed = [f"{o.schema_name}.{o.object_name}" for o in discovery.objects]`
-  (`attempts.py:325`) and passed to `SqlValidator.validate(sql, allowed)`
-  (`attempts.py:332`, `:368`, `:508`, `:517`). Any `FROM`/`JOIN` reference outside that list produces
-  `"TABLE_VALIDATION_ERROR: <refs>"` (`sql_validator.py:59-70`), which Stage E then turns into a
-  recovery expansion (06.11). So **the object list produced by Stage D is the schema allow-list**.
+- The effective allow-list at validation time is built by `_allowed_objects(discovery, stores)`:
+  every discovered object as `f"{o.schema_name}.{o.object_name}"`, plus every table or view named by an
+  injected example's SQL (`extract_sql_object_refs` → `split_object_ref`) that the catalog confirms
+  (`catalog_has_object`). The example objects are what keeps KB/precomputed SQL legal even when the schema
+  context never hydrated their columns; the catalog check is what stops a stale example from widening the
+  allow-list to an object the database cannot serve. `catalog_has_object` fails **open** — no catalog, an
+  unreadable one, or one that lists nothing proves nothing, so the object is authorized
+  (`app/services/database_catalog.py:26-40`). The list is passed to `SqlValidator.validate(sql, allowed)`
+  through `_validate_candidate` (`attempts.py:504`, `:511`, `:742`). Any `FROM`/`JOIN` reference outside
+  that list produces `"TABLE_VALIDATION_ERROR: <refs>"` (`sql_validator.py:77`), which Stage E then
+  turns into a recovery expansion (06.11). So **the object list produced by Stage D is the schema
+  allow-list**, widened only by catalog-confirmed example objects.
 - The legacy helpers `_get_allowed_table_set` (`generation_service.py:173-193`,
   `discovery_service.py:34-54`) build a `{"schema.table"}` set from a source's object list and keep
   only `object_type in {"table","view"}` — functions and procedures are excluded there. Those helpers
@@ -5389,14 +5522,14 @@ decision triggers user selection when `(cross_schema or cross_database) and n >=
 
 ### 06.9 Hydration (`SqlContextHydrator` + skills-folder markdown)
 
-Entry: `builtin_sql_generator.py:279-292`. `SqlContextHydrator(token_budget=6400, cap=8)`, with
+Entry: `builtin_sql_generator.py:329-342`. `SqlContextHydrator(token_budget=6400, cap=8)`, with
 `cap=RefinementPromptContextCap` (12) for refinement/drill-down turns.
 
 | Constant | Value |
 |---|---|
-| `SchemaContextTokenBudget` | `6_400` (`constants.py:33`) |
-| `PromptContextDiscoveryCap` | `8` (`constants.py:34`) |
-| `RefinementPromptContextCap` | `12` (`constants.py:37`) |
+| `SchemaContextTokenBudget` | `6_400` (`constants.py:36`) |
+| `PromptContextDiscoveryCap` | `8` (`constants.py:37`) |
+| `RefinementPromptContextCap` | `12` (`constants.py:40`) |
 
 #### 06.9.1 Markdown payload lookup from the skills folder
 
@@ -5488,7 +5621,7 @@ block = body if body.startswith("#") else f"## {obj.schema_name}.{obj.object_nam
 Critical asymmetry: an over-budget block is **never** added to `schema_context` (only to
 `supplementary_objects` and `schema_context_for_validation`). The prompt uses
 `discovery.schema_context or discovery.selected_object_context` for `AVAILABLE SCHEMAS`
-(`prompts.py:102`, `:253`, `:364`, `:471`) and `discovery.supplementary_objects` for
+(`prompts.py:207`, `:377`, `:490`, `:599`) and `discovery.supplementary_objects` for
 `SUPPLEMENTARY SCHEMAS`, so an over-budget object can reach the model only through the supplementary
 and validation slices. Required blocks ignore the budget entirely, so `used` can exceed 6400 and force
 every subsequent non-required object down the pruning path.
@@ -5500,7 +5633,7 @@ Slice contracts:
 | `selected_object_context` | required/priority blocks only | fallback for `AVAILABLE SCHEMAS` |
 | `supplementary_objects` | non-required blocks that fit, plus pruned over-budget blocks | `SUPPLEMENTARY SCHEMAS` |
 | `schema_context` | selected + fitting supplementary | `AVAILABLE SCHEMAS` (primary) |
-| `schema_context_for_validation` | every capped object as `evidence + block/pruned` | Stage E LLM critic (`attempts.py:344-350`) |
+| `schema_context_for_validation` | every capped object as `evidence + block/pruned` | Stage E LLM critic (`attempts.py:531`) |
 
 #### 06.9.5 Block shaping, evidence lines, and fallback markdown
 
@@ -5510,7 +5643,7 @@ Slice contracts:
   object, columns comma-separated as `[schema].[object].[col]` under the default `dbms="SQL Server"`
   (`quote_identifier` → `[...]`; MySQL → backticks; everything else → `"..."`,
   `utils/dialect.py:6-19`). The *column* segment is appended raw, never quoted. The driver calls
-  `build_contexts(...)` **without** a `dbms` argument (`builtin_sql_generator.py:286-288`), so the
+  `build_contexts(...)` **without** a `dbms` argument (`builtin_sql_generator.py:336-338`), so the
   evidence lines always use SQL Server quoting even on other dialects.
 - `_fallback_markdown` (`:90-98`) runs when neither `obj.markdown` nor the lookup has the object:
   - unwrap an embedding payload by splitting on `" | Description: "` and keeping the tail;
@@ -5545,7 +5678,7 @@ return "\n".join(kept)
 
 Value mappings: `set_value_mappings(discovery.value_mappings)` is stored on the hydrator
 (`:22-23`) but `build_contexts` **never reads `self.value_mappings`** — the `VERIFIED DATA MAPPINGS`
-block is rendered by `prompts.py:79-82` directly from `discovery.value_mappings` as
+block is rendered by `prompts.py:182-184` directly from `discovery.value_mappings` as
 `"- {value} → {table}.{column}"` lines (or `"(none)"`). Keep the setter for API compatibility; do not
 expect it to affect the four slices.
 
@@ -5600,8 +5733,8 @@ Invalidation points in the current code:
 | Point | Effect |
 |---|---|
 | `engine.clear_analysis_cache()` (`builtin_sql_generator.py:169`) | empties the analysis cache of the freshly built engine (effective no-op per request) |
-| `_remember` overflow (`discovery_engine.py:332-336`) | full flush then insert |
-| `analyze_query` overflow (`:115-116`) | full flush then insert |
+| `_remember` overflow (`discovery_engine.py:395-403`) | full flush then insert; also the point where every injected example's objects are hard-locked (§06.4.6) |
+| `analyze_query` overflow (`discovery_engine.py:123-124`) | full flush then insert |
 | `DatabaseCatalog.list_objects(force=True)` | bypasses the 300 s TTL for one call; no global clear function exists |
 | `invalidate_relationship_graph()` (`relationship_graph.py:180-184`) | drops the FK graph singleton (call after schema modifications) |
 | `refresh_vector_store()` (`vector_store.py:780`) | drops the legacy `MilvusVectorStore` singleton |
@@ -5613,17 +5746,38 @@ Invalidation points in the current code:
 
 ### 06.11 Recovery expansion API used by the attempt loop
 
-`_expand_missing` and `_merge_recovery` (`attempts.py:541-558`) are the only API Stage E has for
-pulling new objects in mid-loop.
+`_recovery_names`, `_resolve_catalog_names`, `_expand_missing` and `_merge_recovery`
+(`attempts.py:820-910`) are the only API Stage E has for pulling new objects in mid-loop.
 
 ```python
-def _expand_missing(token: str, stores, exact_columns=None) -> List[ScoredObject]:
-    q = token or ""
-    objs = stores.vector_search.search_objects(q, top_k=5)              # threshold = OBJECT_SEARCH_VECTOR_SCORE_THRESHOLD
+def _recovery_names(token: str, sql: Optional[str]) -> List[str]:          # :820-843
+    # A COLUMN_VALIDATION_ERROR is deliberately skipped: a missing column is answered by
+    # the exact_columns path, which searches the value index for the column's owner rather
+    # than resolving a table name, so passing the column name here would look for a table
+    # that was never missing.
+    names = [] if re.search(r"COLUMN_VALIDATION_ERROR|Invalid column name", token or "", re.I) \
+              else parse_table_validation_names(token or "")
+    if sql:
+        for ref in extract_sql_object_refs(sql):
+            names.extend(parse_table_validation_names(ref))
+    return lowercased-dedupe(names)                                        # first spelling wins
+
+def _resolve_catalog_names(names, stores):                                 # :846-883
+    # ObjectNameResolver against stores.catalog; only an "exact" hit with a qualified name
+    # becomes a ScoredObject(score=1.0, required=True, priority=True). Unresolved strings
+    # are returned separately and are NOT turned into allow-list objects.
+
+def _expand_missing(token: str, stores, exact_columns=None, sql: str = None) -> List[ScoredObject]:   # :886-905
+    names = _recovery_names(token, sql)
+    resolved, unresolved = _resolve_catalog_names(names, stores)
+    objs = list(resolved)
+    queries = unresolved if names else ([token] if token else [])
+    for q in queries:
+        objs.extend(stores.vector_search.search_objects(q, top_k=5))       # threshold = OBJECT_SEARCH_VECTOR_SCORE_THRESHOLD
     if exact_columns:
         for col in exact_columns:
             objs.extend(stores.vector_search.search_objects(col, top_k=3))
-    models = stores.semantic.search_models(q, top_k=2)
+    models = stores.semantic.search_models(token or "", top_k=2)
     for m in models:
         objs.insert(0, ScoredObject(schema_name="semantic", object_name=m.label,
                                     object_type="SemanticModel", required=True, score=1.0))
@@ -5637,17 +5791,17 @@ Call sites and caps:
 
 | Call site | Token passed | `exact_columns` | Cap |
 |---|---|---|---|
-| Sentinel `COLUMN_VALIDATION_ERROR` / `TABLE_VALIDATION_ERROR` in model output (`:283-290`) | the sentinel text | `discovery.query_analysis.extracted_columns` **only for the column sentinel** | `objs[:MaxRecoveryExpansion]` (5) → `pending_recovery.extend(...)` |
-| Critic `schema_valid == false` with `missing_objects` (`:363`) | `",".join(critic_result.missing_objects)` | none | `[:5]` |
-| DB validation missing object (`:389-392`) | classifier's extracted object | none | `[:5]` |
-| `db_err` starting with `TABLE_VALIDATION_ERROR` (`:396-397`) | the whole error text | none | `[:5]` |
-| Merge into discovery (`:147-151`) | — | — | `merge_and_dedup` — **uncapped**, so `discovery.objects` can exceed 8 and hydration's `cap_objects` becomes the only limiter |
+| Sentinel `COLUMN_VALIDATION_ERROR` / `TABLE_VALIDATION_ERROR` in model output (`attempts.py:455-469`) | the sentinel text | `discovery.query_analysis.extracted_columns` **only for the column sentinel** | `objs[:MaxRecoveryExpansion]` (5) → `pending_recovery.extend(...)` |
+| Critic `schema_valid == false` with `missing_objects` (`attempts.py:544`) | `",".join(critic_result.missing_objects)` | none | `[:5]` |
+| DB validation missing object (`attempts.py:573-575`) | classifier's extracted object | none | `[:5]` |
+| `db_err` starting with `TABLE_VALIDATION_ERROR` (`attempts.py:579-580`) | the whole error text | none | `[:5]` |
+| Merge into discovery (`attempts.py:230-234`) | — | — | `merge_and_dedup` — **uncapped**, so `discovery.objects` can exceed 8 and hydration's `cap_objects` becomes the only limiter |
 
 Details to reproduce:
 
 - `search_objects` is called with `top_k=5` and no `max_vector_score` override, so it uses
   `settings.OBJECT_SEARCH_VECTOR_SCORE_THRESHOLD` (default 0.50) and the internal provider over-fetch
-  `max(top_k * 4, 20)` (`vector_search_service.py:29-37`). The token is a free-text object name, so
+  `max(top_k * 4, 20)` (`vector_search_service.py:35`). The token is a free-text object name, so
   this is a vector lookup, not an exact catalog lookup.
 - Column expansion (only for the column sentinel) adds up to 3 more objects per extracted column
   (max 20 columns), all appended **after** the table hits and **before** the `[:5]` slice — so in
@@ -5665,19 +5819,22 @@ Details to reproduce:
   5), then is merged once at the top of the next attempt and cleared (`:147-151`); `agentic_retry += 1`
   on every such merge.
 - Breaker: `_breaker_tripped(counts)` is true when any missing-object counter reaches
-  `MissingObjectBreakThreshold = 2` (`:39`, `:567-568`), returning
+  `MissingObjectBreakThreshold = 2` (`constants.py:41`, `attempts.py:919-920`), returning
   `ErrorCategory.DETERMINISTIC_MISSING_OBJECT`.
 - Group-member broadening: when the critic returns `schema_valid == false` **and**
   `status == "MISSING_GROUP_MEMBER"` (`MissingGroupMemberValidationStatus`) and `broadened` is still
-  false, the loop sets `broadened = True`, emits the `recovery` stage, and `continue`s (`:359-362`).
+  false, the loop sets `broadened = True`, emits the `recovery` stage, and `continue`s (`attempts.py:540-543`).
   No new objects are added — the broadening is a single retry with the already-discovered group
   members (which entered `discovery.objects` through the `data_group` RRF list at weight 2.0). Only one
   such broadening attempt happens per turn.
-- Objects merged into `discovery.objects` after hydration do **not** re-run `SqlContextHydrator`:
-  `schema_context`, `supplementary_objects` and `schema_context_for_validation` were frozen before the
-  loop started. Recovery therefore changes `allowed = [schema.object for o in discovery.objects]`
-  (`:325`, recomputed on each attempt) and the `record` of candidates, but the prompt text itself is
-  only affected through `attempt_history` and the freshly computed allow-list.
+- Objects merged into `discovery.objects` after hydration **do** re-run `SqlContextHydrator` when the merge
+  actually added objects: the recovery branch calls `_refresh_schema_context`, which rebuilds
+  `schema_context`, `supplementary_objects` and `schema_context_for_validation` from the mutated pool (with
+  `RefinementPromptContextCap` on a refinement turn). No other retry does, because no other retry changes the
+  object pool. Recovery therefore changes both the prompt/critic text and
+  `_allowed_objects(discovery, stores)` (`:504`, recomputed on each attempt).
+- Every `_expand_missing` call site passes `sql=sql`, so the generated statement's own `FROM`/`JOIN` refs
+  feed `_recovery_names` alongside the error token.
 
 ---
 
@@ -5691,10 +5848,13 @@ Build in this order; each step lists what it needs to exist first.
 2. **Constants module** — copy every value from `app/core/constants.py` verbatim (thresholds, weights,
    caps, `RrfK`, cache sizes, token budget). Add `effective_object_search_threshold`,
    `precomputed_direct_match_threshold`, `precomputed_few_shot_threshold` as settings-backed helpers.
-3. **Hashing/regex utils** — `as_text_token`, `normalize_question`, `question_lookup_key`,
+3. **Hashing/regex/vocabulary utils** — `as_text_token`, `normalize_question`, `question_lookup_key`,
+   `kb_similarity_key`, `kb_match_drops_limit`,
    `discovery_cache_key`, `query_analysis_cache_key`, `complexity_tier` + `COMPLEX_KEYWORDS`,
-   `collapse_whitespace`, `word_count`, `extract_qualified_object_names`. Pure functions, unit-testable
-   with no I/O.
+   `collapse_whitespace`, `word_count`, `extract_qualified_object_names`; and the shared query vocabulary
+   (`tokenize`, `is_significant`, `question_tokens`, `build_question_tokens`, `can_answer`, `closest_name`,
+   `model_items`, `model_item_name`, `STOP_WORDS`, `STRUCTURAL_TOKENS`) in
+   `app/utils/query_vocabulary.py`. Pure functions, unit-testable with no I/O.
 4. **Vector provider contract** — `search_vector(collection, source_id, vector, top_k, min_score,
    filter_fn)` returning rows with `_distance` (cosine distance, filtered by `dist <= min_score`,
    sorted ascending) plus `fetch_all`, `fetch_one`, `upsert`, `delete`, `delete_source`, `execute`.
@@ -5737,7 +5897,7 @@ Build in this order; each step lists what it needs to exist first.
     5% floor, merge-key dedup, cap 8/12), four slices with the over-budget asymmetry, evidence lines,
     `_fallback_markdown`, `_prune_columns`. Assert the four slices against
     `tests/unit/test_sql_context_hydration.py` expectations.
-17. **Driver wiring** — the exact `builtin_sql_generator.py:248-292` sequence: engine construction,
+17. **Driver wiring** — the exact `builtin_sql_generator.py:296-342` sequence: engine construction,
     analysis, groups, anchor selection, discover, refinement base-object merge + `scenario_branch`,
     post-assignment of groups/analysis, hydrator cap, lookup, slice assignment.
 18. **Recovery API** — `_expand_missing` (top_k 5 / 3, semantic-model insert at 0, `required`, score 1.0),
@@ -5758,36 +5918,37 @@ Build in this order; each step lists what it needs to exist first.
 | `KbExactMatchThreshold` | `0.05` | `constants.py:12` |
 | `KbConfidenceThreshold` | `0.70` | `constants.py:13` |
 | `KbScoreThreshold` (max KB distance) | `0.35` | `constants.py:14` |
-| `DefaultObjectSearchVectorScoreThreshold` | `0.50` | `constants.py:17` |
-| `DefaultPrecomputedQueryDirectMatchThreshold` | `0.93` | `constants.py:18` |
-| `DefaultPrecomputedQueryFewShotThreshold` | `0.82` | `constants.py:19` |
-| `PrecomputedQueryTopK` | `3` | `constants.py:20` |
-| `RrfK` | `60.0` | `constants.py:23` |
-| RRF weights (value/few-shot/schema/data-group) | `1.0 / 1.0 / 1.0 / 2.0` | `constants.py:24-27` |
-| `RRF_WEIGHT_BM25_DEFAULT` | `0.5` | `constants.py:28` |
-| `MaxRerankTables` | `8` | `constants.py:29` |
-| `ActiveDataGroupTopN` | `3` | `constants.py:32` |
-| `SchemaContextTokenBudget` | `6_400` | `constants.py:33` |
-| `PromptContextDiscoveryCap` | `8` | `constants.py:34` |
-| `RefinementPromptContextCap` | `12` | `constants.py:37` |
-| `MissingObjectBreakThreshold` | `2` | `constants.py:38` |
-| `MissingGroupMemberValidationStatus` | `"MISSING_GROUP_MEMBER"` | `constants.py:39` |
-| `FuzzyMatchMinConfidence` | `0.85` | `constants.py:40` |
-| `MaxRecoveryExpansion` | `5` | `constants.py:41` |
-| `MaxAutoExtractedObjects` | `5` | `constants.py:42` |
-| `CatalogCacheTtlSeconds` | `300` | `constants.py:43` |
-| `MaxDiscoveryCacheEntries` | `256` | `constants.py:44` |
-| `MaxQueryAnalysisCacheEntries` | `100` | `constants.py:45` |
-| `RelativeColumnScoreThreshold` | `0.85` | `constants.py:46` |
-| `ColumnDetailValueSeedScore` | `0.80` | `constants.py:47` |
-| `KeywordMatchScore` | `1.0` (multiplied by 0 — no-op) | `constants.py:48` |
-| `ApplyColumnBoost` | `0.15` | `constants.py:49` |
-| `ApplyColumnBoostCap` | `1.0` | `constants.py:50` |
-| `SemanticModelDiscoveryTopK` | `3` (call site uses 2) | `constants.py:51` |
-| `SimplePreAnalysisMaxCollapsedChars` | `180` | `constants.py:73` |
-| `SimplePreAnalysisMaxWords` | `40` | `constants.py:74` |
-| `LikelyDbQueryMaxWords` | `50` | `constants.py:75` |
-| `EMBEDDING` dims / L1 / L2 / evict | `1536 / 512 / 10_000 / 1_000` | `constants.py:63-66` |
+| `KbRequiredObjectScore` (hard-locked example objects) | `1000.0` | `constants.py:17` |
+| `DefaultObjectSearchVectorScoreThreshold` | `0.50` | `constants.py:20` |
+| `DefaultPrecomputedQueryDirectMatchThreshold` | `0.93` | `constants.py:21` |
+| `DefaultPrecomputedQueryFewShotThreshold` | `0.82` | `constants.py:22` |
+| `PrecomputedQueryTopK` | `3` | `constants.py:23` |
+| `RrfK` | `60.0` | `constants.py:26` |
+| RRF weights (value/few-shot/schema/data-group) | `1.0 / 1.0 / 1.0 / 2.0` | `constants.py:27-30` |
+| `RRF_WEIGHT_BM25_DEFAULT` | `0.5` | `constants.py:31` |
+| `MaxRerankTables` | `8` | `constants.py:32` |
+| `ActiveDataGroupTopN` | `3` | `constants.py:35` |
+| `SchemaContextTokenBudget` | `6_400` | `constants.py:36` |
+| `PromptContextDiscoveryCap` | `8` | `constants.py:37` |
+| `RefinementPromptContextCap` | `12` | `constants.py:40` |
+| `MissingObjectBreakThreshold` | `2` | `constants.py:41` |
+| `MissingGroupMemberValidationStatus` | `"MISSING_GROUP_MEMBER"` | `constants.py:42` |
+| `FuzzyMatchMinConfidence` | `0.85` | `constants.py:43` |
+| `MaxRecoveryExpansion` | `5` | `constants.py:44` |
+| `MaxAutoExtractedObjects` | `5` | `constants.py:45` |
+| `CatalogCacheTtlSeconds` | `300` | `constants.py:46` |
+| `MaxDiscoveryCacheEntries` | `256` | `constants.py:47` |
+| `MaxQueryAnalysisCacheEntries` | `100` | `constants.py:48` |
+| `RelativeColumnScoreThreshold` | `0.85` | `constants.py:49` |
+| `ColumnDetailValueSeedScore` | `0.80` | `constants.py:50` |
+| `KeywordMatchScore` | `1.0` (multiplied by 0 — no-op) | `constants.py:51` |
+| `ApplyColumnBoost` | `0.15` | `constants.py:52` |
+| `ApplyColumnBoostCap` | `1.0` | `constants.py:53` |
+| `SemanticModelDiscoveryTopK` | `3` (call site uses 2) | `constants.py:54` |
+| `SimplePreAnalysisMaxCollapsedChars` | `180` | `constants.py:79` |
+| `SimplePreAnalysisMaxWords` | `40` | `constants.py:80` |
+| `LikelyDbQueryMaxWords` | `50` | `constants.py:81` |
+| `EMBEDDING` dims / L1 / L2 / evict | `1536 / 512 / 10_000 / 1_000` | `constants.py:69-72` |
 | `ENABLE_BM25_RETRIEVAL` / `BM25_WEIGHT` / `BM25_K1` / `BM25_B` | `False / 0.5 / 1.2 / 0.75` | `config.py:59-62` |
 | `OBJECT_SEARCH_VECTOR_SCORE_THRESHOLD` | `0.50` | `config.py:58` |
 | `PRECOMPUTED_QUERY_DIRECT_MATCH_THRESHOLD` / `_FEW_SHOT_THRESHOLD` | `0.93 / 0.82` | `config.py:56-57` |
@@ -5797,7 +5958,7 @@ Build in this order; each step lists what it needs to exist first.
 ### Implementation checklist
 
 - [ ] `ScoredObject.merge_key()` = `f"{(data_source or '')}|{schema_name}|{object_name.split(' (Segment')[0].strip()}".lower()` — reproduced byte-for-byte, including the missing-space case.
-- [ ] All 34 constants from 06.13 copied with the exact names and values; none retuned.
+- [ ] Every constant in 06.13 copied with the exact names and values; none retuned (including `KbRequiredObjectScore = 1000.0`).
 - [ ] `analyze_query` skip path returns `QueryAnalysis(complexity="simple")` and writes no cache entry.
 - [ ] `query_analysis_cache_key` uses the raw `f"{combined}|{existing}"` key up to 512 chars, SHA-256 above that; cache caps at 100 with full flush.
 - [ ] Complexity heuristic uses the 9 `COMPLEX_KEYWORDS` as space-padded lowercase substrings, ≥2 → `complex`, 1 → `moderate`, else `simple`.
@@ -5812,7 +5973,8 @@ Build in this order; each step lists what it needs to exist first.
 - [ ] `discovery_cache_key` = sorted-lowercased entities + complexity + top_k (+ `|cols:<sha256>` when columns exist); caller substitutes `[query]` when entities are empty; cap 256 with full flush.
 - [ ] `kb_direct` fires when the best few-shot distance ≤ 0.30 (outer `1 - score >= 0.70`), is uncapped, ignores pins, and falls back to `column_objects` when `_objects_from_sql` returns nothing.
 - [ ] `kb_gap_fill` fires for any remaining KB hit (distance ≤ 0.35), unions SQL tables with column evidence, caps at 8, ignores pins.
-- [ ] `_objects_from_sql` uses the `from|join` regex only (`_FROM_JOIN_OBJECT`), keeps the last two dotted parts, de-dupes case-insensitively, scores 0.9, `object_type="Table"`, no columns, no priority/required.
+- [ ] `_objects_from_sql(sql, required=False)` uses the `from|join` regex only (`_FROM_JOIN_OBJECT`), keeps the last two dotted parts, de-dupes case-insensitively, drops every object the catalog does not have (`catalog_has_object`, fails open), and scores `0.9` (or `KbRequiredObjectScore = 1000.0` with `required=True, priority=True`), `object_type="Table"`, no columns.
+- [ ] `_lock_example_objects` hard-locks every injected example's objects (`required=True, priority=True`) and is called from `_remember` (all branches) and from `force_kb_example`.
 - [ ] Dual-prong passes exactly five lists in the order `schema_vector, value_index, few_shot, data_group, bm25` and calls `rrf_merge(max_results=8)`.
 - [ ] `bm25.rank(query, schema_list + column_objects)` is skipped-or-empty when disabled and never contributes objects of its own.
 - [ ] Pins are prepended via `merge_and_dedup` **after** the column-evidence merge, only on the dual-prong path.
@@ -5835,7 +5997,7 @@ Build in this order; each step lists what it needs to exist first.
 - [ ] `markdown_lookup_for_objects` resolves the source folder by `_data-source.md` `source_id`, tries `<schema>.fn.<object>.md` first for functions, reads UTF-8 with `errors="ignore"`, and mutates `obj.markdown`.
 - [ ] `discovery.value_mappings` (value list, `top_k=3`) is attached to the result and rendered by the prompt builder, not by the hydrator.
 - [ ] BM25 stays off by default, uses `k1=1.2`, `b=0.75`, weight `0.5`, the `[A-Za-z0-9]+` lowercase tokenizer, `idf = ln((N - df + 0.5)/(df + 0.5) + 1)`, `avgdl` from the in-memory corpus, `dl = len(tokens) or 1`, and returns `[]` when disabled.
-- [ ] The effective allow-list passed to validation is `[f"{o.schema_name}.{o.object_name}" for o in discovery.objects]`; out-of-scope refs produce `TABLE_VALIDATION_ERROR: <refs>`.
+- [ ] The effective allow-list passed to validation is `_allowed_objects(discovery, stores)` — discovered objects plus catalog-confirmed example objects; out-of-scope refs produce `TABLE_VALIDATION_ERROR: <refs>`.
 - [ ] `DiscoveryResult.allowed_schemas` is left unpopulated (or documented) — nothing reads it.
 - [ ] Recovery: `_expand_missing` (search_objects top_k 5, per-column top_k 3 for the column sentinel only, semantic models top_k 2 inserted at index 0 with `schema_name="semantic"`, `object_type="SemanticModel"`, `required=True`, `score=1.0`), capped at `[:5]` at every call site and merged with `merge_and_dedup` (uncapped).
 - [ ] Missing-object counting trips `deterministic_missing_object` at the second occurrence of the same missing name; `MISSING_GROUP_MEMBER` triggers exactly one broadening retry that adds no new objects.
@@ -5846,28 +6008,33 @@ Build in this order; each step lists what it needs to exist first.
 
 ## 07 — Stage E: The Iterative Generation and Validation Loop
 
-Stage E is the reliability core of the backend: **generate → validate → repair**, bounded by 5 attempts and a 120 s wall-clock budget. It is implemented as one function, `run_attempt_loop`, in `app/core/orchestrator/attempts.py:79`, plus its private helpers (`_validate_candidate`, `_expand_missing`, `_merge_recovery`, `_bump_missing`, `_breaker_tripped`, `_compact_history`, `_fail`, `build_semantic_compile_error_feedback`, `_load_active_model`, the four critic runners). Everything else it uses is frozen machinery: interceptors, the SQL structural hash, the validator, and the error classifier.
+Stage E is the reliability core of the backend: **generate → validate → repair**, bounded by 5 attempts and a 120 s wall-clock budget. It is implemented as one generator function, `run_attempt_loop`, in `app/core/orchestrator/attempts.py:97`, plus its private helpers (`_validate_candidate`, `_allowed_objects`, `_expand_missing`, `_recovery_names`, `_resolve_catalog_names`, `_refresh_schema_context`, `_merge_recovery`, `_bump_missing`, `_breaker_tripped`, `_compact_history`, `_fail`, `build_semantic_compile_error_feedback`, `_load_active_model`, the four critic runners, and the `_note_semantic_payload` / `_accept_semantic_sql` closures). Everything else it uses is frozen machinery: interceptors, the SQL structural hash, the validator, and the error classifier.
 
 A re-implementation that changes the **order** of validation, the **counter semantics**, or the **failure result shape** will not be behaviourally identical. This section is the build spec for all three.
 
 ### 7.1 Caller contract
 
-Stage D (discovery/hydration) produces a `DiscoveryResult`; Stage E consumes it and returns a `BuiltInGenerateResult`. The single production caller is `generate_sql_builtin` (`app/core/orchestrator/builtin_sql_generator.py:294-310`):
+Stage D (discovery/hydration) produces a `DiscoveryResult`; Stage E consumes it and returns a `BuiltInGenerateResult`. The single production caller is `generate_sql_builtin` (`app/core/orchestrator/builtin_sql_generator.py:61`); its call site and pump are (`:344-370`):
 
 ```python
-result = run_attempt_loop(
+attempt_loop = run_attempt_loop(
     context,
     discovery,
     stores,
     llm,
-    lambda stage, msg, **kw: None,        # <-- emit is a NO-OP in production
+    emit,                                 # the caller's own SSE emitter — NOT a no-op
     time_budget_ms=MaxGenerationTimeMs,   # 120_000  (core/constants.py:7)
     semantic_mode=semantic_mode,          # False when target_language != "sql"
     started_at=started,                   # pipeline start, NOT loop start
     target_language=target_language,      # "sql" | "python" | "r" | "sas"
 )
+while True:                               # pump: the loop IS a generator
+    try:
+        yield next(attempt_loop)          # forwards ATTEMPT/CRITIC/DB_VALIDATION/RECOVERY
+    except StopIteration as loop_done:
+        result = loop_done.value
+        break
 record_generation_outcome(context, result.sql if result.success else None)
-yield emit(PipelineStage.ATTEMPT, f"Completed in {result.attempts} attempt(s)")
 payload = finalize(result)                 # apply_language_result + _to_http
 yield sse_result(payload, result.message or "")
 yield sse_done()
@@ -5877,10 +6044,10 @@ Consequences a re-implementation must preserve:
 
 | Fact | Evidence |
 |---|---|
-| `emit` is a **no-op lambda** at the call site, so `ATTEMPT`, `CRITIC`, `DB_VALIDATION` and `RECOVERY` status events produced inside the loop **never reach the SSE client**. The client only sees the closing `Completed in N attempt(s)`. | `builtin_sql_generator.py:294-307` |
-| `started_at` is the **pipeline** start time, so routing, pin validation, pre-analysis and discovery all consume the 120 s budget before the first attempt. | `builtin_sql_generator.py:68,302` |
-| Output post-processing runs **outside** the loop: `finalize()` calls `apply_language_result` (failure `/* … */` comment → `# …` lines for python/r) and `_to_http` (maps `explanation = result.explanation or result.message`, promotes `query_type` to `python_code`/`r_code`/`sas_code`). | `errors.py:54-72`, `builtin_sql_generator.py:83-85,515-539` |
-| The loop is **synchronous**. There is no cancellation token; a hung DB validation or LLM call is not interrupted mid-flight. | `attempts.py:79-606` |
+| The caller passes its own `emit` and pumps the generator, so the `ATTEMPT` (with `attempt`/`max_attempts`), `CRITIC`, `DB_VALIDATION` and `RECOVERY` status events the loop yields **do reach the SSE client**, in order and before the result. An earlier revision passed `lambda stage, msg, **kw: None` and emitted one closing `Completed in N attempt(s)` status instead; that callback and that closing status are both gone — `tests/parity/test_attempt_progress_streaming.py` is the regression guard. | `builtin_sql_generator.py:77-81,344-370` |
+| `started_at` is the **pipeline** start time, so routing, pin validation, pre-analysis and discovery all consume the 120 s budget before the first attempt. | `builtin_sql_generator.py:68,358` |
+| Output post-processing runs **outside** the loop: `finalize()` calls `apply_language_result` (failure `/* … */` comment → `# …` lines for python/r) and `_to_http` (maps `explanation = result.explanation or result.message`, promotes `query_type` to `python_code`/`r_code`/`sas_code`). | `errors.py:54-66`, `builtin_sql_generator.py:83-85,587-598` |
+| The loop is **synchronous**. There is no cancellation token; a hung DB validation or LLM call is not interrupted mid-flight. | `attempts.py:97-630` |
 
 ### 7.2 Signature, inputs, and locals
 
@@ -5900,7 +6067,7 @@ def run_attempt_loop(
 ) -> BuiltInGenerateResult
 ```
 
-Locals created once, before the loop (`attempts.py:91-121`) — reproduce these exactly, including the ones that look unused:
+Locals created once, before the loop (`attempts.py:126-184`) — reproduce these exactly, including the ones that look unused:
 
 | Local | Initial value | Role |
 |---|---|---|
@@ -5909,7 +6076,7 @@ Locals created once, before the loop (`attempts.py:91-121`) — reproduce these 
 | `python_interceptor` / `r_interceptor` / `sas_interceptor` | `PythonInterceptor()` / `RInterceptor()` / `SASInterceptor()` | script safety gates |
 | `validator` | `SqlValidator(context.request.source_id, context.dbms_type)` | DB authority |
 | `python_mode`, `r_mode`, `sas_mode` | `target_language == …` | mutually exclusive language flags |
-| `script_mode` | `python_mode or r_mode or sas_mode` | if true, `semantic_mode` is **forced to `False`** (`attempts.py:101-102`) |
+| `script_mode` | `python_mode or r_mode or sas_mode` | if true, `semantic_mode` is **forced to `False`** (`attempts.py:135-137`) |
 | `classifier` | `SqlErrorClassifier()` | error taxonomy |
 | `compiler` | `SemanticCompiler()` | SMQ → physical SQL |
 | `attempt_reports` | `[]` | `List[BuiltInAttemptReport]` |
@@ -5931,6 +6098,26 @@ Locals created once, before the loop (`attempts.py:91-121`) — reproduce these 
 | `semantic_retry` | `False`, reset per attempt | `True` when the attempt ended in a semantic retry (payload extraction, parse, or compile); the post-loop terminal classifier reads it (§9.10.3) |
 | `compiled_from_semantic_model` | `False`, reset per attempt | `True` when `sql` came from the compiler; passed to `_validate_candidate` to skip the object-scope rewrite (§9.10.5) |
 | `last_semantic_error` | `""` | the recorded semantic detail reported when the budget is exhausted |
+| `semantic_repeat_detected` | `False` | set by `_note_semantic_payload` when the current attempt's SMQ payload fingerprint equals the previous one; arms `loop_breaker = True` for the next iteration and the divergence kwargs on the next `llm.complete` (7.6) |
+| `previous_semantic_fingerprint` | `""` | the last non-empty `semantic_payload_fingerprint(raw, cleaned)`; cleared by `_accept_semantic_sql()` when an attempt ends in accepted SQL |
+
+Two closures are created here and called from the semantic branch only: `_note_semantic_payload(raw, cleaned)` (fingerprint the payload, set `semantic_repeat_detected`, and set `loop_breaker = True` on a repeat) and `_accept_semantic_sql()` (clear the repeat state when the payload was compiled or the reply was genuine SQL). Every semantic-retry `continue` calls the former; the fallback-to-SQL path and the successful compile call the latter.
+
+**Availability gate (runs before the loop, `attempts.py:155-172`).** With `semantic_mode` on and an active model loaded, the loop first asks whether the model can answer the question *at all*:
+
+```python
+if semantic_mode and active_model is not None:
+    analysis  = discovery.query_analysis
+    question  = context.combined_query or (context.request.query if context.request else "") or ""
+    tokens    = build_question_tokens(question_tokens(question), analysis.entities if analysis else None)
+    columns   = analysis.extracted_columns if analysis else None
+    if not can_answer(active_model, columns, tokens):
+        logger.info("Semantic mode disabled for this turn: model %s shares no vocabulary ...")
+        semantic_mode = False
+        context.grain_is_advisory = True
+```
+
+`can_answer` (`app/utils/query_vocabulary.py`) compares the question's tokens and the analysis's `extracted_columns` against the tokens of the model's measure and dimension names, excluding structural words (`count`, `name`, …) so they cannot create a match on their own. A model that shares **no** significant token with the question cannot compile anything — every attempt would end in `UNKNOWN_METRIC` and the turn would be reported as a semantic failure even though the physical schema could answer it — so the turn leaves semantic mode, marks `context.grain_is_advisory = True` (the carried grain is demoted to advisory text in the prompt, `prompts.py:79-101`), and continues on the physical-SQL path. It is a **routing** decision taken inside Stage E, and it **fails open**: a missing model, or a model whose vocabulary is empty, cannot be judged unfit and keeps semantic mode on. `semantic_json` is snapshotted from `active_model` *after* the gate (`attempts.py:173`), so a gated-off turn never inlines the model.
 
 Constants that must be copied verbatim (`app/core/constants.py`):
 
@@ -5939,14 +6126,15 @@ MaxRetries = 5                     # :6
 MaxGenerationTimeMs = 120_000      # :7
 NoDiscoveryTimeBudgetMs = 90_000   # :8   (used by the adjacent no-discovery path)
 SemanticCompilationTimeoutMs = 5_000          # :9   (enforced by compile_guarded)
-MissingObjectBreakThreshold = 2               # :38
-MissingGroupMemberValidationStatus = "MISSING_GROUP_MEMBER"   # :39
-MaxRecoveryExpansion = 5                      # :41
-HallucinationExitThreshold = 2                # :54
-HallucinationExitThresholdWithBreaker = 1     # :55   (unreachable — 7.9.3)
-PresencePenaltyAfterLoop = 0.4                # :56
-SemanticSmqParseRetryOnFailure = True         # :59   (declared, no reader)
-SemanticCompilationFallbackToRawSql = True    # :60  (via settings; only for replies with no SMQ payload)
+MissingObjectBreakThreshold = 2               # :41
+MissingGroupMemberValidationStatus = "MISSING_GROUP_MEMBER"   # :42
+MaxRecoveryExpansion = 5                      # :44
+HallucinationExitThreshold = 2                # :57
+HallucinationExitThresholdWithBreaker = 1     # :58   (unreachable — 7.9.3)
+PresencePenaltyAfterLoop = 0.4                # :59
+SemanticRepeatTemperature = 0.4               # :62   (temperature on the call after a repeated SMQ payload)
+SemanticSmqParseRetryOnFailure = True         # :65   (declared, no reader)
+SemanticCompilationFallbackToRawSql = True    # :66  (via settings; only for replies with no SMQ payload)
 OBJECT_SEARCH_VECTOR_SCORE_THRESHOLD = 0.50   # core/config.py:58
 ```
 
@@ -5961,11 +6149,11 @@ The invariant is machine-enforced by a source-order test — the re-implementati
 ```python
 # tests/parity/test_validation_order.py:6-14
 src = open(attempts_mod.__file__, encoding="utf-8").read()
-safety    = src.find("# 1. Safety")                      # attempts.py:253
-sentinels = src.find("# 2. Sentinels")                   # attempts.py:281
-structural= src.find("# 3. Structural hash")             # attempts.py:292
-db_pre    = src.find("# 4. Attempt-1 DB pre-check before critic")   # attempts.py:329
-critic    = src.find("emit(PipelineStage.CRITIC")        # attempts.py:342
+safety    = src.find("# 1. Safety")                      # attempts.py:427
+sentinels = src.find("# 2. Sentinels")                   # attempts.py:455
+structural= src.find("# 3. Structural hash")             # attempts.py:471
+db_pre    = src.find("# 4. Attempt-1 DB pre-check before critic")   # attempts.py:508
+critic    = src.find("emit(PipelineStage.CRITIC")        # attempts.py:523
 assert -1 not in {safety, sentinels, structural, db_pre, critic}
 assert safety < sentinels < structural < db_pre < critic
 ```
@@ -5983,19 +6171,19 @@ Step I/O summary (detail in 7.5–7.11):
 
 ### 7.4 Annotated pseudocode of the attempt loop
 
-Fenced block below is line-faithful to `app/core/orchestrator/attempts.py:123-429`. Line markers `# Lnnn` are the real source lines.
+Fenced block below mirrors `app/core/orchestrator/attempts.py:201-630`. Line markers `# Lnnn` are the real source lines at the revision this document describes.
 
 ```python
-for attempt in range(1, MaxRetries + 1):                      # L123  attempts 1..5
+for attempt in range(1, MaxRetries + 1):                      # L201  attempts 1..5
 
     # ---- budget gate (top of every iteration, before anything else) ----
-    elapsed_ms = int((time.time() - started_at) * 1000)        # L124
-    if elapsed_ms > time_budget_ms:                            # L125  strict >
+    elapsed_ms = int((time.time() - started_at) * 1000)        # L202
+    if elapsed_ms > time_budget_ms:                            # L203  strict >
         report = build_failure_report(
             summary="Generation timed out",
             resolution_plan=["Retry with a narrower question", "Pin specific tables"],
             attempts=attempt_reports,
-            final_guidance="The 120s generation budget was exceeded.",)          # L126-131
+            final_guidance="The 120s generation budget was exceeded.",)          # L204-209
         return build_detailed_failure_result(
             message="Generation timed out",
             error_category=ErrorCategory.TIMEOUT,              # "timeout"
@@ -6006,217 +6194,248 @@ for attempt in range(1, MaxRetries + 1):                      # L123  attempts 1
             hallucination_count=hallucination_count,
             agentic_retry_count=agentic_retry,
             failure_report=report,
-            source_id=context.request.source_id,)              # L132-143
+            source_id=context.request.source_id,)              # L210-221
 
-    emit(PipelineStage.ATTEMPT, f"Generation attempt {attempt}/{MaxRetries}", attempt=attempt)  # L145
+    yield emit(PipelineStage.ATTEMPT, f"Generation attempt {attempt}/{MaxRetries}",
+               attempt=attempt, max_attempts=MaxRetries)       # L223-228 (streamed by the caller)
 
     # ---- recovery drain (previous iteration queued objects and/or tripped the loop breaker) ----
-    if pending_recovery or loop_breaker:                       # L147
-        discovery.objects = _merge_recovery(discovery.objects, pending_recovery)   # L148
-        pending_recovery = []                                  # L149
-        loop_breaker = False                                   # L150
-        agentic_retry += 1                                     # L151
+    if pending_recovery or loop_breaker:                       # L230
+        recovered = list(pending_recovery)
+        for obj in recovered:                                  # L232-233
+            obj.required = True
+        discovery.objects = _merge_recovery(discovery.objects, recovered)   # L234
+        pending_recovery = []                                  # L235
+        loop_breaker = False                                   # L236
+        agentic_retry += 1                                     # L237
+        if recovered:                                          # L238  (the only retry that changes the pool)
+            _refresh_schema_context(discovery, context.request.source_id, context.dbms_type,
+                                    cap=RefinementPromptContextCap if context.is_refinement else None)
 
     # ---- prompt construction (fresh messages every attempt; no chat accumulation) ----
-    history_text = _compact_history(attempt_reports)           # L153
-    if python_mode:                                            # L154
+    history_text = _compact_history(attempt_reports)           # L249
+    if python_mode:                                            # L250
         system = build_python_system_prompt(context, discovery, attempt_history=history_text)
         user   = build_python_user_prompt(context)
-    elif r_mode:                                               # L157
+    elif r_mode:                                               # L253
         system = build_r_system_prompt(context, discovery, attempt_history=history_text)
         user   = build_r_user_prompt(context)
-    elif sas_mode:                                             # L160
+    elif sas_mode:                                             # L256
         system = build_sas_system_prompt(context, discovery, attempt_history=history_text)
         user   = build_sas_user_prompt(context)
-    else:                                                      # L163
+    else:                                                      # L259
         system = build_system_prompt(context, discovery,
                                      semantic=semantic_mode,
                                      semantic_models_json=semantic_json,
+                                     semantic_model=active_model if semantic_mode else None,
                                      attempt_history=history_text)
         user   = build_user_prompt(context)
-    last_prompt = system + "\n" + user                         # L172
+    last_prompt = system + "\n" + user                         # L269
 
-    # ---- presence penalty only AFTER a detected hallucination loop ----
-    penalty = PresencePenaltyAfterLoop if hallucination_count else None      # L173 (0.4 or None)
+    # ---- divergence kwargs: presence penalty after a hallucination loop OR a repeated SMQ payload ----
+    penalty = PresencePenaltyAfterLoop if (hallucination_count or semantic_repeat_detected) else None  # L273
+    call_kwargs: Dict[str, Any] = {}                           # L274
+    if penalty is not None:                                    # L275
+        call_kwargs["presence_penalty"] = penalty              # L276  (0.4)
+    if semantic_repeat_detected:                               # L277
+        call_kwargs["temperature"] = SemanticRepeatTemperature # L278  (0.4)
 
-    try:                                                       # L174
+    try:                                                       # L279
         raw = llm.complete(
             [{"role": "system", "content": system},
              {"role": "user",  "content": user}],
-            presence_penalty=penalty,)                         # L175-178
-    except Exception as exc:                                   # L179
+            **call_kwargs,)                                    # L280-283
+    except Exception as exc:                                   # L284
         attempt_reports.append(BuiltInAttemptReport(
             attempt_number=attempt, stage="generation",
-            what_was_tried="LLM call", why_it_failed=str(exc)))  # L180-182
-        continue                                               # L183  (counts as an attempt)
+            what_was_tried="LLM call", why_it_failed=str(exc)))  # L285-287
+        continue                                               # L288  (counts as an attempt)
 
-    raw_output = raw                                           # L218
-    if python_mode:   sql = extract_python_body(raw)           # L220-221
-    elif r_mode:      sql = extract_r_body(raw)                # L222-223
-    elif sas_mode:    sql = extract_sas_body(raw)              # L224-225
-    else:             sql = extract_sql_body(raw)              # L226-227
+    raw_output = raw                                           # L290
+    if python_mode:   sql = extract_python_body(raw)           # L291-292
+    elif r_mode:      sql = extract_r_body(raw)                # L293-294
+    elif sas_mode:    sql = extract_sas_body(raw)              # L295-296
+    else:             sql = extract_sql_body(raw)              # L297-298
 
-    if python_mode and sql:                                    # L228
+    if python_mode and sql:                                    # L299
         from app.utils.python_normalization import qualify_sql_in_python
-        known = [(o.schema_name, o.object_name) for o in discovery.objects]     # L231
-        sql = qualify_sql_in_python(sql, known)                # L232
-    elif r_mode and sql:                                       # L233
-        ...  qualify_sql_in_r(sql, known)                      # L237
-    elif sas_mode and sql:                                     # L238
-        ...  qualify_sql_in_sas(sql, known)                    # L242
-    cleaned_output = sql or ""                                 # L243
+        known = [(o.schema_name, o.object_name) for o in discovery.objects]     # L302
+        sql = qualify_sql_in_python(sql, known)                # L303
+    elif r_mode and sql:                                       # L304
+        ...  qualify_sql_in_r(sql, known)                      # L308
+    elif sas_mode and sql:                                     # L309
+        ...  qualify_sql_in_sas(sql, known)                    # L313
+    cleaned_output = sql or ""                                 # L314
 
     # ---- semantic mode: payload-class guard → compile → retry (see §9.10) ----
-    compiled_from_semantic_model = False                       # L247
-    semantic_retry = False                                     # L248
-    if semantic_mode:                                          # L249
-        smq_json = extract_smq_json(cleaned_output)            # L250
-        if not smq_json:                                       # L251
+    compiled_from_semantic_model = False                       # L321
+    semantic_retry = False                                     # L322
+    if semantic_mode:                                          # L323
+        smq_json = extract_smq_json(cleaned_output)            # L324
+        if not smq_json:                                       # L325
             # The guard is evaluated BEFORE the fallback policy: a payload is never
             # resurrected into SQL by SEMANTIC_COMPILATION_FALLBACK_TO_RAW_SQL.
-            if (looks_like_smq(raw_output)                     # L253
-                    or looks_like_smq(cleaned_output)          # L254
-                    or not semantic_compilation_fallback_to_raw_sql()):   # L255
+            if (looks_like_smq(raw_output)                     # L326-327
+                    or looks_like_smq(cleaned_output)          # L328
+                    or not semantic_compilation_fallback_to_raw_sql()):   # L329
                 last_semantic_error = "Semantic mode requires an SMQ JSON payload, ..."
                 attempt_reports.append(BuiltInAttemptReport(
                     attempt_number=attempt, stage="semantic_compilation",
                     what_was_tried="extract SMQ payload",
                     why_it_failed=last_semantic_error + valid_names_hint(active_model)))
-                semantic_retry = True                          # L269
-                continue                                       # L270
+                semantic_retry = True                          # L343
+                _note_semantic_payload(raw_output, cleaned_output)   # L344
+                continue                                       # L345
             # else: genuine SQL answer + fallback enabled → proceed as SQL
-        else:                                                  # L272
-            smq = parse_smq(smq_json)                          # L273
-            if smq is None:                                    # L274
+            _accept_semantic_sql()                             # L347  (clears the repeat state)
+        else:                                                  # L348
+            try:                                               # L349
+                smq = parse_smq(smq_json)                      # L350
+            except SmqShapeError as exc:                       # L351  element shape is wrong
+                last_semantic_error = build_smq_shape_mismatch_feedback(exc, smq_json, active_model)
+                attempt_reports.append(BuiltInAttemptReport(
+                    attempt_number=attempt, stage="semantic_compilation",
+                    what_was_tried="parse SMQ payload",
+                    why_it_failed=last_semantic_error))        # L355-362
+                semantic_retry = True                          # L363
+                _note_semantic_payload(raw_output, cleaned_output)   # L364
+                continue                                       # L365
+            if smq is None:                                    # L366
                 last_semantic_error = f"The SMQ payload could not be parsed. Received: {smq_json[:400]}"
                 attempt_reports.append(... why_it_failed=last_semantic_error
-                                        + valid_names_hint(active_model))       # L278-285
-                semantic_retry = True                          # L286
-                continue                                       # L287
-            if active_model is None:                           # L289
+                                        + valid_names_hint(active_model))       # L370-377
+                semantic_retry = True                          # L378
+                _note_semantic_payload(raw_output, cleaned_output)   # L379
+                continue                                       # L380
+            if active_model is None:                           # L382
                 last_semantic_error = "No active semantic model is available for this data source."
-                attempt_reports.append(...)                    # L291-298
-                semantic_retry = True                          # L299
-                continue                                       # L300
+                attempt_reports.append(...)                    # L384-391
+                semantic_retry = True                          # L392
+                _note_semantic_payload(raw_output, cleaned_output)   # L393
+                continue                                       # L394
             compiled = compiler.compile_guarded(smq, active_model, context.dbms_type,
-                                                timeout_ms=SemanticCompilationTimeoutMs)  # L302-307
-            if not compiled.success:                           # L308
+                                                timeout_ms=SemanticCompilationTimeoutMs)  # L396-401
+            if not compiled.success:                           # L402
                 last_semantic_error = build_semantic_compile_error_feedback(compiled.detail)
                 attempt_reports.append(... why_it_failed=last_semantic_error
-                                        + valid_names_hint(active_model))       # L310-317
-                semantic_retry = True                          # L318
-                continue                                       # L319
-            sql = compiled.sql                                 # L321
-            compiled_from_semantic_model = True                # L322
+                                        + valid_names_hint(active_model))       # L404-411
+                semantic_retry = True                          # L412
+                _note_semantic_payload(raw_output, cleaned_output)   # L413
+                continue                                       # L414
+            sql = compiled.sql                                 # L416
+            compiled_from_semantic_model = True                # L417
+            _accept_semantic_sql()                             # L418  (clears the repeat state)
 
-    if not sql:                                                # L324
+    if not sql:                                                # L420
         attempt_reports.append(BuiltInAttemptReport(
             attempt_number=attempt, stage="generation",
-            what_was_tried="LLM output", why_it_failed="empty"))                # L325-327
-        continue                                               # L328
-    last_sql = sql                                             # L251  (dead)
+            what_was_tried="LLM output", why_it_failed="empty"))                # L421-423
+        continue                                               # L424
+    last_sql = sql                                             # L425  (dead)
 
     # ================= 1. SAFETY =================
     user_write = bool(context.request.is_user_code and
                       any(w in (context.request.query or "").lower()
-                          for w in ("insert", "update", "delete", "drop")))     # L254
-    if python_mode:                                            # L255
+                          for w in ("insert", "update", "delete", "drop")))     # L428
+    if python_mode:                                            # L429
         ok, reason = python_interceptor.check(sql, user_requested_write=user_write)
         if ok:
-            for embedded in extract_sql_from_python(sql):      # L258
+            for embedded in extract_sql_from_python(sql):      # L432
                 ok, reason = interceptor.check(embedded, user_requested_write=user_write)
-                if not ok: break                               # L260-261
-    elif r_mode:      ... r_interceptor + extract_sql_from_r   # L262-268
-    elif sas_mode:    ... sas_interceptor + extract_sql_from_sas  # L269-275
+                if not ok: break                               # L434-435
+    elif r_mode:      ... r_interceptor + extract_sql_from_r   # L436-442
+    elif sas_mode:    ... sas_interceptor + extract_sql_from_sas  # L443-449
     else:
-        ok, reason = interceptor.check(sql, user_requested_write=user_write)     # L277
-    if not ok:                                                 # L278
+        ok, reason = interceptor.check(sql, user_requested_write=user_write)     # L451
+    if not ok:                                                 # L452
         return _fail(ErrorCategory.SAFETY, reason or "blocked", attempt,
                      attempt_reports, discovery, llm, started_at,
-                     hallucination_count, agentic_retry, context, sql)          # L279
+                     hallucination_count, agentic_retry, context, sql)          # L453
 
     # ================= 2. SENTINELS (reads RAW model output) =================
-    table_err, col_err = parse_validation_sentinels(raw)       # L282
-    if table_err or col_err:                                   # L283
+    table_err, col_err = parse_validation_sentinels(raw)       # L456
+    if table_err or col_err:                                   # L457
         objs = _expand_missing(table_err or col_err, stores,
                                exact_columns=(context.request and
                                               discovery.query_analysis.extracted_columns)
-                                             if col_err else None)              # L284
-        pending_recovery.extend(objs[:MaxRecoveryExpansion])    # L285  (≤5)
+                                             if col_err else None,
+                               sql=sql)                        # L458-463
+        pending_recovery.extend(objs[:MaxRecoveryExpansion])    # L464  (≤5)
         _bump_missing(missing_counts, missing_cat_counts,
-                      table_err or col_err, "sentinel")         # L286
-        if _breaker_tripped(missing_counts):                    # L287
-            circuit_breaker = True                              # L288  (then immediately returns)
+                      table_err or col_err, "sentinel")         # L465
+        if _breaker_tripped(missing_counts):                    # L466
+            circuit_breaker = True                              # L467  (then immediately returns)
             return _fail(ErrorCategory.DETERMINISTIC_MISSING_OBJECT,
                          table_err or col_err, attempt, attempt_reports, discovery,
                          llm, started_at, hallucination_count, agentic_retry,
-                         context, sql)                          # L289
-        continue                                                # L290  (NO attempt report here)
+                         context, sql)                          # L468
+        continue                                                # L469  (NO attempt report here)
 
     # ================= 3. STRUCTURAL HASH =================
     digest = (structural_python_hash(sql) if python_mode
               else structural_r_hash(sql) if r_mode
               else structural_sas_hash(sql) if sas_mode
-              else structural_sql_hash(sql))                    # L293-298
-    if digest in hash_history:                                  # L299
-        hallucination_count += 1                                # L300
-        loop_breaker = True                                     # L301
+              else structural_sql_hash(sql))                    # L472-477
+    if digest in hash_history:                                  # L478
+        hallucination_count += 1                                # L479
+        loop_breaker = True                                     # L480
         threshold = (HallucinationExitThresholdWithBreaker
-                     if circuit_breaker else HallucinationExitThreshold)  # L302
-        if hallucination_count >= threshold:                    # L303
+                     if circuit_breaker else HallucinationExitThreshold)  # L481
+        if hallucination_count >= threshold:                    # L482
             repeated = ("Repeated Python structure detected" if python_mode
                         else "Repeated R structure detected" if r_mode
                         else "Repeated SAS structure detected" if sas_mode
-                        else "Repeated SQL structure detected")  # L304-309
+                        else "Repeated SQL structure detected")  # L483-488
             return _fail("hallucination_loop", repeated, attempt, attempt_reports,
                          discovery, llm, started_at, hallucination_count,
-                         agentic_retry, context, sql)           # L310-322
-    hash_history.append(digest)                                 # L323  (after the check)
+                         agentic_retry, context, sql)           # L489-501
+    hash_history.append(digest)                                 # L502  (after the check)
 
-    allowed = [f"{o.schema_name}.{o.object_name}" for o in discovery.objects]   # L325
-    db_ok, db_err, db_missing = False, "", []                   # L326
-    skip_critic = False                                         # L327
+    allowed = _allowed_objects(discovery, stores)               # L504  discovered + catalog-confirmed example objects
+    db_ok, db_err, db_missing = False, "", []                   # L505
+    skip_critic = False                                         # L506
 
     # ================= 4. ATTEMPT-1 DB PRE-CHECK =================
-    if attempt == 1:                                            # L330
-        emit(PipelineStage.DB_VALIDATION, "Database pre-check (attempt 1)")     # L331
-        db_ok, db_err, db_missing = _validate_candidate(sql, validator, allowed, target_language)
+    if attempt == 1:                                            # L509
+        yield emit(PipelineStage.DB_VALIDATION, "Database pre-check (attempt 1)")   # L510
+        db_ok, db_err, db_missing = _validate_candidate(
+            sql, validator, allowed, target_language, compiled_from_semantic_model)  # L511-513
         if db_ok and ((not python_mode or extract_sql_from_python(sql))
                       and (not r_mode or extract_sql_from_r(sql))
-                      and (not sas_mode or extract_sql_from_sas(sql))):        # L333-337
-            skip_critic = True                                  # L338
+                      and (not sas_mode or extract_sql_from_sas(sql))):        # L514-518
+            skip_critic = True                                  # L519
 
     # ================= 5. LLM CRITIC =================
-    critic_result = CombinedValidationResult()                  # L340  (all-True defaults)
-    if not skip_critic:                                         # L341
-        emit(PipelineStage.CRITIC, "LLM critic")                # L342
+    critic_result = CombinedValidationResult()                  # L521  (all-True defaults)
+    if not skip_critic:                                         # L522
+        yield emit(PipelineStage.CRITIC, "LLM critic")          # L523
         if python_mode:   critic_result = _run_python_critic(llm, sql,
                                   discovery.schema_context_for_validation,
-                                  context.combined_query)       # L343-344
-        elif r_mode:      critic_result = _run_r_critic(...)    # L345-346
-        elif sas_mode:    critic_result = _run_sas_critic(...)  # L347-348
+                                  context.combined_query)       # L525
+        elif r_mode:      critic_result = _run_r_critic(...)    # L527
+        elif sas_mode:    critic_result = _run_sas_critic(...)  # L529
         else:             critic_result = _run_critic(llm, sql,
                                   discovery.schema_context_for_validation,
                                   context.combined_query,
-                                  semantic_json if semantic_mode else None)    # L349-350
-        if critic_result.canonical_question:                     # L351
-            canonical = critic_result.canonical_question         # L352
-        if not critic_result.requirements_satisfied:             # L353
+                                  semantic_json if semantic_mode else None)    # L531
+        if critic_result.canonical_question:                     # L532
+            canonical = critic_result.canonical_question         # L533
+        if not critic_result.requirements_satisfied:             # L534
             attempt_reports.append(BuiltInAttemptReport(
                 attempt_number=attempt, stage="critic",
                 what_was_tried="requirements",
-                why_it_failed=critic_result.feedback))           # L354-356
-            continue                                             # L357  (no recovery queued)
-        if not critic_result.schema_valid:                       # L358
+                why_it_failed=critic_result.feedback))           # L535-537
+            continue                                             # L538  (no recovery queued)
+        if not critic_result.schema_valid:                       # L539
             if (critic_result.status == MissingGroupMemberValidationStatus
-                    and not broadened):                          # L359
-                broadened = True                                 # L360
-                emit(PipelineStage.RECOVERY, "Broadened group-member recovery")  # L361
-                continue                                         # L362  (no new objects!)
+                    and not broadened):                          # L540
+                broadened = True                                 # L541
+                yield emit(PipelineStage.RECOVERY, "Broadened group-member recovery")  # L542
+                continue                                         # L543  (no new objects!)
             pending_recovery.extend(
-                _expand_missing(",".join(critic_result.missing_objects), stores)
-                [:MaxRecoveryExpansion])                         # L363
-            continue                                             # L364  (no attempt report)
+                _expand_missing(",".join(critic_result.missing_objects), stores, sql=sql)
+                [:MaxRecoveryExpansion])                         # L544
+            continue                                             # L545  (no attempt report)
 
     # ================= 6. DATABASE VALIDATION =================
     if not skip_critic:                                          # L366  (never re-validates a skip)
@@ -6224,8 +6443,8 @@ for attempt in range(1, MaxRetries + 1):                      # L123  attempts 1
         db_ok, db_err, db_missing = _validate_candidate(sql, validator, allowed,
                                                         target_language)         # L368
 
-    if db_ok:                                                    # L370
-        elapsed_ms = int((time.time() - started_at) * 1000)       # L371
+    if db_ok:                                                    # L553
+        elapsed_ms = int((time.time() - started_at) * 1000)       # L554
         return BuiltInGenerateResult(
             success=True,
             sql=sql,
@@ -6238,38 +6457,46 @@ for attempt in range(1, MaxRetries + 1):                      # L123  attempts 1
             agentic_retry_count=agentic_retry,
             canonical_question=canonical,
             context_text=last_prompt,
-            source_id=context.request.source_id,)                 # L372-385
+            source_id=context.request.source_id,)                 # L555-568
 
     # ---- retryable failure: classify, expand, count ----
-    last_error = db_err                                           # L387
-    category = classifier.classify(db_err)                        # L388  (stage defaults "validation")
-    missing_obj = classifier.extract_missing_object(db_err)       # L389
-    if missing_obj:                                               # L390
-        _bump_missing(missing_counts, missing_cat_counts, missing_obj, category)  # L391
-        pending_recovery.extend(_expand_missing(missing_obj, stores)[:MaxRecoveryExpansion])  # L392
-        if _breaker_tripped(missing_counts):                      # L393
-            circuit_breaker = True                                # L394  (then immediately returns)
+    last_error = db_err                                           # L570
+    category = classifier.classify(db_err)                        # L571  (stage defaults "validation")
+    missing_obj = classifier.extract_missing_object(db_err)       # L572
+    if missing_obj:                                               # L573
+        _bump_missing(missing_counts, missing_cat_counts, missing_obj, category)  # L574
+        pending_recovery.extend(_expand_missing(missing_obj, stores, sql=sql)[:MaxRecoveryExpansion])  # L575
+        if _breaker_tripped(missing_counts):                      # L576
+            circuit_breaker = True                                # L577  (then immediately returns)
             return _fail(ErrorCategory.DETERMINISTIC_MISSING_OBJECT, missing_obj,
                          attempt, attempt_reports, discovery, llm, started_at,
-                         hallucination_count, agentic_retry, context, sql)     # L395
-    if db_err.upper().startswith("TABLE_VALIDATION_ERROR"):       # L396
-        pending_recovery.extend(_expand_missing(db_err, stores)[:MaxRecoveryExpansion])  # L397
+                         hallucination_count, agentic_retry, context, sql)     # L578
+    if db_err.upper().startswith("TABLE_VALIDATION_ERROR"):       # L579
+        pending_recovery.extend(_expand_missing(db_err, stores, sql=sql)[:MaxRecoveryExpansion])  # L580
     attempt_reports.append(BuiltInAttemptReport(
         attempt_number=attempt,
         stage="db_validation",
         what_was_tried=sql[:500],                                 # truncated to 500 chars
         why_it_failed=db_err,
         recovery_action="expand missing objects",
-        candidate_objects=db_missing,))                           # L398-407
+        candidate_objects=db_missing,))                           # L581-590
 
 # ---- loop exhausted ----
-elapsed_ms = int((time.time() - started_at) * 1000)               # L409
+elapsed_ms = int((time.time() - started_at) * 1000)               # L592
+# An exhausted budget whose last attempt ended in a semantic retry is a *semantic* failure:
+# this guard is what stops the payload from ever reaching the SQL validator.
+if semantic_retry:                                                # L597
+    return _fail(ErrorCategory.SEMANTIC_COMPILATION,
+                 last_semantic_error or "Semantic compilation failed after all retries",
+                 MaxRetries, attempt_reports, discovery, llm, started_at,
+                 hallucination_count, agentic_retry, context,
+                 context_text=last_prompt)                        # L597-610
 report = build_failure_report(
     summary=last_error or "Failed after max retries",
     resolution_plan=["Review missing objects", "Add few-shot examples", "Pin tables"],
     attempts=attempt_reports,
     final_guidance="All generation attempts were exhausted.",
-    candidates=discovery.objects,)                                # L410-416
+    candidates=discovery.objects,)                                # L611-617
 return build_detailed_failure_result(
     message=last_error or "Failed after max retries",
     error_category=ErrorCategory.VALIDATION,                      # ALWAYS "validation" here
@@ -6281,34 +6508,34 @@ return build_detailed_failure_result(
     agentic_retry_count=agentic_retry,
     failure_report=report,
     source_id=context.request.source_id,
-    context_text=last_prompt,)                                    # L417-429
+    context_text=last_prompt,)                                    # L618-630
 ```
 
 ### 7.5 Message construction and prompt selection
 
-* Messages are rebuilt **from scratch on every attempt**; the conversation is exactly two messages, `[{role:"system"},{role:"user"}]` (`attempts.py:175-178`). Conversation accumulation does not exist — learning across attempts happens through the `ATTEMPT HISTORY` section of the system prompt.
-* `last_prompt = system + "\n" + user` (`attempts.py:172`) is the value returned as `context_text` on success and on final failure. `_fail` does **not** set `context_text`.
+* Messages are rebuilt **from scratch on every attempt**; the conversation is exactly two messages, `[{role:"system"},{role:"user"}]` (`attempts.py:280-283`). Conversation accumulation does not exist — learning across attempts happens through the `ATTEMPT HISTORY` section of the system prompt.
+* `last_prompt = system + "\n" + user` (`attempts.py:269`) is the value returned as `context_text` on success and on final failure. `_fail` does **not** set `context_text`.
 * Selection is by `target_language`, and the semantic variant exists only for SQL:
 
 | Mode | System builder | User builder | Line |
 |---|---|---|---|
-| `python` | `build_python_system_prompt(context, discovery, attempt_history=)` | `build_python_user_prompt(context)` | `attempts.py:154-156` |
-| `r` | `build_r_system_prompt(...)` | `build_r_user_prompt(context)` | `:157-159` |
-| `sas` | `build_sas_system_prompt(...)` | `build_sas_user_prompt(context)` | `:160-162` |
-| `sql`, semantic off | `build_system_prompt(context, discovery, semantic=False, semantic_models_json="[]", attempt_history=)` | `build_user_prompt(context)` | `:163-171` |
-| `sql`, semantic on | `build_system_prompt(..., semantic=True, semantic_models_json=semantic_json, ...)` | `build_user_prompt(context)` | `:163-171` |
+| `python` | `build_python_system_prompt(context, discovery, attempt_history=)` | `build_python_user_prompt(context)` | `attempts.py:251-252` |
+| `r` | `build_r_system_prompt(...)` | `build_r_user_prompt(context)` | `:254-255` |
+| `sas` | `build_sas_system_prompt(...)` | `build_sas_user_prompt(context)` | `:257-258` |
+| `sql`, semantic off | `build_system_prompt(context, discovery, semantic=False, semantic_models_json="[]", attempt_history=)` | `build_user_prompt(context)` | `:260-268` |
+| `sql`, semantic on | `build_system_prompt(..., semantic=True, semantic_models_json=semantic_json, semantic_model=active_model, ...)` | `build_user_prompt(context)` | `:260-268` |
 
-Scenario handling lives inside the prompt builders (`app/core/orchestrator/prompts.py:27-52`), not in the loop: `_scenario_section(context)` emits `GENERATION MODE\n<context.generation_mode.value>` plus, for `OPTIMIZATION`, `OPTIMIZATION_INSTRUCTIONS`; for `refinement`/`drill_down` (`is_refinement_scenario`), `REFINEMENT_INSTRUCTIONS`; and, when `context.filter_state_text` is set and != `"(none)"`, the `ACTIVE SESSION FILTERS` block + `SCOPE_GUARD`.
+Scenario handling lives inside the prompt builders (`app/core/orchestrator/prompts.py:61-148`), not in the loop: `_scenario_section(context)` emits `GENERATION MODE\n<context.generation_mode.value>` plus, for `OPTIMIZATION`, `OPTIMIZATION_INSTRUCTIONS`; for `refinement`/`drill_down` (`is_refinement_scenario`), `REFINEMENT_INSTRUCTIONS`; and, when `context.filter_state_text` is set and != `"(none)"`, the `ACTIVE SESSION FILTERS` block + `SCOPE_GUARD`.
 
 Three prompt layouts exist and must be reproduced with their exact section names:
 
-* **SQL (non-semantic)** — `DBMS CONTEXT (STRICT)` with the frozen dialect preamble (`PostgreSQL: LIMIT not TOP; CASE not IF(); explicit casts; schema-qualify objects.`), `QUERY ANALYSIS` (`complexity=…; keywords=…; entities=…`), `ACTIVE BUSINESS CONTEXT` (`discovery.active_groups.summary or '(none)'`), `KNOWLEDGE BASE EXAMPLES`, `VERIFIED DATA MAPPINGS` (`- {value} → {table}.{column}` or `(none)`), `AVAILABLE SCHEMAS` (`discovery.schema_context or discovery.selected_object_context`), `SUPPLEMENTARY SCHEMAS`, `ATTEMPT HISTORY` (`attempt_history or '(first attempt)'`), `OUTPUT FORMAT` (`Optionally include a /* reasoning */ block, then fenced SQL. Return a single valid {dbms} statement.`) (`prompts.py:83-112`).
-* **SQL (semantic)** — completely different, self-contained body: `DBMS CONTEXT (SEMANTIC MODE)` + `AVAILABLE SEMANTIC MODELS (JSON)\n{semantic_models_json}` + generation-mode/filter blocks + `SEMANTIC OUTPUT FORMAT (STRICT)`, ending with the instruction to reply with a fenced ```smq block containing `{"metrics":[],"dimensions":[],"filters":[],"timeframes":[]}` and *"Use only model names. No reasoning, view, or scripting sections."* (`prompts.py:63-76`). Note it does **not** include `ATTEMPT HISTORY`, schemas, examples, or mappings.
-* **Scripts** — Python/R/SAS variants share the skeleton `DBMS CONTEXT` / scenario section / `QUERY ANALYSIS` / `ACTIVE BUSINESS CONTEXT` / `KNOWLEDGE BASE EXAMPLES` / `VERIFIED DATA MAPPINGS` / `AVAILABLE SCHEMAS` / `SUPPLEMENTARY SCHEMAS` / `ATTEMPT HISTORY`, and append the language guideline block (`PYTHON_CODE_GUIDELINES` `prompts.py:191`, `R_CODE_GUIDELINES` `:303`, `SAS_CODE_GUIDELINES` `:414`). Few-shot formatting is language-aware: `_format_python_examples` keeps Python examples as `Python:` and labels SQL ones `SQL (embed via pd.read_sql)`; R uses `SQL (embed via dbGetQuery)`; SAS uses `SQL (CONNECTION TO)` (`prompts.py:276-288,387-399,494-506`).
+* **SQL (non-semantic)** — `DBMS CONTEXT (STRICT)` with the frozen dialect preamble (`PostgreSQL: LIMIT not TOP; CASE not IF(); explicit casts; schema-qualify objects.`), the scenario section, the optional grain line (`grain_prompt_line`), `QUERY ANALYSIS` (`complexity=…; keywords=…; entities=…`), `ACTIVE BUSINESS CONTEXT` (`discovery.active_groups.summary or '(none)'`), `AUTHORIZED OBJECT SCOPE`, `KNOWLEDGE BASE EXAMPLES`, `VERIFIED DATA MAPPINGS` (`- {value} → {table}.{column}` or `(none)`), `AVAILABLE SCHEMAS` (`discovery.schema_context or discovery.selected_object_context`), `SUPPLEMENTARY SCHEMAS`, `ZERO HALLUCINATION POLICY`, `ATTEMPT HISTORY` (`attempt_history or '(first attempt)'`), `OUTPUT FORMAT` (a `/* Reasoning: … */` block followed by a fenced ```sql block, both shown as a literal layout in the prompt; `Return a single valid {dbms} statement.`) (`prompts.py:187-231`).
+* **SQL (semantic)** — completely different, self-contained body: `DBMS CONTEXT (SEMANTIC MODE)` + `AVAILABLE SEMANTIC MODELS (JSON)\n{semantic_models_json}` + generation-mode/filter blocks + the optional grain line + `ATTEMPT HISTORY` + `SEMANTIC OUTPUT FORMAT (STRICT)`, the last built by `_semantic_output_format(semantic_model)` and ending with the instruction to reply with a fenced ```smq block containing `{"metrics":["<metric_name>"],"dimensions":["<dimension_name>"],"filters":[],"timeframes":[]}` and *"Use only model names"*-style rules (`prompts.py:160-178`). Note it does **not** include schemas, examples, or mappings.
+* **Scripts** — Python/R/SAS variants share the skeleton `DBMS CONTEXT` / scenario section / `QUERY ANALYSIS` / `ACTIVE BUSINESS CONTEXT` / `AUTHORIZED OBJECT SCOPE` / `KNOWLEDGE BASE EXAMPLES` / `VERIFIED DATA MAPPINGS` / `AVAILABLE SCHEMAS` / `SUPPLEMENTARY SCHEMAS` / `ATTEMPT HISTORY`, and append the language guideline block (`PYTHON_CODE_GUIDELINES` `prompts.py:314`, `R_CODE_GUIDELINES` `:428`, `SAS_CODE_GUIDELINES` `:541`). Few-shot formatting is language-aware: `_format_python_examples` keeps Python examples as `Python:` and labels SQL ones `SQL (embed via pd.read_sql)`; R uses `SQL (embed via dbGetQuery)`; SAS uses `SQL (CONNECTION TO)` (`prompts.py:401-413,514-526,623-635`).
 
-User prompts are identical in shape for all languages: `User request:\n{context.combined_query or req.query}`, then optional `Existing SQL|Python or SQL|R or SQL|SAS or SQL:\n{existing_code}`, then `Error to fix:\n{error_message}`, then `Pinned objects: a, b` (`prompts.py:168-177,264-273,375-384,482-491`).
+User prompts are identical in shape for all languages: `User request:\n{context.combined_query or req.query}`, then optional `Existing SQL|Python or SQL|R or SQL|SAS or SQL:\n{existing_code}`, then `Error to fix:\n{error_message}`, then `Pinned objects: a, b` (`prompts.py:291-300,389-398,502-511,611-620`).
 
-`_compact_history` — the only cross-attempt learning channel (`attempts.py:571-580`):
+`_compact_history` — the only cross-attempt learning channel (`attempts.py:923-932`):
 
 ```python
 def _compact_history(reports: List[BuiltInAttemptReport]) -> str:
@@ -6325,17 +6552,24 @@ def _compact_history(reports: List[BuiltInAttemptReport]) -> str:
 
 Exactly one full-JSON record (the most recent) plus one compact line per older record. On attempt 1 the history is `""` → `(first attempt)`.
 
-### 7.6 Presence-penalty insertion after a detected hallucination loop
+### 7.6 Divergence kwargs: presence penalty and repeat temperature
 
 ```python
-penalty = PresencePenaltyAfterLoop if hallucination_count else None      # attempts.py:173
-raw = llm.complete([...], presence_penalty=penalty)                      # attempts.py:175-178
+penalty = PresencePenaltyAfterLoop if (hallucination_count or semantic_repeat_detected) else None  # attempts.py:273
+call_kwargs = {}                                                         # attempts.py:274
+if penalty is not None:
+    call_kwargs["presence_penalty"] = penalty                            # attempts.py:275-276  (0.4)
+if semantic_repeat_detected:
+    call_kwargs["temperature"] = SemanticRepeatTemperature               # attempts.py:277-278  (0.4)
+raw = llm.complete([...], **call_kwargs)                                 # attempts.py:279-283
 ```
 
-* `hallucination_count == 0` → `presence_penalty` is **omitted from the kwargs entirely** (`llm_client.py:34-35` only adds the key when not `None`).
-* After the first duplicate structural digest (`hallucination_count == 1`, `attempts.py:300`), every subsequent attempt in that call is sent `presence_penalty=0.4`.
-* The penalty is *never* sent on the first attempt, and *never* reset once set.
-* The critic call never receives a presence penalty.
+* Two independent triggers arm the penalty: a duplicate structural digest (`hallucination_count > 0`) **or** a repeated SMQ payload (`semantic_repeat_detected`, set by `_note_semantic_payload` — see 7.6, 7.8 and 7.17 R6b).
+* With neither trigger, both keys are **omitted from the kwargs entirely** (`llm_client.py:34-35` only adds `presence_penalty` when not `None`; `call_kwargs` is empty), so the provider sees the defaults `temperature=0.0`, `max_tokens=2048`.
+* After the first duplicate structural digest (`hallucination_count == 1`, `attempts.py:479`), every subsequent attempt in that call is sent `presence_penalty=0.4`.
+* A **repeated semantic payload** additionally sends `temperature=SemanticRepeatTemperature` (0.4, `app/core/constants.py:62`) — a presence penalty alone does not move a provider pinned to a low default temperature. The repeat is only known *after* the second identical payload, so the bump lands on the call that follows it, never on the first two.
+* Neither value is *reset* once set for the structural-digest trigger (the penalty stays for the rest of the call); the semantic-repeat state is cleared by `_accept_semantic_sql()` as soon as an attempt ends in accepted SQL.
+* The critic call never receives either parameter (it goes through `complete_json` with no kwargs).
 
 > ⚠️ Unverified: with the shipped default LLM service the penalty may not reach the provider at all — see 7.12.2 (`LlmClient.complete` drops `presence_penalty` whenever the resolved service has no `.client` attribute, which is the case for `get_llm_service()` → `LiteLLMService`). Preserve both the call contract *and* this transport behaviour if you want byte-identical provider traffic.
 
@@ -6346,22 +6580,27 @@ raw = llm.complete([...], presence_penalty=penalty)                      # attem
 ```python
 FENCE_SQL = re.compile(r"```(?:sql|tsql|smq)?\s*([\s\S]*?)```", re.IGNORECASE)   # regexes.py:18
 
-def strip_markdown_fences(text):
-    if not text: return ""
+def strip_markdown_fences(text: str) -> str:          # regexes.py:77-83
+    if not text:
+        return ""
     match = FENCE_SQL.search(text)
-    return match.group(1).strip() if match else text.strip()
+    if match:
+        return match.group(1).strip()
+    return text.strip()
 
-def strip_reasoning_header(sql):
-    if not sql: return ""
+def strip_reasoning_header(sql: str) -> str:          # sql_normalization.py:23-31
+    if not sql:
+        return ""
     text = sql.strip()
     if text.startswith("/*"):
         end = text.find("*/")
         if end != -1:
-            text = text[end + 2:].strip()
+            text = text[end + 2 :].strip()
     return text
 
-def extract_sql_body(text):
-    return strip_reasoning_header(strip_markdown_fences(text))
+def extract_sql_body(text: str) -> str:               # sql_normalization.py:34-36
+    fenced = strip_markdown_fences(text)
+    return strip_reasoning_header(fenced)
 ```
 
 The fence is taken with `search` (first match anywhere) and the reasoning header is stripped only when the text **begins** with `/*`.
@@ -6377,7 +6616,7 @@ The fence is taken with `search` (first match anywhere) and the reasoning header
 **Schema qualification of embedded SQL** runs immediately after extraction, for scripts only, using the discovered objects as the name→schema map (`default_schema="dbo"`, skip `#temp` and `sys`/`information_schema`, only bare `FROM|JOIN|INTO|UPDATE` names are touched; `FROM x IMPORT` is left alone):
 
 ```python
-known = [(o.schema_name, o.object_name) for o in discovery.objects]   # attempts.py:196
+known = [(o.schema_name, o.object_name) for o in discovery.objects]   # attempts.py:302
 sql = qualify_sql_in_python(sql, known)   # / qualify_sql_in_r / qualify_sql_in_sas
 ```
 
@@ -6385,7 +6624,7 @@ sql = qualify_sql_in_python(sql, known)   # / qualify_sql_in_r / qualify_sql_in_
 
 ### 7.8 Semantic-mode branch (payload-class guard → compile → retry → fallback)
 
-Order inside `if semantic_mode:` (`attempts.py:241-322`). The governing rule, and the one this
+Order inside `if semantic_mode:` (`attempts.py:323-418`). The governing rule, and the one this
 branch exists to enforce:
 
 > **A response that carries an SMQ payload is never executed as SQL, whatever the fallback setting says.**
@@ -6400,36 +6639,53 @@ branch exists to enforce:
    The reason is *"Semantic mode requires an SMQ JSON payload, but the response could not be read as one."*
 3. **No payload and none SMQ-shaped and the fallback is on** → the loop proceeds with the body extracted
    at `attempts.py:226-227`, i.e. the genuine-SQL path.
-4. **Payload extracted** → `smq = parse_smq(smq_json)`; `None` ⇒ report `what_was_tried="parse SMQ payload"`,
-   `why_it_failed = "The SMQ payload could not be parsed. Received: {smq_json[:400]}" + valid_names_hint(...)`,
-   `semantic_retry = True`, `continue`.
+4. **Payload extracted** → `smq = parse_smq(smq_json)` inside a `try`, and **two** failure shapes are
+   distinguished (`attempts.py:348-380`):
+   * `SmqShapeError` (the envelope parsed but an element has the wrong shape, e.g.
+     `[{"metric":"row_count"}]`) ⇒ `last_semantic_error = build_smq_shape_mismatch_feedback(exc,
+     smq_json, active_model)`, which names the offending index (`metrics[0]`) and the accepted
+     aliases, then `valid_names_hint`. `smq_json` is **not** truncated in this branch.
+   * `smq is None` (the payload is not an SMQ at all) ⇒ report `what_was_tried="parse SMQ payload"`,
+     `why_it_failed = "The SMQ payload could not be parsed. Received: {smq_json[:400]}" + valid_names_hint(...)`.
+   Both set `semantic_retry = True`, call `_note_semantic_payload(raw_output, cleaned_output)` and
+   `continue`.
 5. **No active model** → report `what_was_tried="compile SMQ"`, `why_it_failed="No active semantic model is
    available for this data source."`, `semantic_retry = True`, `continue`.
 6. **Compile** → `compiler.compile_guarded(smq, active_model, context.dbms_type,
    timeout_ms=SemanticCompilationTimeoutMs)`. `result.success == False` ⇒ report
    `why_it_failed = build_semantic_compile_error_feedback(result.detail) + valid_names_hint(active_model)`,
    `semantic_retry = True`, `continue`.
-7. **Success** → `sql = result.sql`, `compiled_from_semantic_model = True`.
+7. **Success** → `sql = result.sql`, `compiled_from_semantic_model = True`, `_accept_semantic_sql()` (clears the repeat state).
 
-`extract_smq_json` / `parse_smq` / `looks_like_smq` / `valid_names_hint` live in
-`app/services/semantic_smq.py` (`:107`, `:226`, `:203`, `:255`) — full specification in §9.10.1–§9.10.3.
+Every semantic-retry exit path (steps 2, 4, 5, 6) also calls
+`_note_semantic_payload(raw_output, cleaned_output)` **before** `continue`: it fingerprints the reply
+with `semantic_payload_fingerprint` (SHA-256 upper hex of the fence/whitespace-normalized JSON, key
+order preserved) and, when that fingerprint equals the previous one, sets `semantic_repeat_detected`
+and `loop_breaker = True`. The next attempt therefore takes the divergent rediscovery branch **and**
+carries the divergence kwargs of 7.6. `_accept_semantic_sql()` clears the state on the two paths that
+end in accepted SQL.
 
-`SemanticCompiler` (`app/services/semantic_compiler.py:112`) is deterministic and raises
-`SemanticCompilationError(code, message)` (`:64`, `str(e)` == `"{code}: {message}"`) with codes
-`UNKNOWN_METRIC` (`:182`), `UNKNOWN_DIMENSION` (`:189`), `EMPTY_REQUEST` (`:171`),
-`MISSING_JOIN_PATH` (`:200`, `:338`/`:343`), `INCOMPATIBLE_DIMENSIONS` (`:311`). `compile_guarded`
-(`:124`) enforces `timeout_ms` on a worker thread; expiry returns
+`extract_smq_json` / `looks_like_smq` / `parse_smq` / `valid_names_hint` live in
+`app/services/semantic_smq.py` (`:127`, `:225`, `:418`, `:486`); `SmqShapeError` is `:57`,
+`semantic_payload_fingerprint` `:439`, `build_smq_shape_mismatch_feedback` `:460` — full
+specification in §9.10.1–§9.10.3.
+
+`SemanticCompiler` (`app/services/semantic_compiler.py:122`) is deterministic and raises
+`SemanticCompilationError(code, message)` (`:74`, `str(e)` == `"{code}: {message}"`) with codes
+`EMPTY_REQUEST` (`:182`), `UNKNOWN_METRIC` (`:196`), `UNKNOWN_DIMENSION` (`:209`),
+`MISSING_JOIN_PATH` (`:224`, `:362`/`:367`), `INCOMPATIBLE_DIMENSIONS` (`:335`). `compile_guarded`
+(`:134-168`) enforces `timeout_ms` on a worker thread; expiry returns
 `SmqCompileResult(detail="COMPILATION_TIMEOUT: …")` and is treated as a semantic retry.
 Compilation itself is a synchronous ordered walk over the model's join graph (§9.10.4).
 
-`SmqPayload` (`app/models/pipeline.py:318-322`) is deliberately lenient — all four fields default to empty
+`SmqPayload` (`app/models/pipeline.py:322-327`) is deliberately lenient — all four fields default to empty
 lists, `filters`/`timeframes` are `List[Dict[str, Any]]` — so a *structurally* SMQ payload with a bad field
 type reaches the compiler rather than failing extraction; the compiler rejects a payload that requests
 neither metrics nor dimensions with `EMPTY_REQUEST`.
 
 ### 7.9 Step 1 — safety interceptor
 
-`user_write` is computed once per attempt (`attempts.py:254`):
+`user_write` is computed once per attempt (`attempts.py:428`):
 
 ```python
 user_write = bool(context.request.is_user_code and
@@ -6465,7 +6721,7 @@ def check(sql, user_requested_write=False):
 
 `_strip` order matters: block comments → line comments → string literals replaced with `''`. So `SELECT 'DROP TABLE x'` passes, `DROP /*c*/ TABLE x` is blocked, and `CREATE TABLE #tmp (id int)` is allowed even without a user write request.
 
-**Script paths** — the script interceptor runs first, then each extracted embedded SQL statement is passed through `QueryInterceptor` with the same `user_write` flag; the first failure breaks and its reason is used (`attempts.py:255-275`).
+**Script paths** — the script interceptor runs first, then each extracted embedded SQL statement is passed through `QueryInterceptor` with the same `user_write` flag; the first failure breaks and its reason is used (`attempts.py:429-449`).
 
 | Language | Gate | Dangerous regex | Write regex | Extra rule |
 |---|---|---|---|---|
@@ -6479,7 +6735,7 @@ Each script interceptor's `_strip` removes its own comment/string forms before m
 
 ### 7.10 Step 2 — validation sentinels in model output
 
-Sentinels are scanned in the **raw** model response (`parse_validation_sentinels(raw)`, `attempts.py:282`) — *not* in the extracted SQL. The tokens are fixed strings the models are instructed to emit; verbatim regexes (`app/utils/regexes.py:26-27`):
+Sentinels are scanned in the **raw** model response (`parse_validation_sentinels(raw)`, `attempts.py:456`) — *not* in the extracted SQL. The tokens are fixed strings the models are instructed to emit; verbatim regexes (`app/utils/regexes.py:26-27`):
 
 ```python
 SENTINEL_TABLE  = re.compile(r"TABLE_VALIDATION_ERROR[:\s]+([^\n;]+)",  re.IGNORECASE)
@@ -6491,7 +6747,7 @@ SENTINEL_COLUMN = re.compile(r"COLUMN_VALIDATION_ERROR[:\s]+([^\n;]+)", re.IGNOR
 | `TABLE_VALIDATION_ERROR:` | group(1), `.strip()`; stops at newline or `;` | table-level miss | `"TABLE_VALIDATION_ERROR: Cannot find table [table_name]"` (`generation_service.py:2588,2684`; `sql_validator.py:69` emits it too) |
 | `COLUMN_VALIDATION_ERROR:` | group(1), `.strip()` | column-level miss | `"COLUMN_VALIDATION_ERROR: Cannot find column [column_name]"` (`generation_service.py:2587,2683`, `llm_service.py:659,1310`) |
 
-Precedence and effects (`attempts.py:283-290`):
+Precedence and effects (`attempts.py:456-469`):
 
 1. Token passed to recovery is `table_err or col_err` (table wins).
 2. `exact_columns` is `discovery.query_analysis.extracted_columns` **only when `col_err` is truthy** (the guard is written `context.request and discovery.query_analysis.extracted_columns if col_err else None`, which evaluates to the column list whenever `col_err` is set).
@@ -6502,7 +6758,7 @@ Precedence and effects (`attempts.py:283-290`):
 
 ### 7.11 Step 3 — structural hash hallucination detection
 
-Digest selection (`attempts.py:293-298`) → `structural_*_hash(sql)` where `sql` is the **extracted, schema-qualified** body:
+Digest selection (`attempts.py:472-477`) → `structural_*_hash(sql)` where `sql` is the **extracted, schema-qualified** body:
 
 | Mode | Function | Normalization before SHA-256 |
 |---|---|---|
@@ -6521,14 +6777,15 @@ _ALIAS          = re.compile(r"\b(AS)\s+[A-Za-z_][\w]*", re.IGNORECASE)
 _WHITESPACE     = re.compile(r"\s+")
 ```
 
-Counting semantics (`attempts.py:299-323`):
+Counting semantics (`attempts.py:478-502`):
 
 * The check is `if digest in hash_history` **before** appending; `hash_history` is never truncated, so it is a set-membership test over all attempts of the call.
 * A duplicate increments `hallucination_count`, sets `loop_breaker = True` (→ recovery merge + `agentic_retry += 1` on the next iteration) and falls through to the rest of the pipeline — a duplicate is a **warning**, not an immediate abort.
 * Exit when `hallucination_count >= threshold`, with `threshold = HallucinationExitThresholdWithBreaker (1) if circuit_breaker else HallucinationExitThreshold (2)`.
 * Because `circuit_breaker` is only ever set immediately before a `return` (see 7.9.3), the effective threshold is **always 2**.
-* Exit message: `"Repeated SQL structure detected"` / `"Repeated Python structure detected"` / `"Repeated R structure detected"` / `"Repeated SAS structure detected"` (exact strings, `attempts.py:304-309`).
-* Exit category is the **literal string** `"hallucination_loop"` — *not* a member of `ErrorCategory` (`attempts.py:311`).
+* Exit message: `"Repeated SQL structure detected"` / `"Repeated Python structure detected"` / `"Repeated R structure detected"` / `"Repeated SAS structure detected"` (exact strings, `attempts.py:483-488`).
+* Exit category is the **literal string** `"hallucination_loop"` — *not* a member of `ErrorCategory` (`attempts.py:490`).
+* A duplicate is not the only thing that sets `loop_breaker`: a repeated **SMQ payload** does too (7.8, 7.17 R6b), and that path never increments `hallucination_count`.
 * On exit, no `BuiltInAttemptReport` is appended: reports do **not** record the loop exit.
 
 ### 7.12 Step 4 — attempt-1 DB pre-check, and step 6 — database validation
@@ -6536,13 +6793,15 @@ Counting semantics (`attempts.py:299-323`):
 Both call the same helper; only the trigger and the `emit` text differ.
 
 ```python
-def _validate_candidate(code, validator, allowed, target_language):    # attempts.py:500-520
+def _validate_candidate(code, validator, allowed, target_language,
+                        compiled_from_semantic_model=False):    # attempts.py:742-772
     extractors = {"python": (syntax_check_python, extract_sql_from_python),
                   "r":      (syntax_check_r,      extract_sql_from_r),
                   "sas":    (syntax_check_sas,    extract_sql_from_sas)}
     pair = extractors.get(target_language)
     if not pair:
-        return validator.validate(code, allowed)       # SQL: straight to the DB
+        return validator.validate(                         # SQL: straight to the DB
+            code, allowed, skip_object_scope=compiled_from_semantic_model)
     syntax_check, extract_sql = pair
     ok, err = syntax_check(code)
     if not ok:
@@ -6551,54 +6810,73 @@ def _validate_candidate(code, validator, allowed, target_language):    # attempt
     if not sqls:
         return True, "", []                            # script with no SQL ALWAYS passes
     for sql in sqls:
-        db_ok, db_err, db_missing = validator.validate(sql, allowed)
+        db_ok, db_err, db_missing = validator.validate(
+            sql, allowed, skip_object_scope=compiled_from_semantic_model)
         if not db_ok:
             return False, db_err, db_missing or []
     return True, "", []
 ```
 
+The fifth parameter is the `compiled_from_semantic_model` flag the loop sets when `sql` came from the
+compiler (7.8 step 7). It is forwarded as `skip_object_scope`, which suppresses the client-side
+allow-list rewrite **inside** `SqlValidator.validate`, so a semantic-model SQL statement is not
+reported as a missing object when the model owns tables discovery never selected (§9.10.5).
+
 Script syntax gates: Python `compile(code, "<generated>", "exec")` → `"Python syntax error: {msg} (line {lineno})"` / `"Python compile error: {exc}"` (`python_normalization.py:214-221`); R comment-stripped, string-blanked delimiter balance → `"R syntax error: unmatched '{ch}'"` / `"unclosed '{stack[-1]}'"`, empty → `"Empty R code"` (`r_normalization.py:257-277`); SAS comment/string-blanked `()`/`[]` balance plus `/*` vs `*/` count → `"SAS syntax error: unmatched comment"` / `"unmatched '{ch}'"` / `"unclosed '{stack[-1]}'"`, empty → `"Empty SAS code"` (`sas_normalization.py:202-219`).
 
-**When the pre-check runs** (`attempts.py:329-338`): only on `attempt == 1`, *before* the critic, emitting `PipelineStage.DB_VALIDATION` with message `"Database pre-check (attempt 1)"`. If it succeeds **and** the mode-specific extraction conditions hold, `skip_critic = True`. For plain SQL all three `(not X_mode or …)` guards are vacuously true, so a first-attempt DB-valid statement **never reaches the LLM critic**. For script mode the corresponding `extract_sql_from_*` result must be non-empty, i.e. a script with no embedded SQL always goes through the critic even when the syntax check passed.
+**When the pre-check runs** (`attempts.py:508-519`): only on `attempt == 1`, *before* the critic, emitting `PipelineStage.DB_VALIDATION` with message `"Database pre-check (attempt 1)"`. If it succeeds **and** the mode-specific extraction conditions hold, `skip_critic = True`. For plain SQL all three `(not X_mode or …)` guards are vacuously true, so a first-attempt DB-valid statement **never reaches the LLM critic**. For script mode the corresponding `extract_sql_from_*` result must be non-empty, i.e. a script with no embedded SQL always goes through the critic even when the syntax check passed.
 
-**What the pre-check skips**: the `if not skip_critic:` guard at `attempts.py:366-368` means the DB validation is **not repeated** after the critic when the pre-check already ran and passed — but the pre-check is only run once per call, so attempts 2-5 always validate after the critic.
+**What the pre-check skips**: the `if not skip_critic:` guard at `attempts.py:547-551` means the DB validation is **not repeated** after the critic when the pre-check already ran and passed — but the pre-check is only run once per call, so attempts 2-5 always validate after the critic.
 
 #### 7.12.1 `SqlValidator` per dialect
 
-`SqlValidator.__init__(source_id, dbms)` (`app/services/sql_validator.py:13-16`) stores `source_id`, `dbms`, and its own `SqlErrorClassifier`.
+`SqlValidator.__init__(source_id, dbms)` (`app/services/sql_validator.py:12-15`) stores `source_id`, `dbms`, and its own `SqlErrorClassifier`.
 
-`validate(sql, allowed_objects)` (`:18-30`): empty/whitespace → `(False, "Empty SQL query generated", [])`; dialect dispatch — `"sql server"`, `"mssql"` **or empty string** → SQL Server path, otherwise ODBC path; then, only when the DB check passed and `allowed_objects` is non-empty, the allow-list scope check can still turn the result into a failure.
+`validate(sql, allowed_objects, skip_object_scope=False)` (`:17-38`): empty/whitespace → `(False, "Empty SQL query generated", [])`; dialect dispatch — `"sql server"`, `"mssql"` **or empty string** → SQL Server path, otherwise ODBC path; then, only when the DB check passed, `allowed_objects` is non-empty **and** `skip_object_scope` is false, the allow-list scope check can still turn the result into a failure (its `missing` list is the one the DB path produced).
 
-**SQL Server** (`_sql_server`, `:32-38` → `validate_sql_with_db`, `app/services/validation_service.py:24-88`):
+**SQL Server** (`_sql_server`, `:40-46` → `validate_sql_with_db`, `app/services/validation_service.py:24-88`):
 
 ```python
-engine = get_database_engine(source_id)                  # cached SQLAlchemy engine, core/database.py:109-135
-with engine.connect() as connection:
-    with connection.begin():
-        connection.execute(text("SET NOEXEC ON"))        # parse-only mode
-        try:
-            connection.execute(text(sql))
-            is_valid = True
-        except Exception as e:
-            raw_error = str(e)
-            m = re.search(r'\[SQL Server\](.*?)(\(\d+\))', raw_error)
-            simplified_error = m.group(1).strip() if m else raw_error
-            obj = re.search(r"Invalid object name '([^']+)'.", simplified_error)   # -> missing table
-            col = re.search(r"Invalid column name '([^']+)'.", simplified_error)   # -> missing column
-        finally:
-            connection.execute(text("SET NOEXEC OFF"))   # ALWAYS, even on failure
-except Exception as e:
-    return False, f"Database connection failed during validation: {str(e)}", []
-return is_valid, error_msg, missing_objects
+def validate_sql_with_db(sql, source_id=None):                    # validation_service.py:24
+    if not sql or sql.strip() == "":
+        return False, "Empty SQL query generated", []
+    engine = get_database_engine(source_id)              # cached SQLAlchemy engine, core/database.py:109-135
+    error_msg, missing_objects, is_valid = "", [], False
+    try:
+        with engine.connect() as connection:
+            with connection.begin():
+                connection.execute(text("SET NOEXEC ON"))        # parse-only mode
+                try:
+                    connection.execute(text(sql))                # one batch; GO is NOT split
+                    is_valid = True
+                except Exception as e:
+                    raw_error = str(e)
+                    Match = re.search(r'\[SQL Server\](.*?)(\(\d+\))', raw_error)
+                    simplified_error = Match.group(1).strip() if Match else raw_error
+                    error_msg = simplified_error
+                    obj_match = re.search(r"Invalid object name '([^']+)'.", error_msg)
+                    if obj_match:
+                        missing_objects.append(obj_match.group(1))       # missing table
+                    col_match = re.search(r"Invalid column name '([^']+)'.", error_msg)
+                    if col_match:
+                        missing_objects.append(col_match.group(1))       # missing column
+                finally:
+                    connection.execute(text("SET NOEXEC OFF"))   # ALWAYS, even on failure
+    except Exception as e:
+        return False, f"Database connection failed during validation: {str(e)}", []
+    return is_valid, error_msg, missing_objects
 ```
+
+The quote follows `validation_service.py:24-88` with comment lines elided; the variable names are the file's
+(`Match`, `obj_match`, `col_match`). `error_lines = raw_error.split('\n')` (`:57`) is assigned and never read.
 
 * Multi-statement scripts are executed as **one batch** (the comment says SQL Server handles `DECLARE`, `#TempTables` and multiple `SELECT`s in a single batch); `GO` is *not* split.
 * `missing_objects` order is table-then-column, each at most once, from the *simplified* message.
-* Connection/session: the engine is process-cached per `source_id` (`core/database.py:15,126-135`), created from `_data-source.md` with `Trusted_Connection=yes;Encrypt=yes;TrustServerCertificate=yes` and ODBC Driver 17 (`:93-94`); `clear_engine_cache(source_id)` disposes it.
+* Connection/session: the engine is process-cached per `source_id` (`core/database.py:15,126-135`), created from `_data-source.md` with `Trusted_Connection=yes;Encrypt=yes;TrustServerCertificate=yes` and ODBC Driver 17 (`core/database.py:93-94`); `clear_engine_cache(source_id)` (`core/database.py:138`) disposes it.
 * **No query timeout is set on this connection** — the only bound is the loop's 120 s budget, checked at the top of an iteration, so a hung `SET NOEXEC` batch is *not* interrupted.
 * A missing data source raises `ValueError` from `get_database_engine` and is caught by `_sql_server`'s `except Exception` → `(False, str(exc), [])` — the message contains no `Invalid object name`, so `extract_missing_object` returns `None` and **no** recovery objects are queued.
 
-**Non-SQL-Server** (`_odbc`, `:40-57`):
+**Non-SQL-Server** (`_odbc`, `sql_validator.py:48-65`):
 
 | `dbms` contains | Prefix | Statement actually executed |
 |---|---|---|
@@ -6608,7 +6886,7 @@ return is_valid, error_msg, missing_objects
 
 Execution is `with engine.connect() as conn: conn.execute(text(prefix + sql))` — no transaction wrapper, no `SET NOEXEC`, no result consumption. Any exception is returned verbatim as the error string with no missing-object parsing (`missing` is always `[]` on this path).
 
-**Allow-list scope check** (`_out_of_scope`, `:59-70`) — runs only after `ok`:
+**Allow-list scope check** (`_out_of_scope`, `sql_validator.py:67-78`) — runs only after `ok` and only when `skip_object_scope` is false:
 
 ```python
 allowed_set   = {a.lower().replace("[", "").replace("]", "") for a in allowed}
@@ -6627,7 +6905,7 @@ Order of statements in the concatenation is the order of first appearance in `FR
 #### 7.12.2 Step 5 — LLM critic call contract
 
 ```python
-def _run_critic(llm, sql, schema, query, semantic_json) -> CombinedValidationResult:   # attempts.py:432-446
+def _run_critic(llm, sql, schema, query, semantic_json) -> CombinedValidationResult:   # attempts.py:633-647
     if llm is None:
         return CombinedValidationResult()          # all defaults: satisfied + valid
     try:
@@ -6644,17 +6922,18 @@ def _run_critic(llm, sql, schema, query, semantic_json) -> CombinedValidationRes
 ```
 
 * Inputs: the extracted candidate code, `discovery.schema_context_for_validation`, `context.combined_query`, and (SQL-only) `semantic_json` when `semantic_mode` is on.
-* Prompt: `critic_prompt` (`prompts.py:521-537`) — the semantic variant swaps the system message to *"Validate the SMQ/SQL against the semantic model."* and the user body to `MODEL:/QUERY:/SQL:`. The SQL variant's user body is `USER QUERY:/SCHEMA:/SQL:`. `_run_python_critic` / `_run_r_critic` / `_run_sas_critic` (`attempts.py:449-497`) are byte-identical apart from the prompt builder and are given the language critic prompt (`prompts.py:291-300,402-411,509-518`). The full prompt text belongs to §08.
+* Prompt: `critic_prompt` (`prompts.py:650-666`) — the semantic variant swaps the system message to *"Validate the SMQ/SQL against the semantic model."* and the user body to `MODEL:/QUERY:/SQL:`. The SQL variant's user body is `USER QUERY:/SCHEMA:/SQL:`. `_run_python_critic` (`attempts.py:650-664`) / `_run_r_critic` (`attempts.py:667-681`) / `_run_sas_critic` (`attempts.py:684-698`) are byte-identical apart from the prompt builder and are given the language critic prompt (`prompts.py:416-425,529-538,638-647`). The full prompt text belongs to §08.
 * JSON fields consumed: `requirements_satisfied`, `schema_valid`, `feedback`, `status`, `canonical_question`, `missing_objects`. Everything else in the reply is ignored (`mismatches` and `missing_group_members` on `CombinedValidationResult` are never populated by this loop).
 * Parsing is `LlmClient.complete_json` (7.12.3); a malformed JSON body that survives the brace-slice fallback raises, is swallowed by the `except`, and yields **all-defaults** (satisfied/valid) — the critic failing open means Stage 6 alone can reject the candidate.
 * `canonical_question` is stored into `canonical` whenever truthy and **kept until a later critic returns another one**; a failure result never carries it.
-* `status == MissingGroupMemberValidationStatus` (`"MISSING_GROUP_MEMBER"`) **combined with `schema_valid == False`** triggers the one-shot broadening pass (7.13.5). No prompt in the repository asks a model to produce this status (grep: only `constants.py:39` and `pipeline.py:280`), so in practice it fires only if a model volunteers it. > ⚠️ Unverified: whether the production C# engine's critic prompt requests `MISSING_GROUP_MEMBER`.
+* `status == MissingGroupMemberValidationStatus` (`"MISSING_GROUP_MEMBER"`, `constants.py:42`, read only at `attempts.py:540`) **combined with `schema_valid == False`** triggers the one-shot broadening pass (7.13.5). No prompt in the repository asks a model to produce this status (grep: the literal appears only in `constants.py:42`; the model field `missing_group_members` exists at `pipeline.py:284` but nothing populates it), so in practice it fires only if a model volunteers it. > ⚠️ Unverified: whether the production C# engine's critic prompt requests `MISSING_GROUP_MEMBER`.
 
 #### 7.12.3 JSON extraction helper (`complete_json`)
 
 ```python
-def complete_json(self, messages, **kwargs) -> Dict[str, Any]:      # llm_client.py:64-78
-    text = self.complete(messages, **kwargs).strip()
+def complete_json(self, messages: List[Dict[str, str]], **kwargs) -> Dict[str, Any]:   # llm_client.py:64-78
+    text = self.complete(messages, **kwargs)
+    text = text.strip()
     if text.startswith("```"):
         text = text.strip("`")                     # strips ALL leading/trailing backticks
         if text.lower().startswith("json"):
@@ -6662,17 +6941,18 @@ def complete_json(self, messages, **kwargs) -> Dict[str, Any]:      # llm_client
     try:
         return json.loads(text)
     except Exception:
-        start, end = text.find("{"), text.rfind("}")
+        start = text.find("{")
+        end = text.rfind("}")
         if start >= 0 and end > start:
-            return json.loads(text[start:end + 1]) # may itself raise -> propagates
-        return {}                                  # -> all critic defaults (fail-open)
+            return json.loads(text[start : end + 1])  # may itself raise -> propagates
+        return {}                                     # -> all critic defaults (fail-open)
 ```
 
 Default kwargs come from `complete`: `temperature=0.0`, `max_tokens=2048`, no `presence_penalty`, no `model`.
 
 #### 7.12.4 Database validation result → recovery decision
 
-After a failed Stage 6 (`attempts.py:387-407`):
+After a failed Stage 6 (`attempts.py:570-590`):
 
 1. `last_error = db_err`.
 2. `category = classifier.classify(db_err)` — `stage` defaults to `"validation"` (`sql_error_classifier.py:17`).
@@ -6684,56 +6964,74 @@ After a failed Stage 6 (`attempts.py:387-407`):
 
 ### 7.13 Recovery machinery
 
-#### 7.13.1 Missing-object expansion (`_expand_missing`, `attempts.py:541-552`)
+#### 7.13.1 Missing-object expansion (`_expand_missing`, `attempts.py:886-904`)
 
 ```python
-def _expand_missing(token: str, stores, exact_columns=None) -> List[ScoredObject]:
-    q = token or ""
-    objs = stores.vector_search.search_objects(q, top_k=5)          # semantic vector search over "schemas"
+def _expand_missing(token: str, stores, exact_columns=None, sql: str = None) -> List[ScoredObject]:
+    names = _recovery_names(token, sql)                             # sentinel/error + the generated SQL's refs
+    resolved, unresolved = _resolve_catalog_names(names, stores)    # exact catalog hits only
+    objs = list(resolved)
+    queries = unresolved if names else ([token] if token else [])
+    for q in queries:
+        objs.extend(stores.vector_search.search_objects(q, top_k=5)) # semantic vector search over "schemas"
     if exact_columns:
         for col in exact_columns:
             objs.extend(stores.vector_search.search_objects(col, top_k=3))
-    models = stores.semantic.search_models(q, top_k=2)              # runs even when semantic mode is OFF
+    models = stores.semantic.search_models(token or "", top_k=2)     # runs even when semantic mode is OFF
     for m in models:
         objs.insert(0, ScoredObject(schema_name="semantic", object_name=m.label,
                                     object_type="SemanticModel", required=True, score=1.0))
     return objs
 ```
 
+* **Name extraction first**: `_recovery_names(token, sql)` (`:820-843`) parses the error token with
+  `parse_table_validation_names` — **unless** it matches `COLUMN_VALIDATION_ERROR|Invalid column name`,
+  which is deliberately skipped because a missing column is answered by the `exact_columns` path (the value
+  index finds the column's owner, so the column name would otherwise be resolved as a table that was never
+  missing) — and then parses the generated SQL with `extract_sql_object_refs`, de-duplicating
+  case-insensitively. `_resolve_catalog_names` (`:846-883`) turns those names into objects only on an
+  `exact` `ObjectNameResolver` hit; unresolved strings are not added to the allow-list and fall through to
+  the vector search above instead.
 * **Max count**: 5 object hits + 3 hits per extracted column + 2 semantic models; the *queue* is then truncated to `MaxRecoveryExpansion = 5` by every caller (`objs[:MaxRecoveryExpansion]`).
 * **Source of extra objects**: the same vector store discovery used (`VectorSearchService.search_objects`, `app/services/vector_search_service.py:22-77` — internal candidate pool `max(top_k*4, 20)`, threshold `settings.OBJECT_SEARCH_VECTOR_SCORE_THRESHOLD`, default `0.50`; results ranked by `1 - _distance`), plus semantic models (`SemanticModelService.search_models`, `semantic_model_service.py:138-153`, cosine over active models).
 * **Quirk**: semantic models are `insert(0, …)` inside the loop, so the *last* (lowest-ranked) model ends up first; every one is forced `required=True, score=1.0, object_type="SemanticModel", schema_name="semantic"`.
-* `token` may be a comma-joined string (critic path, 7.13.4) or a whole error message (`TABLE_VALIDATION_ERROR: …`); it is embedded as-is. An empty token still runs `embed_text("")`.
+* `token` may be a comma-joined string (critic path, 7.13.4) or a whole error message (`TABLE_VALIDATION_ERROR: …`); it is embedded as-is when nothing was resolved from it. An empty token still runs `search_models("", top_k=2)`.
 * `stores` must expose `vector_search.search_objects(q, top_k=…)` and `semantic.search_models(q, top_k=…)` — nothing else.
 
 #### 7.13.2 Prompt re-injection
 
-Queued objects are merged into `discovery.objects` at the **top of the next attempt** (`attempts.py:147-151`), which is also the only place `agentic_retry` changes:
+Queued objects are merged into `discovery.objects` at the **top of the next attempt** (`attempts.py:230-247`), which is also the only place `agentic_retry` changes:
 
 ```python
 if pending_recovery or loop_breaker:
-    discovery.objects = _merge_recovery(discovery.objects, pending_recovery)   # rrf.merge_and_dedup
+    recovered = list(pending_recovery)
+    for obj in recovered:
+        obj.required = True
+    discovery.objects = _merge_recovery(discovery.objects, recovered)   # rrf.merge_and_dedup
     pending_recovery = []; loop_breaker = False; agentic_retry += 1
+    if recovered:
+        _refresh_schema_context(discovery, context.request.source_id, context.dbms_type,
+                                cap=RefinementPromptContextCap if context.is_refinement else None)
 ```
 
-`_merge_recovery` delegates to `merge_and_dedup` (`app/utils/rrf.py:74-93`): de-duplication key is `ScoredObject.merge_key()` = `f"{data_source}|{schema_name}|{object_name.split(' (Segment')[0].strip()}".lower()`; on collision the higher `score` wins (and `matched_columns` are unioned), otherwise `matched_columns` are unioned and `priority`/`required` are OR-ed. Order is insertion order of first appearance.
+`_merge_recovery` delegates to `merge_and_dedup` (`app/utils/rrf.py:74-93`): de-duplication key is `ScoredObject.merge_key()` = `f"{data_source}|{schema_name}|{object_name.split(' (Segment')[0].strip()}".lower()`; on collision the higher `score` wins (and `matched_columns` are unioned), otherwise `matched_columns` are unioned and `priority`/`required` are OR-ed. Order is insertion order of first appearance. Every recovered object is forced `required = True` before the merge.
 
 Consequence, precisely: the recovered objects are only visible to the **next** iteration — the current attempt always uses pre-recovery state. Two readable effects must be reproduced:
 
-* The **allow-list** is recomputed at the start of every attempt from the *mutated* `discovery.objects` (`allowed = [f"{o.schema_name}.{o.object_name}" for o in discovery.objects]`, `attempts.py:325`), so recovered objects legitimately widen the Stage-6 scope check.
+* The **allow-list** is recomputed at the start of every attempt by `_allowed_objects(discovery, stores)` (7.12.1), so recovered objects legitimately widen the Stage-6 scope check.
 * For scripts, the schema-qualification pass (7.7) also uses the mutated list as the `known` name→schema map.
 
-What recovery does **not** do: the prompt builders read `discovery.schema_context or discovery.selected_object_context`, `discovery.supplementary_objects`, `discovery.few_shot_examples` and `discovery.active_groups.summary` — never `discovery.objects` — and the critic receives the pre-hydration `discovery.schema_context_for_validation`. Hydration is **not** re-run after a merge, so recovered objects never appear under `AVAILABLE SCHEMAS`/`SUPPLEMENTARY SCHEMAS` or in the critic prompt: net effect, recovery only (a) widens the Stage-6 allow-list and (b) improves script schema qualification, while the model is expected to notice the failure from `ATTEMPT HISTORY`. > ⚠️ Unverified: whether the C# engine re-hydrates context after recovery; the Python port does not.
+`_refresh_schema_context(discovery, source_id, dbms, cap=None)` re-runs `SqlContextHydrator.build_contexts` over the mutated `discovery.objects` and overwrites `selected_object_context`, `supplementary_objects`, `schema_context` and `schema_context_for_validation`. It is called **only** when the recovery merge actually added objects, because that is the only retry that changes the object pool: a recovery attempt therefore sees the recovered objects under `AVAILABLE SCHEMAS`/`SUPPLEMENTARY SCHEMAS` and in the critic prompt, while every other retry (critic complaint, syntax error) reuses the attempt-1 context on purpose. The cap follows the turn: `RefinementPromptContextCap` for a refinement turn, otherwise the hydrator default (`PromptContextDiscoveryCap`). > ⚠️ Unverified: whether the C# engine re-hydrates context after recovery; the Python port now does so only on this path.
 
 #### 7.13.3 Circuit breaker for the same missing object
 
 ```python
-def _bump_missing(counts, cat_counts, obj, category):         # attempts.py:561-564
+def _bump_missing(counts, cat_counts, obj, category):         # attempts.py:913-916
     key = (obj or "").lower()
     counts[key] = counts.get(key, 0) + 1
     cat_counts[(key, category)] = cat_counts.get((key, category), 0) + 1
 
-def _breaker_tripped(counts) -> bool:                          # attempts.py:567-568
+def _breaker_tripped(counts) -> bool:                          # attempts.py:919-920
     return any(v >= MissingObjectBreakThreshold for v in counts.values())   # >= 2
 ```
 
@@ -6751,11 +7049,11 @@ def _breaker_tripped(counts) -> bool:                          # attempts.py:567
 | `hallucination_count >= 2` | terminal `"hallucination_loop"` | only reachable when `circuit_breaker == False` |
 | missing object seen twice | immediate terminal `deterministic_missing_object` | returns **before** any further hash check |
 
-`circuit_breaker = True` is assigned at `attempts.py:288` and `:394` and **both assignments are immediately followed by a `return`**, so the flag can never be observed as `True` at the threshold computation (`:302`). Net effect: `HallucinationExitThresholdWithBreaker = 1` is dead; the duplicate-structure exit always needs 2 hallucinations. A faithful re-implementation that "fixes" this by letting the breaker flag persist would change behaviour — do not, or flag it as an intentional deviation.
+`circuit_breaker = True` is assigned at `attempts.py:467` and `:577` and **both assignments are immediately followed by a `return`**, so the flag can never be observed as `True` at the threshold computation (`:481`). Net effect: `HallucinationExitThresholdWithBreaker = 1` is dead; the duplicate-structure exit always needs 2 hallucinations. A faithful re-implementation that "fixes" this by letting the breaker flag persist would change behaviour — do not, or flag it as an intentional deviation.
 
 #### 7.13.5 Group-member broadening pass
 
-Triggered by the critic only, when both `schema_valid == False` **and** `status == "MISSING_GROUP_MEMBER"` and `broadened` is still `False` (`attempts.py:358-362`):
+Triggered by the critic only, when both `schema_valid == False` **and** `status == "MISSING_GROUP_MEMBER"` and `broadened` is still `False` (`attempts.py:539-543`):
 
 ```python
 broadened = True
@@ -6767,7 +7065,7 @@ The next attempt is therefore identical in context to the current one except tha
 
 #### 7.13.6 Agentic retry counting
 
-`agentic_retry` counts **recovery-driven re-prompts**, i.e. attempts that began with `pending_recovery` non-empty or `loop_breaker` set (`attempts.py:147-151`); it never counts plain verification retries (critic rejections, compile errors, empty outputs) and it never counts the sentinel/broaden paths unless they queued objects or set `loop_breaker`. It is reported in every result as `agentic_retry_count`.
+`agentic_retry` counts **recovery-driven re-prompts**, i.e. attempts that began with `pending_recovery` non-empty or `loop_breaker` set (`attempts.py:230-238`); it never counts plain verification retries (critic rejections, compile errors, empty outputs) and it never counts the sentinel/broaden paths unless they queued objects or set `loop_breaker`. It is reported in every result as `agentic_retry_count`.
 
 #### 7.13.7 `SqlErrorClassifier` taxonomy → recovery action
 
@@ -6826,13 +7124,13 @@ Note the classifier taxonomy is **not** branch-structured: `category` only feeds
 
 | Quantity | Value | Where |
 |---|---|---|
-| Total generation budget | `MaxGenerationTimeMs = 120_000 ms` | `constants.py:7`, passed by the caller `builtin_sql_generator.py:300` |
+| Total generation budget | `MaxGenerationTimeMs = 120_000 ms` | `constants.py:7`, passed by the caller `builtin_sql_generator.py:356` |
 | No-discovery rewrite budget | `NoDiscoveryTimeBudgetMs = 90_000 ms` | `constants.py:8`, used by `_generate_from_provided_sql` (deadline `started + 90 s`), *not* by the loop |
-| Deadline predicate | `elapsed_ms = int((time.time() - started_at) * 1000); if elapsed_ms > time_budget_ms` | `attempts.py:124-125` (strict `>`) |
-| Check frequency | once per iteration, **before** `emit` and before any work | `attempts.py:123-145` |
-| Effect at deadline | return the timeout failure (shape in 7.15) with `attempts = attempt` (the iteration that was about to run) | `attempts.py:126-143` |
+| Deadline predicate | `elapsed_ms = int((time.time() - started_at) * 1000); if elapsed_ms > time_budget_ms` | `attempts.py:202-203` (strict `>`) |
+| Check frequency | once per iteration, **before** the `emit` of the attempt status and before any work | `attempts.py:201-228` |
+| Effect at deadline | return the timeout failure (shape in 7.15) with `attempts = attempt` (the iteration that was about to run) | `attempts.py:204-221` |
 | Per-call timeouts | LLM: `timeout=60` (litellm path, `llm_service.py:1351`); **no** explicit timeout on the OpenAI-SDK path or on DB validation | — |
-| Semantic compilation | `SemanticCompilationTimeoutMs = 5_000` **enforced** by `SemanticCompiler.compile_guarded` (`semantic_compiler.py:124-147`) on a daemon worker thread; expiry is a semantic retry (`COMPILATION_TIMEOUT`). The raising `compile` entry point still ignores the budget | §9.10.4 |
+| Semantic compilation | `SemanticCompilationTimeoutMs = 5_000` **enforced** by `SemanticCompiler.compile_guarded` (`semantic_compiler.py:134-168`) on a daemon worker thread; expiry is a semantic retry (`COMPILATION_TIMEOUT`). The raising `compile` entry point still ignores the budget | §9.10.4 |
 
 Because the gate is at the top of an iteration and no call is interrupted, a single slow LLM response or a hung `SET NOEXEC` batch can overshoot the budget arbitrarily; the *result* is still reported with the measured `processing_time_ms`, which may exceed 120 000.
 
@@ -6855,7 +7153,7 @@ Because the gate is at the top of an iteration and no call is interrupted, a sin
 | `context_text` | `last_prompt` = `system + "\n" + user` of the winning attempt |
 | `source_id` | `context.request.source_id` |
 | `failure_report`, `error_category`, `candidates`, `explanation` | left at defaults (`None`, `None`, `[]`, `None`) |
-| `query_type` | `"database"` at this point; `apply_language_result` promotes it to `python_code`/`r_code`/`sas_code` for scripts (`errors.py:61-72`) |
+| `query_type` | `"database"` at this point; `apply_language_result` promotes it to `python_code`/`r_code`/`sas_code` for scripts (`errors.py:54-66`) |
 
 #### 7.15.2 `build_failure_report` and `build_detailed_failure_result`
 
@@ -6899,14 +7197,15 @@ Field-by-field per failure site:
 | Producer | `message` | `error_category` | `attempts` | `failure_report.summary` | `failure_report.resolution_plan` | `failure_report.final_resolution_guidance` | `candidate_objects` | `canonical_question` | `context_text` |
 |---|---|---|---|---|---|---|---|---|---|
 | Budget gate (`attempts.py:126-143`) | `"Generation timed out"` | `timeout` | current `attempt` | `"Generation timed out"` | `["Retry with a narrower question", "Pin specific tables"]` | `"The 120s generation budget was exceeded."` | `[]` (not passed) | `None` | `None` |
-| `_fail` (`:701-732`) — safety, sentinel breaker, hallucination, semantic exhaustion, db breaker | the terminal string (`reason`, sentinel text, `"Repeated … structure detected"`, `last_semantic_error`, missing object) | `safety` / `deterministic_missing_object` / `hallucination_loop` / `semantic_compilation` | current `attempt` (or `MaxRetries` for the post-loop semantic exit, `:496-508`) | same as `message` | `["Inspect candidates", "Adjust pins"]` | same as `message` | `discovery.objects` | `None` | `None`, except the post-loop semantic exit which passes `context_text=last_prompt` |
-| Loop exhausted, **last attempt not a semantic retry** (`:512-523`) | `last_error or "Failed after max retries"` | `validation` (always) | `MaxRetries` = 5 (always) | same as `message` | `["Review missing objects", "Add few-shot examples", "Pin tables"]` | `"All generation attempts were exhausted."` | `discovery.objects` | `None` | `last_prompt` |
+| `_fail` (`:935-972`) — safety, sentinel breaker, hallucination, db breaker | the terminal string (`reason`, sentinel text, `"Repeated … structure detected"`, missing object) | `safety` / `deterministic_missing_object` / `hallucination_loop` | current `attempt` | same as `message` | `["Inspect candidates", "Adjust pins"]` | same as `message` | `discovery.objects` | `None` | `None`, except the post-loop semantic exit which passes `context_text=last_prompt` |
+| Post-loop **semantic exhaustion** — `semantic_retry` set by the last attempt (`:597-610`) | `last_semantic_error or "Semantic compilation failed after all retries"` | `semantic_compilation` | `MaxRetries` = 5 (always) | same as `message` | `["Inspect candidates", "Adjust pins"]` | same as `message` | `discovery.objects` | `None` | `last_prompt` |
+| Loop exhausted, **last attempt not a semantic retry** (`:611-630`) | `last_error or "Failed after max retries"` | `validation` (always) | `MaxRetries` = 5 (always) | same as `message` | `["Review missing objects", "Add few-shot examples", "Pin tables"]` | `"All generation attempts were exhausted."` | `discovery.objects` | `None` | `last_prompt` |
 
 `_fail` additionally contains a no-op that must be preserved for fidelity:
 
 ```python
 if sql:
-    result.sql = result.sql     # comments say: keep comment wrapper from builder   (attempts.py:604-605)
+    result.sql = result.sql     # keep comment wrapper from builder   (attempts.py:970-971)
 ```
 
 So the offending candidate SQL is **not attached** to the failure result in any form. The only visible text is the `/* … */` block (or `# …` lines for python/r after `apply_language_result`).
@@ -6924,7 +7223,8 @@ if presence_penalty is not None:
 if model:
     kwargs["model"] = model
 kwargs = apply_llm_request_conventions(kwargs, model or getattr(svc, "model", "") or "")
-content, usage = "", TokenUsage()
+content = ""
+usage = TokenUsage()
 try:
     client = getattr(svc, "client", None)
     if client is None:
@@ -7005,38 +7305,42 @@ There is **no** Responses-API, Anthropic `/v1/messages`, or Google-native endpoi
 
 | # | Condition | Source | Terminal? | `error_category` | Message / report detail | Counters at exit |
 |---|---|---|---|---|---|---|
-| E1 | `elapsed_ms > time_budget_ms` at the top of an iteration | `attempts.py:125` | yes | `timeout` | `"Generation timed out"`; guidance `"The 120s generation budget was exceeded."` | `attempts = attempt` |
-| E2 | Script/SQL safety interceptor returns `ok = False` | `:278` | yes | `safety` | interceptor `reason` (`"Empty SQL"`, `"Dangerous operation blocked by safety policy"`, `"Write operation blocked unless explicitly requested"`, `"Empty Python code"`, `"Dangerous Python operation blocked by safety policy"`, `"Filesystem write blocked unless explicitly requested"`, `"create_engine must use the injected DB_CONNECTION_STRING"`, `"Empty R code"`, `"Dangerous R operation blocked by safety policy"`, `"Empty SAS code"`, `"Dangerous SAS operation blocked by safety policy"`), else `"blocked"` | — |
-| E3 | Sentinel found and the same token already seen twice | `:287` | yes | `deterministic_missing_object` | sentinel text (`table_err or col_err`) | — |
-| E4 | `hallucination_count >= 2` (duplicate digest) | `:303` | yes | `hallucination_loop` | `"Repeated {SQL\|Python\|R\|SAS} structure detected"` | `hallucination_count ≥ 2` |
-| E5 | Budget exhausted **and the last attempt ended in a semantic retry** (`semantic_retry`), whatever the fallback setting | `:496` | yes | `semantic_compilation` | `last_semantic_error` (the recorded semantic detail, e.g. `"Semantic compilation failed: UNKNOWN_METRIC: gross_margin. …"`), or `"Semantic compilation failed after all retries"` | `attempts = MaxRetries`; never `validation` |
-| E6 | DB error names an object already seen twice | `:393` | yes | `deterministic_missing_object` | the missing object string | — |
-| E7 | Attempt 5 completes without `db_ok` **and the last attempt was not a semantic retry** | `:512` | yes | `validation` | `last_error or "Failed after max retries"`; guidance `"All generation attempts were exhausted."` | `attempts = 5` |
-| R1 | LLM raised | `:212` | no | — | report `{stage: "generation", what_was_tried: "LLM call", why_it_failed: str(exc)}` | — |
-| R2 | Empty extracted code | `:324` | no | — | report `{stage: "generation", what_was_tried: "LLM output", why_it_failed: "empty"}` | — |
-| R3 | Reply carries an SMQ payload that cannot be extracted, or none at all while `looks_like_smq(...)` is true or the fallback is off | `:251-270` | no | — | report `{stage: "semantic_compilation", what_was_tried: "extract SMQ payload", why_it_failed: <reason> + valid names}` | `semantic_retry = True` |
-| R4 | Payload extracted but `parse_smq` fails | `:274-287` | no | — | report `{stage: "semantic_compilation", what_was_tried: "parse SMQ payload", why_it_failed: "The SMQ payload could not be parsed. Received: …" + valid names}` | `semantic_retry = True` |
-| R5 | No active semantic model | `:289-300` | no | — | report `{stage: "semantic_compilation", what_was_tried: "compile SMQ", why_it_failed: "No active semantic model is available for this data source."}` | `semantic_retry = True` |
-| R6 | `SemanticCompilationError` / compile timeout | `:302-319` | no | — | report `{stage: "semantic_compilation", what_was_tried: "compile SMQ", why_it_failed: "Semantic compilation failed: CODE: message. …" + valid names}` | `semantic_retry = True` |
-| R7 | Sentinel found (breaker not tripped) | `:359-369` | no | (records `"sentinel"`) | no report; ≤5 objects queued; `agentic_retry += 1` next iteration | — |
-| R8 | Duplicate digest, first occurrence | `:371-380` | no | — | no report; `loop_breaker = True`; presence penalty armed | `hallucination_count = 1` |
-| R9 | Critic `requirements_satisfied == False` | `:432` | no | — | report `{stage: "critic", what_was_tried: "requirements", why_it_failed: feedback}`; `canonical` already captured | — |
-| R10 | Critic `schema_valid == False`, status `MISSING_GROUP_MEMBER`, `broadened == False` | `:437-440` | no | — | `emit(RECOVERY, "Broadened group-member recovery")`; no report, no objects, no counter changes | `broadened = True` |
-| R11 | Critic `schema_valid == False` (other) | `:441-443` | no | — | no report; ≤5 objects queued from `",".join(missing_objects)` | — |
-| R12 | DB validation failed | `:466-493` | no | (classified) | report `{stage: "db_validation", what_was_tried: sql[:500], why_it_failed: db_err, recovery_action: "expand missing objects", candidate_objects: db_missing}`; object expansion | — |
-| S1 | DB validation passed | `:449` | yes (success) | `None` | `message = "OK"`; `discovery_branch = discovery.branch` | returns `attempts = attempt` |
-| S2 | Attempt-1 pre-check passed + script has embedded SQL (or SQL mode) | `:412-417` | — | — | `skip_critic = True`; returns success right after the pre-check | — |
+| E1 | `elapsed_ms > time_budget_ms` at the top of an iteration | `attempts.py:203` | yes | `timeout` | `"Generation timed out"`; guidance `"The 120s generation budget was exceeded."` | `attempts = attempt` |
+| E2 | Script/SQL safety interceptor returns `ok = False` | `:452` | yes | `safety` | interceptor `reason` (`"Empty SQL"`, `"Dangerous operation blocked by safety policy"`, `"Write operation blocked unless explicitly requested"`, `"Empty Python code"`, `"Dangerous Python operation blocked by safety policy"`, `"Filesystem write blocked unless explicitly requested"`, `"create_engine must use the injected DB_CONNECTION_STRING"`, `"Empty R code"`, `"Dangerous R operation blocked by safety policy"`, `"Empty SAS code"`, `"Dangerous SAS operation blocked by safety policy"`), else `"blocked"` | — |
+| E3 | Sentinel found and the same token already seen twice | `:466` | yes | `deterministic_missing_object` | sentinel text (`table_err or col_err`) | — |
+| E4 | `hallucination_count >= 2` (duplicate digest) | `:482` | yes | `hallucination_loop` | `"Repeated {SQL\|Python\|R\|SAS} structure detected"` | `hallucination_count ≥ 2` |
+| E5 | Budget exhausted **and the last attempt ended in a semantic retry** (`semantic_retry`), whatever the fallback setting | `:597` | yes | `semantic_compilation` | `last_semantic_error` (the recorded semantic detail, e.g. `"Semantic compilation failed: UNKNOWN_METRIC: gross_margin. …"`), or `"Semantic compilation failed after all retries"` | `attempts = MaxRetries`; never `validation` |
+| E6 | DB error names an object already seen twice | `:576` | yes | `deterministic_missing_object` | the missing object string | — |
+| E7 | Attempt 5 completes without `db_ok` **and the last attempt was not a semantic retry** | `:611` | yes | `validation` | `last_error or "Failed after max retries"`; guidance `"All generation attempts were exhausted."` | `attempts = 5` |
+| R1 | LLM raised | `:284` | no | — | report `{stage: "generation", what_was_tried: "LLM call", why_it_failed: str(exc)}` | — |
+| R2 | Empty extracted code | `:420` | no | — | report `{stage: "generation", what_was_tried: "LLM output", why_it_failed: "empty"}` | — |
+| R3 | Reply carries an SMQ payload that cannot be extracted, or none at all while `looks_like_smq(...)` is true or the fallback is off | `:325-345` | no | — | report `{stage: "semantic_compilation", what_was_tried: "extract SMQ payload", why_it_failed: <reason> + valid names}` | `semantic_retry = True`; `_note_semantic_payload` |
+| R4 | Payload extracted but `parse_smq` fails the shape check (`SmqShapeError`) | `:349-365` | no | — | report `{stage: "semantic_compilation", what_was_tried: "parse SMQ payload", why_it_failed: build_smq_shape_mismatch_feedback(…) (offending index + accepted aliases + valid names)}` | `semantic_retry = True`; `_note_semantic_payload` |
+| R4b | Payload extracted and `parse_smq` returns `None` | `:366-380` | no | — | report `{stage: "semantic_compilation", what_was_tried: "parse SMQ payload", why_it_failed: "The SMQ payload could not be parsed. Received: …" + valid names}` | `semantic_retry = True`; `_note_semantic_payload` |
+| R5 | No active semantic model | `:382-394` | no | — | report `{stage: "semantic_compilation", what_was_tried: "compile SMQ", why_it_failed: "No active semantic model is available for this data source."}` | `semantic_retry = True`; `_note_semantic_payload` |
+| R6 | `SemanticCompilationError` / compile timeout | `:396-414` | no | — | report `{stage: "semantic_compilation", what_was_tried: "compile SMQ", why_it_failed: "Semantic compilation failed: CODE: message. …" + valid names}` | `semantic_retry = True`; `_note_semantic_payload` |
+| R6b | Two consecutive attempts produced the **same** SMQ payload (`semantic_payload_fingerprint` equal) | `:186-194`, `:344`/`:364`/`:379`/`:393`/`:413` | no | — | no report of its own; sets `loop_breaker = True` (divergent rediscovery next attempt) and the next call carries `presence_penalty=0.4` + `temperature=0.4` (7.6) | `semantic_repeat_detected = True` |
+| R7 | Sentinel found (breaker not tripped) | `:455-469` | no | (records `"sentinel"`) | no report; ≤5 objects queued; `agentic_retry += 1` next iteration | — |
+| R8 | Duplicate digest, first occurrence | `:478-502` | no | — | no report; `loop_breaker = True`; presence penalty armed | `hallucination_count = 1` |
+| R9 | Critic `requirements_satisfied == False` | `:534` | no | — | report `{stage: "critic", what_was_tried: "requirements", why_it_failed: feedback}`; `canonical` already captured | — |
+| R10 | Critic `schema_valid == False`, status `MISSING_GROUP_MEMBER`, `broadened == False` | `:539-543` | no | — | `emit(RECOVERY, "Broadened group-member recovery")`; no report, no objects, no counter changes | `broadened = True` |
+| R11 | Critic `schema_valid == False` (other) | `:544-545` | no | — | no report; ≤5 objects queued from `",".join(missing_objects)` | — |
+| R12 | DB validation failed | `:570-590` | no | (classified) | report `{stage: "db_validation", what_was_tried: sql[:500], why_it_failed: db_err, recovery_action: "expand missing objects", candidate_objects: db_missing}`; object expansion | — |
+| S1 | DB validation passed | `:553` | yes (success) | `None` | `message = "OK"`; `discovery_branch = discovery.branch` | returns `attempts = attempt` |
+| S2 | Attempt-1 pre-check passed + script has embedded SQL (or SQL mode) | `:514-519` | — | — | `skip_critic = True`; returns success right after the pre-check | — |
 
-Conditions outside the loop that still shape the loop's behaviour: (a) a pinned-object resolution failure returns `priority_validation_failed` before Stage E is entered (`builtin_sql_generator.py:133-166`); (b) the no-discovery/optimization path has its own 90 s deadline and its own `validation`/`timeout` failures and never calls `run_attempt_loop` (`builtin_sql_generator.py:361-512`); (c) `semantic_mode` is forced `False` for `python`/`r`/`sas` (`attempts.py:101-102`).
+Conditions outside the loop that still shape the loop's behaviour: (a) a pinned-object resolution failure returns `priority_validation_failed` before Stage E is entered (`builtin_sql_generator.py:145-166`); (b) the no-discovery/optimization path has its own 90 s deadline and its own `validation`/`timeout` failures and never calls `run_attempt_loop` (`_generate_from_provided_sql`, `builtin_sql_generator.py:433-...`); (c) `semantic_mode` is forced `False` for `python`/`r`/`sas` (`attempts.py:135-137`).
+
+One more condition sits *inside* Stage E and changes routing rather than validation: the **semantic availability gate** of §7.2. When it fires, the turn's remaining attempts run the physical-SQL path with `semantic_mode = False` and `context.grain_is_advisory = True`, so E5/R3-R6b are unreachable for that turn.
 
 ### Implementation checklist
 
-1. Recreate `run_attempt_loop` with the exact signature and the pre-loop locals from 7.2; keep `script_mode → semantic_mode = False`, keep `semantic_retry` / `compiled_from_semantic_model` reset per attempt, and keep `missing_counts` un-reset.
+1. Recreate `run_attempt_loop` with the exact signature and the pre-loop locals from 7.2; keep `script_mode → semantic_mode = False`, keep `semantic_retry` / `compiled_from_semantic_model` reset per attempt, keep `missing_counts` un-reset, and keep the `semantic_repeat_detected` / `previous_semantic_fingerprint` pair plus the `_note_semantic_payload` / `_accept_semantic_sql` closures that feed it.
 2. Implement the budget gate as the **first** statement of each iteration: `int((time.time() - started_at) * 1000) > time_budget_ms` (strict `>`), returning the exact timeout failure from 7.15.2.
 3. Rebuild both prompt messages from scratch each attempt; wire the four language branches and the semantic SQL variant exactly as in 7.5; render `ATTEMPT HISTORY` via `_compact_history` (compact lines + last record as `model_dump_json()`).
-4. Send `presence_penalty=0.4` **only** when `hallucination_count > 0` (omit the key otherwise), and never on the critic call.
+4. Send `presence_penalty=0.4` when `hallucination_count > 0` **or** `semantic_repeat_detected`, and additionally `temperature=SemanticRepeatTemperature` (0.4) when `semantic_repeat_detected`; build the kwargs dict conditionally so both keys are omitted otherwise, and never send either on the critic call.
 5. Extract code with `extract_sql_body` / `extract_python_body` / `extract_r_body` / `extract_sas_body`; then, for scripts only, schema-qualify every embedded SQL literal with the discovered object list (default schema `dbo`).
-6. Implement the semantic branch in the documented order: parse → one retry → raw-SQL fallback (or terminal `semantic_compilation`) → `compile(..., timeout_ms=5000)` → `SemanticCompilationError` = retryable report.
+6. Implement the semantic branch in the documented order: extract → payload-class guard → parse (distinguishing `SmqShapeError` from `None`) → raw-SQL fallback or retry → `compile_guarded(..., timeout_ms=5000)` → retryable report; call `_note_semantic_payload` on every retry exit and `_accept_semantic_sql` whenever an attempt ends in accepted SQL.
 7. Freeze validation order **safety → sentinels → structural hash → attempt-1 DB pre-check → critic → DB validation**, and keep the four `# n. …` comment anchors plus the `emit(PipelineStage.CRITIC` call so the source-order contract test still passes.
 8. Compute `user_write` exactly as `is_user_code and any(w in request.query.lower() for w in ("insert","update","delete","drop"))`; run the language interceptor first, then each embedded SQL through `QueryInterceptor`; return `ErrorCategory.SAFETY` on the first failure.
 9. Scan sentinels in the **raw** model output with the exact regexes `TABLE_VALIDATION_ERROR[:\s]+([^\n;]+)` / `COLUMN_VALIDATION_ERROR[:\s]+([^\n;]+)`; pass `table_err or col_err`; pass `extracted_columns` only for the column sentinel; record category `"sentinel"`; append **no** attempt report.
@@ -7055,7 +7359,10 @@ Conditions outside the loop that still shape the loop's behaviour: (a) a pinned-
 22. Implement `_fail` with the two-item resolution plan `["Inspect candidates", "Adjust pins"]`, `candidates=discovery.objects`, and the no-op `result.sql = result.sql` after the builder so the offending SQL is never attached.
 23. Wrap failure text with `wrap_failure_sql_comment` (`"*/"` → `"* /"`, body between `/*` and `*/` on its own lines) and let `apply_language_result` convert it to `#`-prefixed lines for Python/R.
 24. Implement `LlmClient.complete`/`complete_json` with the two transport branches, `apply_llm_request_conventions` (`max_tokens`→`max_completion_tokens` and temperature removal for the reasoning families; temperature removal for `moonshot`/`kimi`; `thinking` scrub for `deepseek`), the `reasoning_content` fallback, the lock-protected token accumulation, the 60 s litellm timeout, the `RuntimeError("LLM completion failed: …")` wrapper, and the fence/brace-slice JSON recovery returning `{}` on failure.
-25. Document the transport caveat you inherit: with the default `LiteLLMService` (no `.client`), `max_tokens` and `presence_penalty` never reach the provider and token usage stays zero — if provider parity with the C# engine is required, note this as a known divergence rather than silently changing the call contract.
+25. Document the transport caveat you inherit: with the default `LiteLLMService` (no `.client`), `max_tokens`, `presence_penalty` and the repeat `temperature` never reach the provider and token usage stays zero — if provider parity with the C# engine is required, note this as a known divergence rather than silently changing the call contract.
+26. Implement the **semantic availability gate** before the loop (§7.2): with `semantic_mode` on and an active model, `can_answer(active_model, analysis.extracted_columns, build_question_tokens(question_tokens(question), analysis.entities))` decides whether the turn keeps semantic mode; on `False` set `semantic_mode = False` and `context.grain_is_advisory = True`, log the model label/id, and let the physical path run. Fail open when the model is missing or its vocabulary is empty.
+27. Build the validator allow-list with `_allowed_objects(discovery, stores)` (`attempts.py:701-739`): every discovered object, plus every example object **the catalog confirms** (`catalog_has_object`, `app/services/database_catalog.py`, which fails open with no catalog / unreadable / empty listing). An unconfirmed example object must not be authorized — the same "exact hit only" rule `_resolve_catalog_names` applies (`:846-883`), which never allow-lists an unresolved string.
+28. Re-hydrate context after a recovery merge only (`_refresh_schema_context`, `attempts.py:801-817`), with `RefinementPromptContextCap` on a refinement turn; the recovered objects are forced `required = True` before `_merge_recovery` (`:230-234`).
 
 ---
 
@@ -7097,39 +7404,41 @@ whose defaults are `temperature=0.0`, `max_tokens=2048` for `complete()`/`comple
 
 | # | Builder / constant | file:line | Purpose | Caller | Model call it feeds |
 |---|---|---|---|---|---|
-| 1 | `OPTIMIZATION_INSTRUCTIONS` | `app/core/orchestrator/prompts.py:11` | Scenario rules: schema-free rewrite | `scenario_rules` | system message of generation attempt |
-| 2 | `REFINEMENT_INSTRUCTIONS` | `prompts.py:18` | Scenario rules: scope expansion allowed | `scenario_rules` | idem |
-| 3 | `SCOPE_GUARD` | `prompts.py:23` | Filter-preservation rule | `_filter_block` | idem |
-| 4 | `scenario_rules(context)` | `prompts.py:27` | Select scenario block (or `""`) | `_scenario_section`, `build_optimization_system_prompt` | idem |
-| 5 | `_filter_block(context)` | `prompts.py:37` | Active session filters + optional SCOPE GUARD | `_scenario_section`, `build_system_prompt` (semantic) | idem |
-| 6 | `_scenario_section(context)` | `prompts.py:45` | GENERATION MODE + rules + filters | `build_system_prompt`, `build_python/r/sas_system_prompt` | idem |
-| 7 | `build_system_prompt(context, discovery, semantic, semantic_models_json, attempt_history)` | `prompts.py:55` | **Main SQL / SMQ system prompt** | `attempts.run_attempt_loop:164` | `llm.complete([system,user])` |
-| 8 | `build_refinement_system_prompt(context, discovery, attempt_history)` | `prompts.py:115` | Thin alias of #7 | (no in-repo caller) | — |
-| 9 | `build_optimization_system_prompt(context, existing_code, error_message, target_language)` | `prompts.py:124` | Provided-code / optimize system prompt | `builtin_sql_generator._generate_from_provided_sql:447` | `llm.complete([system,user])` |
-| 10 | `build_optimization_user_prompt(context, existing_code, error_message)` | `prompts.py:155` | Provided-code user prompt | `builtin_sql_generator:453` | idem |
-| 11 | `build_user_prompt(context)` | `prompts.py:168` | **SQL user prompt** | `attempts.run_attempt_loop:171` | idem |
-| 12 | `_format_examples(examples, analysis)` | `prompts.py:180` | Few-shot block (`Q: … / SQL: …`) | `build_system_prompt` | embedded in system |
-| 13 | `PYTHON_CODE_GUIDELINES` | `prompts.py:191` | Python output-format block | `build_python_system_prompt` | embedded in system |
-| 14 | `build_python_system_prompt(context, discovery, attempt_history)` | `prompts.py:221` | Python target system prompt | `attempts:155` | `llm.complete` |
-| 15 | `build_python_user_prompt(context)` | `prompts.py:264` | Python user prompt | `attempts:156` | idem |
-| 16 | `_format_python_examples(examples)` | `prompts.py:276` | Python few-shot block | #14 | embedded |
-| 17 | `python_critic_prompt(code, schema_for_validation, query)` | `prompts.py:291` | Python critic | `attempts._run_python_critic:453` | `llm.complete_json` |
-| 18 | `R_CODE_GUIDELINES` | `prompts.py:303` | R output-format block | #19 | embedded |
-| 19 | `build_r_system_prompt(context, discovery, attempt_history)` | `prompts.py:332` | R target system prompt | `attempts:158` | `llm.complete` |
-| 20 | `build_r_user_prompt(context)` | `prompts.py:375` | R user prompt | `attempts:159` | idem |
-| 21 | `_format_r_examples(examples)` | `prompts.py:387` | R few-shot block | #19 | embedded |
-| 22 | `r_critic_prompt(code, schema_for_validation, query)` | `prompts.py:402` | R critic | `attempts._run_r_critic:470` | `llm.complete_json` |
-| 23 | `SAS_CODE_GUIDELINES` | `prompts.py:414` | SAS output-format block | #24 | embedded |
-| 24 | `build_sas_system_prompt(context, discovery, attempt_history)` | `prompts.py:439` | SAS target system prompt | `attempts:161` | `llm.complete` |
-| 25 | `build_sas_user_prompt(context)` | `prompts.py:482` | SAS user prompt | `attempts:162` | idem |
-| 26 | `_format_sas_examples(examples)` | `prompts.py:494` | SAS few-shot block | #24 | embedded |
-| 27 | `sas_critic_prompt(code, schema_for_validation, query)` | `prompts.py:509` | SAS critic | `attempts._run_sas_critic:487` | `llm.complete_json` |
-| 28 | `critic_prompt(sql, schema_for_validation, query, semantic_json)` | `prompts.py:521` | **SQL / SMQ critic** | `attempts._run_critic:436` | `llm.complete_json` |
-| 29 | `attempts._compact_history(reports)` | `app/core/orchestrator/attempts.py:571` | `ATTEMPT HISTORY` block text | `run_attempt_loop:153` | embedded in system |
-| 30 | `DiscoveryEngine.analyze_query` inline prompt | `app/core/orchestrator/discovery_engine.py:81` | **Query-analysis prompt** | `builtin_sql_generator:248`, `discover_for_api:544` | `llm.complete_json` (no max_tokens override) |
+| 1 | `OPTIMIZATION_INSTRUCTIONS` | `app/core/orchestrator/prompts.py:14` | Scenario rules: schema-free rewrite | `scenario_rules` | system message of generation attempt |
+| 2 | `REFINEMENT_INSTRUCTIONS` | `prompts.py:21` | Scenario rules: scope expansion allowed | `scenario_rules` | idem |
+| 3 | `SCOPE_GUARD` | `prompts.py:26` | Filter-preservation rule | `_filter_block` | idem |
+| 4 | `scenario_rules(context)` | `prompts.py:61` | Select scenario block (or `""`) | `_scenario_section`, `build_optimization_system_prompt` | idem |
+| 5 | `_filter_block(context)` | `prompts.py:71` | Active session filters + optional SCOPE GUARD | `_scenario_section`, `build_system_prompt` (semantic) | idem |
+| 6 | `_scenario_section(context)` | `prompts.py:141` | GENERATION MODE + rules + filters | `build_system_prompt`, `build_python/r/sas_system_prompt` | idem |
+| 6b | `grain_prompt_line(context)` | `prompts.py:79` | Optional `Current target grain:` / advisory grain line | `build_system_prompt` (both branches) | idem |
+| 6c | `_semantic_output_format(model)` | `prompts.py:108` | Strict SMQ contract + model-named worked example | `build_system_prompt` (semantic) | idem |
+| 7 | `build_system_prompt(context, discovery, semantic, semantic_models_json, attempt_history, semantic_model)` | `prompts.py:151` | **Main SQL / SMQ system prompt** | `attempts.run_attempt_loop:260` | `llm.complete([system,user])` |
+| 8 | `build_refinement_system_prompt(context, discovery, attempt_history)` | `prompts.py:234` | Thin alias of #7 | (no in-repo caller) | — |
+| 9 | `build_optimization_system_prompt(context, existing_code, error_message, target_language)` | `prompts.py:243` | Provided-code / optimize system prompt | `builtin_sql_generator._generate_from_provided_sql:519` | `llm.complete([system,user])` |
+| 10 | `build_optimization_user_prompt(context, existing_code, error_message)` | `prompts.py:278` | Provided-code user prompt | `builtin_sql_generator:525` | idem |
+| 11 | `build_user_prompt(context)` | `prompts.py:291` | **SQL user prompt** | `attempts.run_attempt_loop:268` | idem |
+| 12 | `_format_examples(examples, analysis)` | `prompts.py:303` | Few-shot block (`Q: … / SQL: …`) | `build_system_prompt` | embedded in system |
+| 13 | `PYTHON_CODE_GUIDELINES` | `prompts.py:314` | Python output-format block | `build_python_system_prompt` | embedded in system |
+| 14 | `build_python_system_prompt(context, discovery, attempt_history)` | `prompts.py:344` | Python target system prompt | `attempts:251` | `llm.complete` |
+| 15 | `build_python_user_prompt(context)` | `prompts.py:389` | Python user prompt | `attempts:252` | idem |
+| 16 | `_format_python_examples(examples)` | `prompts.py:401` | Python few-shot block | #14 | embedded |
+| 17 | `python_critic_prompt(code, schema_for_validation, query)` | `prompts.py:416` | Python critic | `attempts._run_python_critic:650` | `llm.complete_json` |
+| 18 | `R_CODE_GUIDELINES` | `prompts.py:428` | R output-format block | #19 | embedded |
+| 19 | `build_r_system_prompt(context, discovery, attempt_history)` | `prompts.py:457` | R target system prompt | `attempts:254` | `llm.complete` |
+| 20 | `build_r_user_prompt(context)` | `prompts.py:502` | R user prompt | `attempts:255` | idem |
+| 21 | `_format_r_examples(examples)` | `prompts.py:514` | R few-shot block | #19 | embedded |
+| 22 | `r_critic_prompt(code, schema_for_validation, query)` | `prompts.py:529` | R critic | `attempts._run_r_critic:667` | `llm.complete_json` |
+| 23 | `SAS_CODE_GUIDELINES` | `prompts.py:541` | SAS output-format block | #24 | embedded |
+| 24 | `build_sas_system_prompt(context, discovery, attempt_history)` | `prompts.py:566` | SAS target system prompt | `attempts:257` | `llm.complete` |
+| 25 | `build_sas_user_prompt(context)` | `prompts.py:611` | SAS user prompt | `attempts:258` | idem |
+| 26 | `_format_sas_examples(examples)` | `prompts.py:623` | SAS few-shot block | #24 | embedded |
+| 27 | `sas_critic_prompt(code, schema_for_validation, query)` | `prompts.py:638` | SAS critic | `attempts._run_sas_critic:684` | `llm.complete_json` |
+| 28 | `critic_prompt(sql, schema_for_validation, query, semantic_json)` | `prompts.py:650` | **SQL / SMQ critic** | `attempts._run_critic:633` | `llm.complete_json` |
+| 29 | `attempts._compact_history(reports)` | `app/core/orchestrator/attempts.py:923` | `ATTEMPT HISTORY` block text | `run_attempt_loop:249` | embedded in system |
+| 30 | `DiscoveryEngine.analyze_query` inline prompt | `app/core/orchestrator/discovery_engine.py:87` | **Query-analysis prompt** | `builtin_sql_generator:296`, `discover_for_api:616` | `llm.complete_json` (no max_tokens override) |
 | 31 | `SCENARIO_SYSTEM_PROMPT` + `_llm_scenario` | `app/core/orchestrator/scenario.py:146`, `271` | **Scenario classification** | `classify_scenario:259` ← `router.route:104` | `llm.complete(..., max_tokens=16)` |
 | 32 | `classify_intent` inline prompt | `app/core/orchestrator/router.py:159` | **Intent classification** | `router.route:143` | `llm.complete(..., max_tokens=16)` |
-| 33 | `COREFERENCE_SYSTEM_PROMPT` + `_llm_rewrite` user prompt | `app/core/orchestrator/coreference.py:60`, `155` | **Coreference rewrite** | `resolve_coreference:125` ← `session_context.prepare_conversation_context:299` | `llm.complete_json(..., max_tokens=256)` |
+| 33 | `COREFERENCE_SYSTEM_PROMPT` + `_llm_rewrite` user prompt | `app/core/orchestrator/coreference.py:60`, `155` | **Coreference rewrite** | `resolve_coreference:125` ← `session_context.prepare_conversation_context:301` | `llm.complete_json(..., max_tokens=256)` |
 | 34 | `_deterministic_rewrite` sentence | `coreference.py:253` | LLM-free filter carry-forward | fallback in `resolve_coreference:129` | no LLM |
 | 35 | `build_recent_conversation_section(turns)` | `app/services/discuss_prompts.py:121` | `## RECENT CONVERSATION` block | `build_classifier_prompt` | embedded in system |
 | 36 | `build_tool_selection_system_prompt(tools)` | `discuss_prompts.py:144` | Tool-picker system prompt | `discuss_service._select_tool:243` | `litellm.completion(..., max_tokens=1024, temperature=0.2)` |
@@ -7192,7 +7501,7 @@ blocks (#67/#68), not standalone prompts.
 #### 8.2.1 Concrete filter text (`filter_state_text`)
 
 `AgentContext.filter_state_text` is set only from `ConversationContextResult.filter_state_text()`
-(`app/core/orchestrator/session_context.py:333`, `app/models/pipeline.py:100-103`):
+(`app/core/orchestrator/session_context.py:375`, `app/models/pipeline.py:101-104`):
 
 ```python
 def filter_state_text(self) -> str:
@@ -7224,11 +7533,11 @@ Q: {turn0.question} | A: {turn0.answer}
 Q: {turn1.question} | A: {turn1.answer}
 ```
 
-Older answers are truncated to 200 chars (`OlderAnswerTruncateChars`, `constants.py:69`); the last
+Older answers are truncated to 200 chars (`OlderAnswerTruncateChars`, `constants.py:75`); the last
 answer is not truncated; failed/canceled turns render `[failed]` / `[canceled]`. `preprocessing.py:52`
 parses `queryHistory` into turns with `q:` / `a:` prefixes.
 
-#### 8.2.3 `OPTIMIZATION_INSTRUCTIONS` (`prompts.py:11-15`)
+#### 8.2.3 `OPTIMIZATION_INSTRUCTIONS` (`prompts.py:14-18`)
 
 ```text
 ### OPTIMIZATION INSTRUCTIONS
@@ -7238,7 +7547,7 @@ Preserve every filter, join, entity and the output grain exactly as written.
 Change only syntax, structure, formatting or performance characteristics.
 ```
 
-#### 8.2.4 `REFINEMENT_INSTRUCTIONS` (`prompts.py:18-21`)
+#### 8.2.4 `REFINEMENT_INSTRUCTIONS` (`prompts.py:21-24`)
 
 ```text
 ### REFINEMENT INSTRUCTIONS
@@ -7247,14 +7556,14 @@ Change only syntax, structure, formatting or performance characteristics.
 3. Filter Preservation: Ensure established domain filters (e.g., specific products, categories, or date ranges) are maintained in the new query structure.
 ```
 
-#### 8.2.5 `SCOPE_GUARD` (`prompts.py:23-24`)
+#### 8.2.5 `SCOPE_GUARD` (`prompts.py:26-27`)
 
 ```text
 ### SCOPE GUARD
 Preserve all active filters from preceding turns unless the user explicitly requests their removal.
 ```
 
-#### 8.2.6 `scenario_rules(context)` (`prompts.py:27-34`)
+#### 8.2.6 `scenario_rules(context)` (`prompts.py:61-68`)
 
 ```python
 def scenario_rules(context: AgentContext) -> str:
@@ -7272,7 +7581,7 @@ def scenario_rules(context: AgentContext) -> str:
 `optimization` → OPTIMIZATION_INSTRUCTIONS; `refinement`/`drill_down` → REFINEMENT_INSTRUCTIONS;
 `fresh_start`/`debugging` → nothing.
 
-#### 8.2.7 `_filter_block(context)` (`prompts.py:37-42`)
+#### 8.2.7 `_filter_block(context)` (`prompts.py:71-76`)
 
 ```python
 def _filter_block(context: AgentContext) -> str:
@@ -7300,7 +7609,7 @@ ACTIVE SESSION FILTERS (inherited from preceding turns)
 (none)
 ```
 
-#### 8.2.8 `_scenario_section(context)` (`prompts.py:45-52`)
+#### 8.2.8 `_scenario_section(context)` (`prompts.py:141-148`)
 
 ```python
 def _scenario_section(context: AgentContext) -> str:
@@ -7317,7 +7626,7 @@ def _scenario_section(context: AgentContext) -> str:
 SCOPE GUARD (only when real filters exist). The scenario rules come **before** the filter block, so
 OPTIMIZATION/REFINEMENT instructions sit between the mode label and the inherited filters.
 
-#### 8.2.9 Few-shot example formatting, SQL variant (`prompts.py:180-188`)
+#### 8.2.9 Few-shot example formatting, SQL variant (`prompts.py:303-311`)
 
 ```python
 def _format_examples(examples: List[FewShotExample], analysis: QueryAnalysis) -> str:
@@ -7336,7 +7645,7 @@ a line `SQL:` then the payload (the SMQ JSON when present, otherwise the SQL). E
 
 #### 8.2.10 Value-mappings block (identical in all four system prompts)
 
-`prompts.py:80-82` (SQL), `229-231` (Python), `340-342` (R), `447-449` (SAS):
+`prompts.py:182-184` (SQL), `352-354` (Python), `465-467` (R), `574-576` (SAS):
 
 ```python
 mapping_text = "\n".join(
@@ -7346,7 +7655,7 @@ mapping_text = "\n".join(
 
 One line per mapping, `→` is U+2192 surrounded by single spaces; empty → `(none)`.
 
-#### 8.2.11 `_compact_history` — the ATTEMPT HISTORY text (`attempts.py:571-580`)
+#### 8.2.11 `_compact_history` — the ATTEMPT HISTORY text (`attempts.py:923-933`)
 
 ```python
 def _compact_history(reports: List[BuiltInAttemptReport]) -> str:
@@ -7363,18 +7672,18 @@ def _compact_history(reports: List[BuiltInAttemptReport]) -> str:
 
 Empty history → `""`, which the system prompt renders as `(first attempt)`. Older reports render as
 `attempt {n} {stage}: {why_it_failed}`; the most recent report is the raw Pydantic JSON of
-`BuiltInAttemptReport` (`pipeline.py:167-173`: `attempt_number`, `stage`, `what_was_tried`,
+`BuiltInAttemptReport` (`pipeline.py:171-178`: `attempt_number`, `stage`, `what_was_tried`,
 `why_it_failed`, `recovery_action`, `candidate_objects`).
 
 #### 8.2.12 Objective slots filled by the hydrator
 
 `AVAILABLE SCHEMAS`, `SUPPLEMENTARY SCHEMAS` and `schema_context_for_validation` are produced by
 `SqlContextHydrator.build_contexts` (`app/services/sql_context_hydrator.py:43-88`), called from
-`builtin_sql_generator.py:286-292`:
+`builtin_sql_generator.py:329-338`:
 
 - Objects are de-duplicated by `merge_key()`, `required`/`priority`/matched-column objects first, then
   the rest down to a score floor of `best * 0.05`, capped at `PromptContextDiscoveryCap = 8`
-  (`RefinementPromptContextCap = 12` for refinement turns) — `constants.py:34,37`.
+  (`RefinementPromptContextCap = 12` for refinement turns) — `constants.py:37,40`.
 - A block is the object's markdown; if it does not start with `#` it is prefixed with
   `## {schema}.{object}` + newline. Validation context additionally prefixes
   `-- Matched column evidence: {qualified}.{col}, …` + newline when matched columns exist (line 66).
@@ -7385,7 +7694,7 @@ Empty history → `""`, which the system prompt renders as `(first attempt)`. Ol
 
 ### 8.3 The main SQL system prompt — `build_system_prompt`
 
-**Signature** (`prompts.py:55-61`):
+**Signature** (`prompts.py:151-158`):
 
 ```python
 def build_system_prompt(
@@ -7394,6 +7703,7 @@ def build_system_prompt(
     semantic: bool = False,
     semantic_models_json: str = "[]",
     attempt_history: str = "",
+    semantic_model: Any = None,
 ) -> str:
 ```
 
@@ -7401,57 +7711,66 @@ def build_system_prompt(
 
 | Slot | Source |
 |---|---|
-| `dbms` | `context.dbms_type or "SQL Server"`. **In the live HTTP pipeline this is always the literal `SQL Server`**: nothing assigns `AgentContext.dbms_type` (`pipeline.py:145` default) and `preprocess` (`preprocessing.py:90`) does not pass it. Anything the data-source registry stores (`db_type`, `schemas.py:405`) never reaches this prompt. |
+| `dbms` | `context.dbms_type or "SQL Server"`. **In the live HTTP pipeline this is always the literal `SQL Server`**: nothing assigns `AgentContext.dbms_type` (`pipeline.py:146` default) and `preprocess` (`preprocessing.py:90`) does not pass it. Anything the data-source registry stores (`db_type`, `schemas.py:405`) never reaches this prompt. |
 | `context.generation_mode` | `GenerationMode`; set by `router.route` from `classify_scenario` (`router.py:110`) or `preprocessing.py:81-93` |
 | `context.filter_state_text` | §8.2.1 |
 | `discovery.query_analysis` | `DiscoveryEngine.analyze_query` (§8.10) |
 | `discovery.few_shot_examples` | KB/precomputed hits from `discover()` |
-| `discovery.value_mappings` | value-index hits (`discovery_engine.py:241-245`) |
-| `discovery.active_groups.summary` | `f"Active data groups: {', '.join(names)}"` or `""` (`discovery_engine.py:130`) |
+| `discovery.value_mappings` | value-index hits (`discovery_engine.py:249-253`) |
+| `discovery.active_groups.summary` | `f"Active data groups: {', '.join(names)}"` or `""` (`discovery_engine.py:138`) |
 | `discovery.schema_context` / `selected_object_context` | hydrator outputs (§8.2.12) |
 | `discovery.supplementary_objects` | hydrator output |
 | `attempt_history` | `_compact_history` (§8.2.11) |
 | `semantic` | `stores.semantic.is_enabled(request.semantic_mode)` unless the target is python/r/sas (`builtin_sql_generator.py:170`) |
-| `semantic_models_json` | `active_model.model_dump_json()` or `"[]"` (`attempts.py:119-120`) |
+| `semantic_models_json` | `active_model.model_dump_json()` or `"[]"` (`attempts.py:154, 173`) |
+| `semantic_model` | the active `SemanticModel`, or `None` outside the semantic branch (`attempts.py:265`); `_semantic_output_format(model)` reads its first measure/dimension name for the worked example (§8.4) |
+| `context.target_grain` | the grain carried by `apply_conversation_context` (§5.8); rendered by `grain_prompt_line`, which returns `""` when no grain is carried |
 
 **Assembly order (non-semantic):**
 
 1. `DBMS CONTEXT (STRICT)` header — 3 lines (dialect + hardcoded PostgreSQL guidance).
 2. blank line
 3. `_scenario_section(context)` (GENERATION MODE → scenario rules → filters + SCOPE GUARD)
-4. blank line
+4. blank line, then `grain_prompt_line(context)` and a blank line — both omitted when no grain is carried
+   (`grain_block = f"\n{grain}\n" if grain else ""`)
 5. `QUERY ANALYSIS`
 6. blank line
 7. `ACTIVE BUSINESS CONTEXT`
 8. blank line
-9. `KNOWLEDGE BASE EXAMPLES`
+9. `AUTHORIZED_OBJECT_SCOPE` block (verbatim constant)
 10. blank line
-11. `VERIFIED DATA MAPPINGS`
+11. `KNOWLEDGE_BASE_EXAMPLES_HEADER` + the formatted examples
 12. blank line
-13. `AVAILABLE SCHEMAS`
+13. `VERIFIED DATA MAPPINGS`
 14. blank line
-15. `SUPPLEMENTARY SCHEMAS`
+15. `AVAILABLE SCHEMAS`
 16. blank line
-17. `ATTEMPT HISTORY`
+17. `SUPPLEMENTARY SCHEMAS`
 18. blank line
-19. `OUTPUT FORMAT`
+19. `ZERO_HALLUCINATION_POLICY` block (verbatim constant)
+20. blank line
+21. `ATTEMPT HISTORY`
+22. blank line
+23. `OUTPUT FORMAT`
 
-**Verbatim template** (`prompts.py:83-112`; `{...}` are f-string slots, everything else is literal):
+**Verbatim template** (`prompts.py:187-231`; `{...}` are f-string slots, everything else is literal):
 
-```text
+````text
 DBMS CONTEXT (STRICT)
 Target dialect: {dbms}. Use dialect-specific identifier quoting. Do not emit cross-dialect syntax.
 PostgreSQL: LIMIT not TOP; CASE not IF(); explicit casts; schema-qualify objects.
 
 {_scenario_section(context)}
-
+{grain_block}
 QUERY ANALYSIS
 complexity={analysis.complexity}; keywords={', '.join(analysis.keywords)}; entities={', '.join(analysis.entities)}
 
 ACTIVE BUSINESS CONTEXT
 {discovery.active_groups.summary or '(none)'}
 
-KNOWLEDGE BASE EXAMPLES
+{AUTHORIZED_OBJECT_SCOPE}
+
+{KNOWLEDGE_BASE_EXAMPLES_HEADER}
 {examples}
 
 VERIFIED DATA MAPPINGS
@@ -7463,14 +7782,27 @@ AVAILABLE SCHEMAS
 SUPPLEMENTARY SCHEMAS
 {discovery.supplementary_objects}
 
+{ZERO_HALLUCINATION_POLICY}
+
 ATTEMPT HISTORY
 {attempt_history or '(first attempt)'}
 
 OUTPUT FORMAT
-Optionally include a /* reasoning */ block, then fenced SQL. Return a single valid {dbms} statement.
-```
+Reasoning stays inside a /* ... */ comment block; the executable statement goes in a fenced SQL
+block directly below it, in that order. Return a single valid {dbms} statement. Your reply must
+match this layout exactly (the query body below is illustrative -- emit the real query):
 
-The template ends with a trailing newline (the closing `"""` follows `statement.` on the next line).
+/* Reasoning:
+- [intent and decomposition]
+- [tables, joins and filters]
+*/
+
+```sql
+SELECT ...
+```
+````
+
+The template ends with a trailing newline (the closing `"""` follows the closing ` ``` ` on the next line).
 
 **Restrictions to copy exactly:**
 
@@ -7480,8 +7812,21 @@ The template ends with a trailing newline (the closing `"""` follows `statement.
 - `keywords`/`entities` are joined with `", "` (no backticks, no brackets).
 - `SUPPLEMENTARY SCHEMAS` can be an empty string, leaving a blank line after the heading.
 - The PostgreSQL line is emitted for **every** dialect, including SQL Server (see the `dbms` note above).
-- The only "reasoning" allowance is the `/* reasoning */` comment mentioned in the OUTPUT FORMAT line;
-  there is no separate reasoning section.
+- The reasoning allowance is a `/* ... */` comment block placed **before** the fenced SQL, and the reply must
+  follow that two-part layout exactly; the `SELECT ...` shown in the block is illustrative.
+- `AUTHORIZED_OBJECT_SCOPE`, `KNOWLEDGE_BASE_EXAMPLES_HEADER` and `ZERO_HALLUCINATION_POLICY` are the only
+  rule blocks inserted. A third `### CRITICAL SQL RULES (SCHEMA ADHERENCE)` fragment used to restate them
+  (its subsections were numbered 1 and 5) and has been removed: its two unique sentences now live in
+  `AUTHORIZED_OBJECT_SCOPE` ("trust the table names, column names, and join predicates used in that
+  example") and `ZERO_HALLUCINATION_POLICY` ("treat them as whitelisted: never report them as missing
+  tables"). The Python/R/SAS prompts insert the first two only. (The legacy wrapper prompt in
+  `generation_service.py` still carries its own, unrelated `## CRITICAL SQL RULES` block — §8.18.)
+- The grain line has two forms: `Current target grain: {grain}`, or — when `context.grain_is_advisory`
+  is true (the turn fell back from semantic mode to physical SQL) — `Target grain carried from
+  conversational context: {grain} (advisory only: map it to the grain of this request rather than
+  treating it as an object name. Do not use this text as a table, column, alias, or GROUP BY target.
+  It may be referenced only where it names an object authorized above.)` `grain_prompt_line` returns
+  `""` in both forms when no grain is carried.
 
 **Fully rendered example — fresh start, no filters, no attempt history**
 
@@ -7490,7 +7835,7 @@ Inputs: `dbms="SQL Server"`, mode `fresh_start`, `filter_state_text="(none)"`,
 `active_groups.summary=""`, `examples="(none)"`, `mappings=[]`,
 `schema_context="## dbo.Orders\nOrderID INT"`, `supplementary_objects=""`, `attempt_history=""`:
 
-```text
+````text
 DBMS CONTEXT (STRICT)
 Target dialect: SQL Server. Use dialect-specific identifier quoting. Do not emit cross-dialect syntax.
 PostgreSQL: LIMIT not TOP; CASE not IF(); explicit casts; schema-qualify objects.
@@ -7504,7 +7849,17 @@ complexity=simple; keywords=orders; entities=Order
 ACTIVE BUSINESS CONTEXT
 (none)
 
-KNOWLEDGE BASE EXAMPLES
+### AUTHORIZED OBJECT SCOPE
+You are authorized to reference database objects (tables, views, functions, and columns) that appear in ANY of the following sources:
+1. Objects explicitly defined in `AVAILABLE SCHEMAS` or `PRIORITY SELECTED OBJECTS`.
+2. Objects referenced in verified SQL queries within `KNOWLEDGE BASE EXAMPLES` / `PRECOMPUTED Q&A`.
+
+Objects appearing in Knowledge Base examples represent pre-verified, production-tested database assets. You are fully authorized to query them even if their complete schema definition is omitted from `AVAILABLE SCHEMAS`. When you adapt a Knowledge Base query, trust the table names, column names, and join predicates used in that example.
+
+### KNOWLEDGE BASE EXAMPLES
+The following are verified reference queries from the Knowledge Base.
+- You may adapt these queries, reuse their join structures, and directly query any tables or views they reference.
+- Adapt row limits, filters, date ranges, and projections to match the Target Request, but consider all referenced tables and columns as fully authorized.
 (none)
 
 VERIFIED DATA MAPPINGS
@@ -7517,12 +7872,31 @@ OrderID INT
 SUPPLEMENTARY SCHEMAS
 
 
+### ZERO HALLUCINATION POLICY
+- You MUST only use database objects (tables, views, functions, columns) that are:
+  a) Explicitly documented in `AVAILABLE SCHEMAS` or `PRIORITY SELECTED OBJECTS`, OR
+  b) Directly referenced in the provided `KNOWLEDGE BASE EXAMPLES`.
+- Objects referenced in `KNOWLEDGE BASE EXAMPLES` are pre-validated, so treat them as whitelisted: never report them as missing tables, and do NOT emit `TABLE_VALIDATION_ERROR` or `COLUMN_VALIDATION_ERROR` for objects or columns that appear in KB reference SQL.
+- Never invent hypothetical table names or columns that appear in NEITHER the schema blocks NOR the Knowledge Base examples.
+- Only return `TABLE_VALIDATION_ERROR: [MissingTableName]` if a required object cannot be found in `AVAILABLE SCHEMAS` AND is absent from the provided `KNOWLEDGE BASE EXAMPLES`.
+
 ATTEMPT HISTORY
 (first attempt)
 
 OUTPUT FORMAT
-Optionally include a /* reasoning */ block, then fenced SQL. Return a single valid SQL Server statement.
+Reasoning stays inside a /* ... */ comment block; the executable statement goes in a fenced SQL
+block directly below it, in that order. Return a single valid SQL Server statement. Your reply must
+match this layout exactly (the query body below is illustrative -- emit the real query):
+
+/* Reasoning:
+- [intent and decomposition]
+- [tables, joins and filters]
+*/
+
+```sql
+SELECT ...
 ```
+````
 
 **Fully rendered example — optimization with one inherited filter**
 
@@ -7555,9 +7929,9 @@ QUERY ANALYSIS
 > Note: pasting the built-in orchestrator's **non-semantic** system prompt as the *user* message to the
 > legacy `generate_sql_with_context` would double-wrap it (the legacy wrapper prepends its own
 > `You are an expert T-SQL developer for Microsoft SQL Server.` header, §8.18.1). The built-in path passes
-> the system prompt in the `system` role (`attempts.py:176`).
+> the system prompt in the `system` role (`attempts.py:281`).
 
-**`build_refinement_system_prompt`** (`prompts.py:115-121`) is a one-line delegation — it adds no
+**`build_refinement_system_prompt`** (`prompts.py:234-240`) is a one-line delegation — it adds no
 refinement-specific text of its own:
 
 ```python
@@ -7566,47 +7940,59 @@ return build_system_prompt(context, discovery, attempt_history=attempt_history)
 
 The refinement behaviour comes from `REFINEMENT_INSTRUCTIONS` selected inside `_scenario_section`.
 `build_refinement_system_prompt` has **no caller** in the repository: refinement turns go through
-`attempts.run_attempt_loop`, which calls `build_system_prompt` directly (`attempts.py:164`).
+`attempts.run_attempt_loop`, which calls `build_system_prompt` directly (`attempts.py:260`).
 
 ---
 
 ### 8.4 Semantic mode (SMQ) system prompt
 
-`build_system_prompt(..., semantic=True)` returns early (`prompts.py:62-82`) and **never** emits the
+`build_system_prompt(..., semantic=True)` returns early (`prompts.py:160-178`) and **never** emits the
 scenario rules, the analysis line, business context, examples, mappings, schemas, supplementary
-schemas, attempt history or the SQL output-format block. The return expression:
+schemas or the SQL output-format block. It **does** include the optional grain line, `ATTEMPT HISTORY`
+(always) and the filter block. The return expression:
 
 ```python
 semantic_blocks = [f"GENERATION MODE\n{context.generation_mode.value}"]
 if context.filter_state_text and context.filter_state_text != "(none)":
     semantic_blocks.append(_filter_block(context))
-# The retry prompt is the main corrective signal in semantic mode, so a reply that
-# drifted back to SQL is called out explicitly. The history embeds the offending
-# payload, so detection parses structure rather than searching for a key name.
-if any(looks_like_smq(line) for line in semantic_blocks if line):
+grain = grain_prompt_line(context)
+if grain:
+    semantic_blocks.append(grain)
+# Attempt history is the corrective signal. It is scanned for an SMQ payload so a
+# reply that drifted back to an unusable shape is called out explicitly.
+semantic_blocks.append(f"ATTEMPT HISTORY\n{attempt_history or '(first attempt)'}")
+if any(looks_like_smq(block) for block in semantic_blocks if block):
     semantic_blocks.append(SEMANTIC_OUTPUT_CORRECTION)
 semantic_extra = "\n\n".join(semantic_blocks)
 return (
     f"DBMS CONTEXT (SEMANTIC MODE)\nYou compile Semantic Model Queries for {dbms}.\n"
     f"AVAILABLE SEMANTIC MODELS (JSON)\n{semantic_models_json}\n"
     f"{semantic_extra}\n"
-    "SEMANTIC OUTPUT FORMAT (STRICT)\n"
-    "Reply with a fenced ```smq block containing "
-    '{"metrics":[],"dimensions":[],"filters":[],"timeframes":[]}. '
-    "Use only model names. No reasoning, view, or scripting sections."
+    f"{_semantic_output_format(semantic_model)}"
 )
 ```
 
-> Note the correction injection (`prompts.py:28`, `:71-73`): when an inherited session-filter value is
-> itself SMQ-shaped, `SEMANTIC_OUTPUT_CORRECTION` is appended, which restates that the reply must be an
-> `smq` block and must not be SQL. This is the one addition to the otherwise frozen semantic prompt, and
-> it exists because the retry prompt is the main corrective signal in semantic mode (§9.10.3).
+> Note the correction injection (`prompts.py:54-58`, `:169-171`): `ATTEMPT HISTORY` embeds the offending
+> payload, so when any block reads as SMQ-shaped, `SEMANTIC_OUTPUT_CORRECTION` is appended, which restates
+> that the reply must be an `smq` block of plain strings and must not be SQL. It exists because the retry
+> prompt is the main corrective signal in semantic mode (§9.10.3).
 
-**Assembly order:** `DBMS CONTEXT (SEMANTIC MODE)` → `AVAILABLE SEMANTIC MODELS (JSON)` → `GENERATION
-MODE` (+ optional filters/SCOPE GUARD, + optional correction) → `SEMANTIC OUTPUT FORMAT (STRICT)`. Every
-line is separated by a single `\n`; there are no blank lines anywhere in the semantic prompt.
+**Assembly order:** `DBMS CONTEXT (SEMANTIC MODE)` → `AVAILABLE SEMANTIC MODELS (JSON)` → the block
+section (`GENERATION MODE`, optional filters/SCOPE GUARD, optional grain line, `ATTEMPT HISTORY`, optional
+correction) → `SEMANTIC OUTPUT FORMAT (STRICT)`. The two header lines are separated by a single `\n`; each
+`semantic_blocks` entry is joined with `\n\n`, so the block section is the only place blank lines appear.
 
-**Rendered output (no filters, `semantic_models_json="[]"`):**
+**`SEMANTIC OUTPUT FORMAT (STRICT)`** is built by `_semantic_output_format(semantic_model)`
+(`prompts.py:108-138`), not hardcoded. `_first_model_name` (`:99-105`) takes the first named measure and
+the first named dimension off the active model — via `model_items`/`model_item_name` from
+`app.utils.query_vocabulary`, so a dict model and an object model both work — and falls back to
+`<metric_name>` / `<dimension_name>` when the collection is empty; those two names are substituted into a
+worked example. The block itself is fixed: it requires a fenced `smq` block containing only JSON, lists
+the four keys with their exact types, shows the type rule with a rejected and an accepted example, and
+closes with three rules (real model names only; never wrap a name in an object or rename it with a key such
+as `metric`, `measure`, `name` or `dimension`; preserve intent, date scopes and filters).
+
+**Rendered output (no filters, no grain, `semantic_models_json="[]"`, `semantic_model=None`):**
 
 ````text
 DBMS CONTEXT (SEMANTIC MODE)
@@ -7615,11 +8001,34 @@ AVAILABLE SEMANTIC MODELS (JSON)
 []
 GENERATION MODE
 fresh_start
+
+ATTEMPT HISTORY
+(first attempt)
+
 SEMANTIC OUTPUT FORMAT (STRICT)
-Reply with a fenced ```smq block containing {"metrics":[],"dimensions":[],"filters":[],"timeframes":[]}. Use only model names. No reasoning, view, or scripting sections.
+Return a fenced `smq` code block containing only JSON. A `smq` block is the ONLY accepted output in this mode: never answer with SQL, and never add prose, explanations, or extra keys.
+
+The block must contain exactly these four keys, with these exact types:
+{"metrics":["<metric_name>"],"dimensions":["<dimension_name>"],"filters":[],"timeframes":[]}
+
+Worked example using the metric and dimension names this model actually exposes:
+{"metrics":["<metric_name>"],"dimensions":["<dimension_name>"],"filters":[],"timeframes":[]}
+
+CRITICAL TYPE RULE: "metrics" and "dimensions" must be arrays of PLAIN STRINGS.
+- WRONG (rejected): {"metrics":[{"metric":"row_count"}],"dimensions":[{"dimension":"model"}]}
+- RIGHT (accepted): {"metrics":["row_count"],"dimensions":["model"]}
+
+Rules:
+- Use only metric names and dimension names present in AVAILABLE SEMANTIC MODELS. Never invent a metric.
+- Do not wrap a name in an object, and do not rename it with a key such as "metric", "measure", "name", or "dimension".
+- Preserve user intent, date scopes, and filters in SMQ form.
+
 ````
 
-**Rendered output with one inherited filter** (middle section becomes `GENERATION MODE\noptimization\n\nACTIVE SESSION FILTERS…\n\n### SCOPE GUARD…`):
+For an active model whose first measure is `row_count` and first dimension is `model`, only the worked
+example line changes: `{"metrics":["row_count"],"dimensions":["model"],"filters":[],"timeframes":[]}`.
+
+**Rendered output with one inherited filter** (middle section becomes `GENERATION MODE\noptimization\n\nACTIVE SESSION FILTERS…\n\n### SCOPE GUARD…\n\nATTEMPT HISTORY…`):
 
 ````text
 DBMS CONTEXT (SEMANTIC MODE)
@@ -7634,17 +8043,21 @@ ACTIVE SESSION FILTERS (inherited from preceding turns)
 
 ### SCOPE GUARD
 Preserve all active filters from preceding turns unless the user explicitly requests their removal.
+
+ATTEMPT HISTORY
+(first attempt)
+
 SEMANTIC OUTPUT FORMAT (STRICT)
-Reply with a fenced ```smq block containing {"metrics":[],"dimensions":[],"filters":[],"timeframes":[]}. Use only model names. No reasoning, view, or scripting sections.
+… (same strict block as above) …
 ````
 
-**The semantic user prompt is not a separate builder** — `attempts.py:204` calls the same
+**The semantic user prompt is not a separate builder** — `attempts.py:268` calls the same
 `build_user_prompt(context)` (§8.6). The response is parsed by `extract_smq_json` / `parse_smq`
-(`app/services/semantic_smq.py:107`, `:226`): five accepted shapes, taken in candidate order — a
+(`app/services/semantic_smq.py:127`, `:418`): five accepted shapes, taken in candidate order — a
 ` ```smq ` fence, any other fence (a leading language tag is dropped), the first brace-balanced `{...}`
 region, then the whole text — each validated as a JSON object carrying a `metrics` **or** `dimensions`
 array. Anything carrying an SMQ payload is then compiled; the raw-SQL fallback
-(`SemanticCompilationFallbackToRawSql`, `constants.py:60`) applies only to a reply with **no** SMQ
+(`SemanticCompilationFallbackToRawSql`, `constants.py:66`) applies only to a reply with **no** SMQ
 payload at all. Full spec: §9.10.
 
 ---
@@ -7653,9 +8066,9 @@ payload at all. Full spec: §9.10.
 
 Entered from `builtin_sql_generator.generate_sql_builtin:173-178` when
 `decision.skip_discovery and route in {OPTIMIZE, GENERATE} and request.existing_code`; the builder is
-called in `_generate_from_provided_sql:447-453`.
+called in `_generate_from_provided_sql:519-525`.
 
-**`build_optimization_system_prompt(context, existing_code, error_message=None, target_language="sql")`** (`prompts.py:124-152`)
+**`build_optimization_system_prompt(context, existing_code, error_message=None, target_language="sql")`** (`prompts.py:243-275`)
 
 Local variables:
 
@@ -7681,7 +8094,11 @@ EDITOR {language.upper()} (the only permitted source of tables, columns and filt
 {existing_code}
 {error_block}
 OUTPUT FORMAT
-Return only the rewritten {language} code. No commentary, no catalog lookups, no new objects.
+Return only the rewritten {language} code, in place of the editor code above: no commentary, no
+catalog lookups, no new objects, no markdown fence. The reply is exactly the code, starting at its
+first line:
+
+<rewritten {language} code>
 ```
 
 Notes for byte parity:
@@ -7691,7 +8108,7 @@ Notes for byte parity:
   when the mode is refinement/drill_down.
 - `EDITOR {language.upper()}` renders `EDITOR SQL SERVER` for the SQL target (because `language` is the
   dbms string, not `"SQL"`), `EDITOR PYTHON`, `EDITOR R`, `EDITOR SAS`.
-- The output-format line uses `{language}` un-uppercased: `rewritten SQL Server code` / `rewritten Python code`.
+- The output-format text uses `{language}` un-uppercased: `rewritten SQL Server code` / `rewritten Python code`.
 - With `error_message` set, `error_block` adds its own leading and trailing newline, producing exactly
   one blank line before `ERROR TO FIX` and one blank line between the message and `OUTPUT FORMAT`.
 
@@ -7704,7 +8121,7 @@ Target dialect: SQL Server.
 ### OPTIMIZATION INSTRUCTIONS
 You MUST work exclusively from the SQL shown below. Do NOT consult any catalog, schema, or knowledge base.
 Do NOT invent, add, or remove tables or columns that are not already present in the provided SQL.
-Preserve every filter, join, entity and the output grain as written.
+Preserve every filter, join, entity and the output grain exactly as written.
 
 GENERATION MODE
 optimization
@@ -7713,10 +8130,14 @@ EDITOR SQL SERVER (the only permitted source of tables, columns and filters)
 SELECT * FROM dbo.Orders
 
 OUTPUT FORMAT
-Return only the rewritten SQL Server code. No commentary, no catalog lookups, no new objects.
+Return only the rewritten SQL Server code, in place of the editor code above: no commentary, no
+catalog lookups, no new objects, no markdown fence. The reply is exactly the code, starting at its
+first line:
+
+<rewritten SQL Server code>
 ```
 
-**`build_optimization_user_prompt(context, existing_code, error_message=None)`** (`prompts.py:155-164`)
+**`build_optimization_user_prompt(context, existing_code, error_message=None)`** (`prompts.py:278-287`)
 
 ```python
 def build_optimization_user_prompt(
@@ -7743,7 +8164,7 @@ Rewrite this code in place:
 
 With error, the middle block is `Error to fix:\n{error_message}` (three blocks, `\n\n` separated).
 
-Retry semantics (`builtin_sql_generator.py:416-499`): an optimization turn always calls the LLM even
+Retry semantics (`builtin_sql_generator.py:519-571`): an optimization turn always calls the LLM even
 when the editor code validates; a non-optimization provided-code turn short-circuits and returns the
 code unchanged. If the rewrite fails validation on an optimization turn, the original editor code is
 returned with message `Optimization rewrite did not validate; the original editor SQL was kept.`
@@ -7752,7 +8173,7 @@ returned with message `Optimization rewrite did not validate; the original edito
 
 ### 8.6 The SQL user prompt — `build_user_prompt`
 
-**Signature** (`prompts.py:168-177`):
+**Signature** (`prompts.py:291-300`):
 
 ```python
 def build_user_prompt(context: AgentContext) -> str:
@@ -7790,20 +8211,20 @@ Pinned objects: dbo.Products, dbo.Categories
 Note the SQL header here is `Existing SQL:` whereas the Python/R/SAS variants use
 `Existing Python or SQL:` / `Existing R or SQL:` / `Existing SAS or SQL:` (§8.8).
 
-The system+user pair is built in `attempts.run_attempt_loop:164-172`; `last_prompt = system + "\n" + user`
-is stored as `context_text` on both success (`attempts.py:383`) and terminal failure
-(`attempts.py:428`), and the `presence_penalty` for the call is `None` unless a hallucination loop was
-detected, in which case it is `PresencePenaltyAfterLoop = 0.4` (`constants.py:56`, `attempts.py:173-178`).
+The system+user pair is built in `attempts.run_attempt_loop:249-269`; `last_prompt = system + "\n" + user`
+is stored as `context_text` on both success (`attempts.py:566`) and terminal failure
+(`attempts.py:629`), and the `presence_penalty` for the call is `None` unless a hallucination loop was
+detected, in which case it is `PresencePenaltyAfterLoop = 0.4` (`constants.py:59`, `attempts.py:273-283`).
 
 ---
 
 ### 8.7 Critic prompts
 
 Critics are invoked only when the attempt-1 database pre-check did not already clear the candidate
-(`attempts.py:330-350`); they use `llm.complete_json(...)` with the default
+(`attempts.py:521-531`); they use `llm.complete_json(...)` with the default
 `max_tokens=2048, temperature=0.0`.
 
-#### 8.7.1 SQL critic — `critic_prompt(sql, schema_for_validation, query, semantic_json=None)` (`prompts.py:521-537`)
+#### 8.7.1 SQL critic — `critic_prompt(sql, schema_for_validation, query, semantic_json=None)` (`prompts.py:650-666`)
 
 **Non-semantic branch** (system text, one logical paragraph):
 
@@ -7823,7 +8244,7 @@ SQL:
 ```
 
 **Semantic branch** (`semantic_json` truthy — passed as `semantic_json if semantic_mode else None` from
-`attempts.py:350`, where `semantic_json` is `active_model.model_dump_json() or "[]"`; note `"[]"` is a
+`attempts.py:531`, where `semantic_json` is `active_model.model_dump_json() or "[]"`; note `"[]"` is a
 truthy string, so semantic mode with no active model still takes this branch):
 
 ```text
@@ -7844,11 +8265,11 @@ SQL:
 Neither branch ends with a newline. The semantic branch's system message has **no** `canonical_question`
 sentence — unlike the other four critics.
 
-Result mapping (`attempts._run_critic:432-446`): defaults are `requirements_satisfied=True`,
+Result mapping (`attempts._run_critic:633-647`): defaults are `requirements_satisfied=True`,
 `schema_valid=True`; on any exception an all-default `CombinedValidationResult()` is returned (i.e. a
 failed critic call is treated as "passed").
 
-#### 8.7.2 Python critic — `python_critic_prompt(code, schema_for_validation, query)` (`prompts.py:291-300`)
+#### 8.7.2 Python critic — `python_critic_prompt(code, schema_for_validation, query)` (`prompts.py:416-425`)
 
 System:
 
@@ -7867,7 +8288,7 @@ PYTHON:
 {code}
 ```
 
-#### 8.7.3 R critic — `r_critic_prompt(code, schema_for_validation, query)` (`prompts.py:402-411`)
+#### 8.7.3 R critic — `r_critic_prompt(code, schema_for_validation, query)` (`prompts.py:529-538`)
 
 System:
 
@@ -7886,7 +8307,7 @@ R:
 {code}
 ```
 
-#### 8.7.4 SAS critic — `sas_critic_prompt(code, schema_for_validation, query)` (`prompts.py:509-518`)
+#### 8.7.4 SAS critic — `sas_critic_prompt(code, schema_for_validation, query)` (`prompts.py:638-647`)
 
 System:
 
@@ -7905,11 +8326,11 @@ SAS:
 {code}
 ```
 
-**Critic control flow after the call** (`attempts.py:351-368`): a non-null `canonical_question` becomes
+**Critic control flow after the call** (`attempts.py:532-545`): a non-null `canonical_question` becomes
 the result's canonical question; `requirements_satisfied == false` records an attempt report with
 `stage="critic"` and retries; `schema_valid == false` with
 `status == "MISSING_GROUP_MEMBER"` triggers exactly one "broadened group-member recovery" retry
-(`MissingGroupMemberValidationStatus`, `constants.py:39`), otherwise missing objects are expanded and
+(`MissingGroupMemberValidationStatus`, `constants.py:42`), otherwise missing objects are expanded and
 the loop retries.
 
 ---
@@ -7918,15 +8339,15 @@ the loop retries.
 
 `target_language` is a keyword argument of `generate_sql_builtin` (`builtin_sql_generator.py:66`),
 supplied by `generate_python_builtin` / `generate_r_builtin` / `generate_sas_builtin`
-(`builtin_sql_generator.py:331-352`) which are reached from the dedicated HTTP endpoints
+(`builtin_sql_generator.py:403-427`) which are reached from the dedicated HTTP endpoints
 (`app/api/endpoints/generation.py:128` `/generate-r`, `:184` `/generate-sas`, `:240` `/generate-python`).
 When `target_language` is one of `python|r|sas`, the attempt loop forces `semantic_mode = False`
-(`attempts.py:100-102`) and selects the corresponding builders (`attempts.py:154-162`).
+(`attempts.py:135-137`) and selects the corresponding builders (`attempts.py:250-268`).
 
 All three system prompts share the same skeleton; the differences are the role sentence, the DBMS
 context line, and the trailing guidelines constant.
 
-#### 8.8.1 Python system prompt — `build_python_system_prompt(context, discovery, attempt_history="")` (`prompts.py:221-261`)
+#### 8.8.1 Python system prompt — `build_python_system_prompt(context, discovery, attempt_history="")` (`prompts.py:344-386`)
 
 Verbatim template (note: the guidelines block is appended immediately after `ATTEMPT HISTORY`, with no
 blank line between them — `{PYTHON_CODE_GUIDELINES}` starts with a newline because the constant itself
@@ -7947,7 +8368,9 @@ complexity={analysis.complexity}; keywords={', '.join(analysis.keywords)}; entit
 ACTIVE BUSINESS CONTEXT
 {discovery.active_groups.summary or '(none)'}
 
-KNOWLEDGE BASE EXAMPLES
+{AUTHORIZED_OBJECT_SCOPE}
+
+{KNOWLEDGE_BASE_EXAMPLES_HEADER}
 {examples}
 
 VERIFIED DATA MAPPINGS
@@ -7964,7 +8387,7 @@ ATTEMPT HISTORY
 {PYTHON_CODE_GUIDELINES}
 ```
 
-`PYTHON_CODE_GUIDELINES` (`prompts.py:191-218`) — leading `\n` included:
+`PYTHON_CODE_GUIDELINES` (`prompts.py:314-341`) — leading `\n` included:
 
 ```text
 
@@ -7984,7 +8407,7 @@ PYTHON CODE GUIDELINES
       finally:
           conn.close()
 - Data retrieval:
-    - Use ONLY tables and columns in AVAILABLE SCHEMAS.
+    - Use tables and columns documented in AVAILABLE SCHEMAS, or referenced in KNOWLEDGE BASE EXAMPLES. Objects in those examples are pre-validated; do not treat them as missing.
     - Embedded SQL MUST schema-qualify every table/view (dbo.Categories or [dbo].[Categories]). Never use a bare name like Categories.
     - Pay attention to VERIFIED DATA MAPPINGS for exact string values.
 - Data manipulation:
@@ -7996,10 +8419,10 @@ PYTHON CODE GUIDELINES
     - Return ONLY executable Python. No markdown fences, no standalone `python` line, no shell commands.
 ```
 
-**Python user prompt** — `build_python_user_prompt(context)` (`prompts.py:264-273`): same four blocks as
+**Python user prompt** — `build_python_user_prompt(context)` (`prompts.py:389-398`): same four blocks as
 §8.6 but the second header is `Existing Python or SQL:`.
 
-**Python few-shot block** — `_format_python_examples(examples)` (`prompts.py:276-288`):
+**Python few-shot block** — `_format_python_examples(examples)` (`prompts.py:401-413`):
 
 ```python
 for ex in examples[:5]:
@@ -8011,9 +8434,9 @@ for ex in examples[:5]:
 ```
 
 Per-example label is either `Python:` or `SQL (embed via pd.read_sql):`; no `(none)` short-circuit for
-a non-empty list, and an empty list returns `(none)` (line 277-278).
+a non-empty list, and an empty list returns `(none)` (`prompts.py:402-403`).
 
-#### 8.8.2 R system prompt — `build_r_system_prompt(context, discovery, attempt_history="")` (`prompts.py:332-372`)
+#### 8.8.2 R system prompt — `build_r_system_prompt(context, discovery, attempt_history="")` (`prompts.py:457-500`)
 
 ```text
 You are an expert R programmer and data engineer specializing in the tidyverse.
@@ -8030,7 +8453,9 @@ complexity={analysis.complexity}; keywords={', '.join(analysis.keywords)}; entit
 ACTIVE BUSINESS CONTEXT
 {discovery.active_groups.summary or '(none)'}
 
-KNOWLEDGE BASE EXAMPLES
+{AUTHORIZED_OBJECT_SCOPE}
+
+{KNOWLEDGE_BASE_EXAMPLES_HEADER}
 {examples}
 
 VERIFIED DATA MAPPINGS
@@ -8047,7 +8472,7 @@ ATTEMPT HISTORY
 {R_CODE_GUIDELINES}
 ```
 
-`R_CODE_GUIDELINES` (`prompts.py:303-329`) — leading `\n` included:
+`R_CODE_GUIDELINES` (`prompts.py:428-454`) — leading `\n` included:
 
 ```text
 
@@ -8059,7 +8484,7 @@ R CODE GUIDELINES
     - Use Driver = "SQL Server" as the default placeholder.
     - Do NOT hardcode credentials.
 - Data retrieval:
-    - Use ONLY tables and columns in AVAILABLE SCHEMAS.
+    - Use tables and columns documented in AVAILABLE SCHEMAS, or referenced in KNOWLEDGE BASE EXAMPLES. Objects in those examples are pre-validated; do not treat them as missing.
     - Embedded SQL MUST schema-qualify every table/view (dbo.Categories or [dbo].[Categories]). Never use a bare name like Categories.
     - Prefer dbGetQuery(con, "SELECT ...") for filtered retrieval, or dbReadTable(con, Id(schema="schema", table="table")) for full tables.
     - Pay attention to VERIFIED DATA MAPPINGS for exact string values.
@@ -8078,12 +8503,12 @@ R CODE GUIDELINES
     - Return ONLY executable R. No markdown fences, no standalone `R` line, no shell commands.
 ```
 
-**R user prompt** (`prompts.py:375-384`): second header `Existing R or SQL:`.
+**R user prompt** (`prompts.py:502-511`): second header `Existing R or SQL:`.
 
-**R few-shot block** (`prompts.py:387-399`): label `R:` when `looks_like_r(ex.sql)`, else
+**R few-shot block** (`prompts.py:514-526`): label `R:` when `looks_like_r(ex.sql)`, else
 `SQL (embed via dbGetQuery):`.
 
-#### 8.8.3 SAS system prompt — `build_sas_system_prompt(context, discovery, attempt_history="")` (`prompts.py:439-479`)
+#### 8.8.3 SAS system prompt — `build_sas_system_prompt(context, discovery, attempt_history="")` (`prompts.py:566-610`)
 
 ```text
 You are an expert SAS programmer and data analyst.
@@ -8100,7 +8525,9 @@ complexity={analysis.complexity}; keywords={', '.join(analysis.keywords)}; entit
 ACTIVE BUSINESS CONTEXT
 {discovery.active_groups.summary or '(none)'}
 
-KNOWLEDGE BASE EXAMPLES
+{AUTHORIZED_OBJECT_SCOPE}
+
+{KNOWLEDGE_BASE_EXAMPLES_HEADER}
 {examples}
 
 VERIFIED DATA MAPPINGS
@@ -8117,7 +8544,7 @@ ATTEMPT HISTORY
 {SAS_CODE_GUIDELINES}
 ```
 
-`SAS_CODE_GUIDELINES` (`prompts.py:414-436`) — leading `\n` included; note the SAS template quotes
+`SAS_CODE_GUIDELINES` (`prompts.py:541-564`) — leading `\n` included; note the SAS template quotes
 `NOPROMPT="Driver={SQL Server};Server=…` inside an f-string-derived constant, so the braces are literal
 text in the guideline (the constant has no f-prefix):
 
@@ -8130,7 +8557,7 @@ SAS CODE GUIDELINES
     - Alternatively LIBNAME dbdata ODBC with the same server/database placeholders.
     - Always DISCONNECT FROM the alias (or clear the libref) when finished.
 - Data retrieval:
-    - Use ONLY tables and columns in AVAILABLE SCHEMAS.
+    - Use tables and columns documented in AVAILABLE SCHEMAS, or referenced in KNOWLEDGE BASE EXAMPLES. Objects in those examples are pre-validated; do not treat them as missing.
     - Embedded SQL MUST schema-qualify every table/view (dbo.Categories or [dbo].[Categories]). Never use a bare name like Categories.
     - Pay attention to VERIFIED DATA MAPPINGS for exact string values.
 - Data manipulation (the SAS way):
@@ -8146,27 +8573,27 @@ SAS CODE GUIDELINES
     - Return ONLY executable SAS. No markdown fences, no standalone `sas` line, no shell commands.
 ```
 
-**SAS user prompt** (`prompts.py:482-491`): second header `Existing SAS or SQL:`.
+**SAS user prompt** (`prompts.py:611-620`): second header `Existing SAS or SQL:`.
 
-**SAS few-shot block** (`prompts.py:494-506`): label `SAS:` when `looks_like_sas(ex.sql)`, else
+**SAS few-shot block** (`prompts.py:623-635`): label `SAS:` when `looks_like_sas(ex.sql)`, else
 `SQL (embed via CONNECTION TO):`.
 
-**Output extraction for script targets** (`attempts.py:185-207`): `extract_python_body` /
+**Output extraction for script targets** (`attempts.py:290-309`): `extract_python_body` /
 `extract_r_body` / `extract_sas_body`, then `qualify_sql_in_python` / `qualify_sql_in_r` /
 `qualify_sql_in_sas` against the discovered object list, then `syntax_check_*` + embedded-SQL
-extraction before database validation (`attempts.py:500-520`).
+extraction before database validation (`attempts.py:504-513`).
 
 ---
 
 ### 8.9 Query-analysis prompt — `DiscoveryEngine.analyze_query`
 
-Built inline in `app/core/orchestrator/discovery_engine.py:79-92`; called from
-`builtin_sql_generator.py:248-252` and `discover_for_api` (`builtin_sql_generator.py:544`).
+Built inline in `app/core/orchestrator/discovery_engine.py:82-100`; called from
+`builtin_sql_generator.py:296` and `discover_for_api` (`builtin_sql_generator.py:616`).
 
-System message (exact string, wrapped for readability here — in source it is one line):
+System message (exact string; in source it is one parenthesized literal concatenated across lines):
 
 ```text
-Return JSON keys: keywords, complexity, entities, date_ranges, filter_values, extracted_columns. Every list item must be a string, not an object.
+Return JSON keys: keywords, complexity, entities, date_ranges, filter_values, extracted_columns. Every list item must be a string, not an object. filter_values holds literal values the user wants to filter on (proper nouns, quoted strings, codes, IDs), preserving their casing: the number in "top 10", "first 5", "bottom 3" or "last 20" is a cardinality limit, not a filter value, so never place it in that array. extracted_columns holds only column names the request explicitly asks for: when the request names no columns (e.g. "top selling products"), leave the array empty rather than inferring plausible columns such as ProductName or Quantity.
 ```
 
 User message: the first 2000 characters of the combined query, **no prefix**:
@@ -8353,7 +8780,7 @@ Gate: `needs_coreference(query, active_filters, has_history)` (`coreference.py:8
 SQL-shaped text (`select|from|where|join|group by|order by`), skipped when a qualified object name is
 present, otherwise true for vague follow-ups (≤ `VAGUE_QUERY_MAX_WORDS = 8` words matching
 `VAGUE_FOLLOWUP_PATTERNS`) or for short anaphoric turns when filters/history exist and the filter value
-is not already restated. `session_context.prepare_conversation_context:287-297` additionally skips the
+is not already restated. `session_context.prepare_conversation_context:322-331` additionally skips the
 rewrite entirely when the turn is a directed optimization edit
 (`source="skipped_optimization"`).
 
@@ -8417,7 +8844,7 @@ or whose `value_token()` appears in it are skipped; the result is rejected if lo
 ### 8.13 Discuss / Ask prompts (Ask mode)
 
 Entry point: `queryMode in {"plan", "ask"}` → `discuss_conversation(request)`
-(`generation_service.py:1654-1662`; `ASK_QUERY_TYPE = "ask"`, `discuss_service.py:30`).
+(`generation_service.py:1656-1660`; `ASK_QUERY_TYPE = "ask"`, `discuss_service.py:30`).
 
 #### 8.13.1 Persona — `build_discuss_persona()` (`discuss_prompts.py:157-165`)
 
@@ -8553,8 +8980,8 @@ is `## Primary Request\n{transcript}`.
 
 ### 8.14 System-catalog prompts (`app/services/system_query_service.py`)
 
-Live in the legacy wrapper: `generation_service.py:1726-1732` classifies the intent, and the
-`system_metadata` branch (`generation_service.py:1794-1843`) builds the catalog prompt and calls
+Live in the legacy wrapper: `generation_service.py:1727-1733` classifies the intent, and the
+`system_metadata` branch (`generation_service.py:1796-1843`) builds the catalog prompt and calls
 `generate_sql_with_context` up to `max_system_attempts = 2` times.
 
 #### 8.14.1 Intent classifier system prompt — `_build_classification_prompt(db_name, db_description, db_keywords, data_sources)` (`system_query_service.py:136-171`)
@@ -8701,9 +9128,9 @@ Verbatim return template (the `{db_section}` slot is empty when `database_info` 
 ```
 
 The caller passes `database_info = f"Database: {selected_source.name}\nDescription: {selected_source.description}"`
-(`generation_service.py:1800`) or, when the source object is absent,
-`f"Database: {friendly_name}\nDescription: {db_description}"` (line 1802). Retry text appended on
-attempt 2 (`generation_service.py:1812`):
+(`generation_service.py:1801`) or, when the source object is absent,
+`f"Database: {friendly_name}\nDescription: {db_description}"` (line 1803). Retry text appended on
+attempt 2 (`generation_service.py:1813`):
 
 ```text
 
@@ -8721,7 +9148,7 @@ the legacy T-SQL system wrapper (§8.18.1), not sent as a standalone system mess
 
 Two different code paths answer a non-database turn; both must exist for parity.
 
-**(a) LLM general answer — `_handle_general_query(query, llm_service)` (`generation_service.py:2840-2847`)**
+**(a) LLM general answer — `_handle_general_query(query, llm_service)` (`generation_service.py:2841-2847`)**
 
 ```python
 system_prompt = "You are a helpful AI assistant for the database."
@@ -8736,7 +9163,7 @@ Exact system text: `You are a helpful AI assistant for the database.` Reached fr
 
 - `request.forceGeneral` — `generation_service.py:1717-1722`, and for the script targets
   `code_generation_service.py:39-45` (R), `82-88` (SAS), `171-177` (Python);
-- the legacy intent branch `query_intent == "off_topic"` — `generation_service.py:1787-1792`.
+- the legacy intent branch `query_intent == "off_topic"` — `generation_service.py:1788-1793`.
 
 **(b) Built-in conversational short-circuit — `router._conversational` (`router.py:71-83`)**
 
@@ -8753,10 +9180,10 @@ No LLM call at all. It fabricates a `BuiltInGenerateResult` with `sql=""`, `quer
 
 #### 8.15.1 Planning-conversation prompts (present but dormant)
 
-`planning_conversation` (`generation_service.py:1140`) has **no caller** anywhere in `app/`: the
+`planning_conversation` (`generation_service.py:1141`) has **no caller** anywhere in `app/`: the
 `queryMode in {"plan","ask"}` branch now delegates to `discuss_conversation`
-(`generation_service.py:1654-1662`), and `generate_planning_summary` delegates to `generate_ask_summary`
-(`generation_service.py:1634-1638`). Only the tests call `_classify_turn_type_llm` directly. Reproduce
+(`generation_service.py:1656-1660`), and `generate_planning_summary` delegates to `generate_ask_summary`
+(`generation_service.py:1635-1639`). Only the tests call `_classify_turn_type_llm` directly. Reproduce
 these four templates only if you intend byte-parity for direct callers/tests.
 
 **(i) Turn-type classifier — `_classify_turn_type_llm(query, planning_context)` (`generation_service.py:1036-1062`)**
@@ -8798,7 +9225,7 @@ IMPORTANT: Only return the JSON object, no additional text.
 braces.) Required result fields: `turn_type`, `confidence`, `reasoning`, `topic_similarity`; invalid enum
 or out-of-range values raise and fall back to a REFINEMENT classification with `confidence=0.5`.
 
-**(ii) Planning intent — `generation_service.py:1406-1433`** — call `llm_service.chat(intent_prompt)`:
+**(ii) Planning intent — `generation_service.py:1407-1433`** — call `llm_service.chat(intent_prompt)`:
 
 ```text
 You are a data analysis planning assistant. Analyze the user's message:
@@ -8831,7 +9258,7 @@ If the user said "sales analysis", assume they want revenue unless they specify 
 Be helpful, not interrogative.
 ```
 
-**(iii) Auto-check confidence — `generation_service.py:1529-1542`** — call `llm_service.chat(confidence_prompt)`:
+**(iii) Auto-check confidence — `generation_service.py:1530-1542`** — call `llm_service.chat(confidence_prompt)`:
 
 ```text
 Given this user goal: {planning_context.get("goal", query)}
@@ -8852,7 +9279,7 @@ Maximum 3 essential tables.
 
 `table_list` entries are `[{schema_name}].[{name}] ({type or 'Table'})` (`:1524-1527`).
 
-**(iv) Planning reply — `generation_service.py:1584-1612`** — call `llm_service.chat(response_prompt)`:
+**(iv) Planning reply — `generation_service.py:1585-1612`** — call `llm_service.chat(response_prompt)`:
 
 ```text
 Generate a helpful response for this planning conversation.
@@ -8905,12 +9332,12 @@ to the ordinary builders, with these consequences:
   case the ACTIVE SESSION FILTERS + SCOPE GUARD block is present.
 - User prompt = `build_user_prompt` (§8.6), which contributes the `Error to fix:\n{error_message}` block.
 - `decision.skip_discovery` is `False` for `CODE_FIXING`, so discovery still runs and the anchor query
-  is the editor SQL (`builtin_sql_generator.py:256`).
+  is the editor SQL (`builtin_sql_generator.py:304`).
 
 > The legacy branch in `generation_service.py:1651-1652` computes `editor_mode = "debug"` and the
 > `### EDITOR MODE` block, which is the legacy analogue (§8.18.2).
 
-#### 8.16.2 SQL execution auto-retry — `regenerate_sql_with_error_feedback(...)` (`generation_service.py:2850-2943`)
+#### 8.16.2 SQL execution auto-retry — `regenerate_sql_with_error_feedback(...)` (`generation_service.py:2851-2943`)
 
 Caller: `app/api/endpoints/generation.py:491`. After generation, this prompt is called with
 `llm_service.chat(prompt, temperature=0.1)`. It is a **single user message** (no system role).
@@ -8960,7 +9387,7 @@ OUTPUT:
 Return ONLY the corrected SQL script, with no additional text, markdown, or explanation.
 ```
 
-Cleanup applied to the reply (`:2926-2935`): `strip()`; remove a leading ```` ```sql ```` fence; remove a
+Cleanup applied to the reply (generation_service.py:2926-2935): `strip()`; remove a leading ```` ```sql ```` fence; remove a
 leading ```` ``` ````; remove a trailing ```` ``` ````; strip a leading `sql:`; on exception return the
 original `failed_sql`.
 
@@ -8968,7 +9395,7 @@ original `failed_sql`.
 
 Caller: `app/api/endpoints/generation.py:279`. Call: `llm_service.chat(prompt, temperature=0.1)`, then
 `_cleanup_python_code` (`app/utils/python_normalization.cleanup_python_code`). `failed_code` is first
-sanitized by `_strip_db_connection_injection` (`:308-343`), which replaces any line matching
+sanitized by `_strip_db_connection_injection` (code_generation_service.py:308-343), which replaces any line matching
 `^\s*DB_CONNECTION_STRING\s*=` with `# DB_CONNECTION_STRING will be injected at runtime` and leaves
 comment lines intact.
 
@@ -9216,7 +9643,7 @@ then `json.loads`; an unknown `intent_type` becomes `new_query`; a JSON error or
 
 These prompts are live only for the modes that bypass the built-in orchestrator (plan/ask is handled by
 §8.13; system-catalog and general/off-topic by §8.14/§8.15; the monolithic T-SQL prompt only when
-`settings.BUILTIN_SQL_GENERATOR` is false — `generation_service.py:1848`).
+`settings.BUILTIN_SQL_GENERATOR` is false — `generation_service.py:1849`).
 
 #### 8.18.1 Legacy T-SQL system wrapper — `LiteLLMService.generate_sql_with_context` (`llm_service.py:1234-1243`)
 
@@ -9239,26 +9666,26 @@ Return raw T-SQL code only. Do not wrap the code in markdown blocks (e.g. ``` sq
 The template ends with a newline after `{context_text}` plus the final empty line before the closing
 triple quote (i.e. `…\n{context_text}\n\n`).
 
-#### 8.18.2 Legacy monolithic T-SQL prompt — `current_prompt` (`generation_service.py:2635-2701`)
+#### 8.18.2 Legacy monolithic T-SQL prompt — `current_prompt` (`generation_service.py:2636-2702`)
 
-Built inside the 5-attempt legacy loop (`for attempt in range(5)`, `:2614`); the LLM call is
-`llm_service.generate_sql_with_context(combined_query, current_prompt)` (`:2704`).
+Built inside the 5-attempt legacy loop (`for attempt in range(5)`, `:2615`); the LLM call is
+`llm_service.generate_sql_with_context(combined_query, current_prompt)` (`:2705`).
 
 Block variables, in template order:
 
 | Slot | Built at | Content |
 |---|---|---|
-| `database_info` | `:2412` | `f"{friendly_name}: {db_description} ({keywords_str})."` with `keywords_str = ", ".join(db_keywords[:5]) or "business data"` |
-| `reference_text` | `:2440-2441` | up to 3 complexity-matched KB examples as `Question {i}: {question}\nSQL:\n```sql\n{sql}\n````, else `No previous examples available.`, plus optional `kb_guidance` |
-| `value_context` | `:2444-2451` | `"\n### VERIFIED DATA MAPPINGS\n"` + per mapping `- The value(s) 'X', 'Y' was found in: {key}\n` (≤ 5 keys) |
-| `db_objects_context` | `:2460-2467` | `"### PRIORITIZED DATABASE OBJECTS\nThe following database objects are already identified as relevant: {objects}. Prioritize these over general schema discovery unless the query explicitly requires otherwise.\n\n"` or `""` |
-| `editor_context` | `:2469-2484` | `"### EDITOR MODE\nReview the provided code. "` + error/optimize sentence + optional `### ERROR`, `### EXISTING CODE`, `### NOTE` + `"\n"`; empty when not editor mode |
-| `context_guard` | `:2502-2504` | `"### USER-SELECTED CONTEXT\nYou must only use the following schema context provided by the user. Do not reference tables outside of this selection.\n\n"` when `use_table_override` |
-| `validated_mapping_section` | `:2487-2500` | **Always `""` in practice**: `last_sufficiency_result` is reset to `None` at `:2408`, after the only assignments at `:2231`/`:2402` |
-| `schema_text` | `:2617` | `initial_schema_text` from `build_schema_text` (`schema_context_utils.py:17-60`) |
-| `attempt_history_section` | `:2620-2632` | `"### ATTEMPT HISTORY\nFirst attempt."` on attempt 1, else `"\n### PREVIOUS ATTEMPTS (Learn from these errors)\n" + "\n".join(history)` |
-| `scripting_instruction` | `:2507-2523` | complex/moderate `### SCRIPTING AUTHORIZATION` block, or `""` for simple |
-| `target_request_section` | `:2622-2630` | `f"Target Request: {combined_query}"`, or with `"\n\nPrevious attempt failed with: {error_msg}"` + `"\nPlease fix the issues and generate correct SQL."` after a failure |
+| `database_info` | `:2413` | `f"{friendly_name}: {db_description} ({keywords_str})."` with `keywords_str = ", ".join(db_keywords[:5]) or "business data"` |
+| `reference_text` | `:2441` | up to 3 complexity-matched KB examples as `Question {i}: {question}\nSQL:\n```sql\n{sql}\n````, else `No previous examples available.`, plus optional `kb_guidance` |
+| `value_context` | `:2445-2451` | `"\n### VERIFIED DATA MAPPINGS\n"` + per mapping `- The value(s) 'X', 'Y' was found in: {key}\n` (≤ 5 keys) |
+| `db_objects_context` | `:2461-2467` | `"### PRIORITIZED DATABASE OBJECTS\nThe following database objects are already identified as relevant: {objects}. Prioritize these over general schema discovery unless the query explicitly requires otherwise.\n\n"` or `""` |
+| `editor_context` | `:2470-2485` | `"### EDITOR MODE\nReview the provided code. "` + error/optimize sentence + optional `### ERROR`, `### EXISTING CODE`, `### NOTE` + `"\n"`; empty when not editor mode |
+| `context_guard` | `:2503-2505` | `"### USER-SELECTED CONTEXT\nYou must only use the following schema context provided by the user. Do not reference tables outside of this selection.\n\n"` when `use_table_override` |
+| `validated_mapping_section` | `:2488-2500` | **Always `""` in practice**: `last_sufficiency_result` is reset to `None` at `:2409`, after the only assignments at `:2232`/`:2403` |
+| `schema_text` | `:2618` | `initial_schema_text` from `build_schema_text` (`schema_context_utils.py:17-60`) |
+| `attempt_history_section` | `:2621-2633` | `"### ATTEMPT HISTORY\nFirst attempt."` on attempt 1, else `"\n### PREVIOUS ATTEMPTS (Learn from these errors)\n" + "\n".join(history)` |
+| `scripting_instruction` | `:2508-2524` | complex/moderate `### SCRIPTING AUTHORIZATION` block, or `""` for simple |
+| `target_request_section` | `:2623-2631` | `f"Target Request: {combined_query}"`, or with `"\n\nPrevious attempt failed with: {error_msg}"` + `"\nPlease fix the issues and generate correct SQL."` after a failure |
 
 Verbatim template (the `—` in the schemas heading is U+2014):
 
@@ -9331,7 +9758,7 @@ Extracted Entities: {', '.join(entities) if entities else 'None'}
 {target_request_section}
 ````
 
-`### SCRIPTING AUTHORIZATION` variants verbatim (`:2509-2523`), including their trailing blank lines:
+`### SCRIPTING AUTHORIZATION` variants verbatim (`:2510-2524`), including their trailing blank lines:
 
 ```text
 ### SCRIPTING AUTHORIZATION
@@ -9351,7 +9778,7 @@ This is a MODERATE complexity query. You may use variables (`DECLARE`) or CTEs i
 
 ```
 
-Other legacy string constants (`:2463-2504`), verbatim:
+Other legacy string constants (`:2464-2505`), verbatim:
 
 ```text
 ### PRIORITIZED DATABASE OBJECTS
@@ -9387,7 +9814,7 @@ You must only use the following schema context provided by the user. Do not refe
 - Requirement '{req}' -> {mapping}
 ```
 
-#### 8.18.3 `initial_prompt` (`generation_service.py:2525-2606`) — **unused**
+#### 8.18.3 `initial_prompt` (`generation_service.py:2526-2607`) — **unused**
 
 Assigned and never read (the loop always uses `current_prompt`). Differences from §8.18.2: it adds a
 `Date Ranges: {…}` line after `Extracted Entities`, hardcodes `### ATTEMPT HISTORY\nFirst attempt.`,
@@ -9433,7 +9860,7 @@ Target Request: {combined_query}
 
 #### 8.18.4 Pre-flight schema sufficiency — `LiteLLMService.check_schema_sufficiency` (`llm_service.py:1000-1162`)
 
-Called from the legacy T-SQL path (`generation_service.py:2159`, `2197`, `2331`, `2369`). Schema text is
+Called from the legacy T-SQL path (`generation_service.py:2160`, `2198`, `2332`, `2370`). Schema text is
 built inline as `[{schema}].[{table}]: {col (type), …}` (or the description, or
 `(no column information available)`), joined with `\n\n` (`:1018-1036`). `code_type` is `"sql"` or
 `"python"`; anything other than python uses the SQL derivation block (`:1039-1060`). System message:
@@ -9725,7 +10152,7 @@ IMPORTANT: If the base columns exist, SAS can derive almost anything through cod
 
 #### 8.18.7 KB relevance evaluation — `LiteLLMService.evaluate_example_relevance` (`llm_service.py:1490-1588`)
 
-Called from `generation_service.py:1927`. Per example the text is
+Called from `generation_service.py:1928`. Per example the text is
 `\n--- Example {i} (similarity score: {score}) ---\nQuestion: {question}\nSQL:\n```sql\n{sql}\n```\n`
 (`:1499-1506`). System message:
 `You are a SQL expert evaluating knowledge base relevance. Respond with JSON only.` Call:
@@ -9870,7 +10297,7 @@ Respond with only: YES or NO
 
 There is exactly **one** dialect-guidance line in any prompt, and it is hardcoded:
 
-`app/core/orchestrator/prompts.py:85`
+`app/core/orchestrator/prompts.py:189`
 
 ```text
 PostgreSQL: LIMIT not TOP; CASE not IF(); explicit casts; schema-qualify objects.
@@ -9889,7 +10316,7 @@ Every other dialect touchpoint is non-prompt code:
 | everything else (PostgreSQL, Oracle, SQLite, …) | `app/utils/dialect.py:15` | ANSI double quotes `"name"` |
 | SQL Server string literals | `app/utils/dialect.py:25-26` | `N'…'` prefix (escaped `''`) |
 | others | `app/utils/dialect.py:27` | `'…'` |
-| SQL Server / generic | `app/services/sql_validator.py:21-52` | `SET NOEXEC ON` for SQL Server; `mysql`, `mariadb`, `postgres` route to a `PREPARE _octofy_chk AS …` / plain check |
+| SQL Server / generic | `app/services/sql_validator.py:40-65` | SQL Server (`_sql_server`) delegates to `validation_service.validate_sql_with_db`, which runs `SET NOEXEC ON` (`app/services/validation_service.py:42`) and `SET NOEXEC OFF` (`:82`); the ODBC path uses `EXPLAIN PLAN FOR` (Oracle), `EXPLAIN` (mysql/mariadb/postgres), else `PREPARE _octofy_chk AS …` or a plain execute |
 
 `dbms` never varies in the prompt path (`AgentContext.dbms_type` is always the default `"SQL Server"`;
 §8.3), so **there are no MySQL, SQLite, Oracle or other per-dialect prompt instructions anywhere in the
@@ -9904,7 +10331,7 @@ code** — a re-implementation must not invent them.
 ### 8.20 Scenario / target-language → builder and conditional-block map
 
 `python` / `r` / `sas` are selected by the HTTP endpoint (§8.8), not by the scenario. `semantic_mode` is
-forced off for script targets (`attempts.py:100-102`).
+forced off for script targets (`attempts.py:135-137`).
 
 | `target_language` | `generation_mode` | System builder | User builder | GENERATION MODE | Scenario rules block | Filters + SCOPE GUARD | Guidelines constant |
 |---|---|---|---|---|---|---|---|
@@ -9921,7 +10348,7 @@ forced off for script targets (`attempts.py:100-102`).
 
 The provided-code path (`_generate_from_provided_sql`) never includes the filter block, schemas,
 examples, mappings, analysis or attempt history — it is deliberately schema-free (§8.5). It is taken
-when `skip_discovery` is true, which `router.route` sets for `OPTIMIZE` (`:119`, `:138`) and for
+when `skip_discovery` is true, which `router.route` sets for `OPTIMIZE` (`:138`, `:155`) and for
 `GENERATE` when inline SQL is present without editor code (`:141`).
 
 For `sql` with `semantic_mode` on, the whole system prompt is the three-group semantic string of §8.4 —
@@ -9938,8 +10365,8 @@ including for `optimization`/`refinement`/`drill_down`, where the scenario block
 |---|---|---|
 | Answer in the user's language | `discuss_prompts.py:162-163` | `Answer conversationally in the user's language.` (discuss persona) |
 | Keep the language in a rewrite | `coreference.py:64` | `1. Keep the user's language and intent. Never invent subjects, metrics or filters that are not present in the conversation or the active filters.` |
-| Canonical-question language | `prompts.py:297`, `408`, `515`, `534` | `canonical_question is <= 25 words, same language, only when both flags are true.` (all critics except the semantic branch of the SQL critic) |
-| Unicode handling for Chinese | `llm_service.py:1307` (`_build_system_prompt`) and the legacy T-SQL rule 4 (`:2577`) | `Handle Chinese characters with N'' prefix.` / ``Use the `N''` prefix for Unicode strings.`` |
+| Canonical-question language | `prompts.py:422`, `535`, `644`, `663` | `canonical_question is <= 25 words, same language, only when both flags are true.` (all critics except the semantic branch of the SQL critic) |
+| Unicode handling for Chinese | `llm_service.py:1307` (`_build_system_prompt`) and the legacy T-SQL rule 4 (`generation_service.py:2574-2578`) | `Handle Chinese characters with N'' prefix.` / ``Use the `N''` prefix for Unicode strings.`` |
 | Language identification by the advisor | `code_advisor_service.py:38` | `1. **Identify** the language/dialect and extract the code from the user's message` |
 
 Nothing else in the prompt layer carries a locale, a target language for prose, or a translation rule.
@@ -9951,12 +10378,12 @@ the insight/refinement prompts (`prepare_user_query_for_llm`).
 
 | Target | Rule text | Where |
 |---|---|---|
-| SQL | `Optionally include a /* reasoning */ block, then fenced SQL. Return a single valid {dbms} statement.` | `prompts.py:110-111` |
-| SQL (provided-code) | `Return only the rewritten {language} code. No commentary, no catalog lookups, no new objects.` | `prompts.py:150-151` |
-| SMQ | `Reply with a fenced ```smq block containing {"metrics":[],"dimensions":[],"filters":[],"timeframes":[]}. Use only model names. No reasoning, view, or scripting sections.` | `prompts.py:72-75` |
-| Python | `Start with # comments explaining the approach.` / `Return ONLY executable Python. No markdown fences, no standalone `python` line, no shell commands.` | `prompts.py:215-217` |
-| R | `Print the result data frame or show the plot.` / `Start with # comments explaining the approach.` / `Return ONLY executable R. No markdown fences, no standalone `R` line, no shell commands.` | `prompts.py:326-328` |
-| SAS | `Start with a /* comment */ explaining the approach.` / `Use TITLE statements to label outputs.` / `End steps with QUIT; or RUN;.` / `Return ONLY executable SAS. No markdown fences, no standalone `sas` line, no shell commands.` | `prompts.py:431-435` |
+| SQL | `Reasoning stays inside a /* ... */ comment block; the executable statement goes in a fenced SQL block directly below it, in that order. Return a single valid {dbms} statement.` + the literal `/* Reasoning: … */` then ` ```sql ` layout | `prompts.py:218-230` |
+| SQL (provided-code) | `Return only the rewritten {language} code, in place of the editor code above: no commentary, no catalog lookups, no new objects, no markdown fence. The reply is exactly the code, starting at its first line:` + a literal `<rewritten {language} code>` line | `prompts.py:269-274` |
+| SMQ | `Return a fenced `smq` code block containing only JSON. A `smq` block is the ONLY accepted output in this mode: never answer with SQL, and never add prose, explanations, or extra keys.` + the four-key shape, a worked example built from the active model, and the plain-strings type rule | `prompts.py:116-138` |
+| Python | `Start with # comments explaining the approach.` / `Return ONLY executable Python. No markdown fences, no standalone `python` line, no shell commands.` | `prompts.py:338-340` |
+| R | `Print the result data frame or show the plot.` / `Start with # comments explaining the approach.` / `Return ONLY executable R. No markdown fences, no standalone `R` line, no shell commands.` | `prompts.py:451-453` |
+| SAS | `Start with a /* comment */ explaining the approach.` / `Use TITLE statements to label outputs.` / `End steps with QUIT; or RUN;.` / `Return ONLY executable SAS. No markdown fences, no standalone `sas` line, no shell commands.` | `prompts.py:558-562` |
 | System catalog | `Return a single, clean T-SQL query. No markdown fences, no explanation — just SQL.` | `system_query_service.py:342` |
 | General chat | no format rule (plain `chat_completion`) | `generation_service.py:2842` |
 | Advisor | code **must** be inside a three-backtick fence tagged `sql`/`python`/`r`/`sas` | `code_advisor_service.py:44-51`, `:75` |
@@ -9967,7 +10394,7 @@ the insight/refinement prompts (`prepare_user_query_for_llm`).
 |---|---|---|
 | `FENCE_SQL` | `app/utils/regexes.py:18` | `r"```(?:sql\|tsql\|smq)?\s*([\s\S]*?)```"` (case-insensitive) |
 | `extract_sql_body` | `app/utils/sql_normalization.py` | strips ```` ```sql ````/```` ``` ```` fences and returns the body |
-| `extract_smq_json` / `parse_smq` | `semantic_smq.py:107`, `:226` | Tolerant, shape-driven: ` ```smq ` fence → any fence (tag dropped) → brace-balanced `{...}` → whole text, each validated as a JSON object with a `metrics`/`dimensions` array |
+| `extract_smq_json` / `parse_smq` | `semantic_smq.py:127`, `:418` | Tolerant, shape-driven: ` ```smq ` fence → any fence (tag dropped) → brace-balanced `{...}` → whole text, each validated as a JSON object with a `metrics`/`dimensions` array |
 | `extract_json_object` | `discuss_prompts.py:324-344` | strips a leading fence (and a `json` tag), then parses the outermost braces |
 | `complete_json` | `llm_client.py:64-78` | strips a leading fence (+ `json` tag), then parses the outermost braces |
 
@@ -9985,10 +10412,10 @@ Reproduce these only if you need byte-parity with a direct (test or admin) calle
 |---|---|---|
 | `OpenAICompatibleLLMService` (whole class, incl. `validate_schema_references`, `check_schema_sufficiency`, `generate_sql_with_context`, `_build_system_prompt`, `extract_tables_from_sql`, `suggest_intermediate_tables`, `extract_filter_values`) | `llm_service.py:50-813` | **Dead**: `get_llm_service()` returns `LiteLLMService()` (`:1654-1655`), and nothing imports `OpenAICompatibleLLMService`/`OpenAILLMService` (the alias at `:817`) |
 | `OpenAICompatibleLLMService` prompt strings | `llm_service.py:136`, `240`, `409`, `592`, `624-662`, `710`, `753`, `796` | Dead for the same reason; the `LiteLLMService` equivalents listed in §8.1 are the live ones used by the legacy path |
-| `build_refinement_system_prompt` | `prompts.py:115` | **Unused** (no caller) |
+| `build_refinement_system_prompt` | `prompts.py:234` | **Unused** (no caller) |
 | `generate_user_selection_prompt` | `discovery_service.py:703` | **Not a prompt** despite the name (builds `SelectionPrompt` UI data) |
-| `initial_prompt` | `generation_service.py:2525` | **Unused** (assigned, never passed to an LLM) |
-| `planning_conversation` + its four prompts | `generation_service.py:1140`, `1036`, `1406`, `1529`, `1584` | **Dormant** (no caller; `plan`/`ask` now go to `discuss_conversation`) |
+| `initial_prompt` | `generation_service.py:2526` | **Unused** (assigned, never passed to an LLM) |
+| `planning_conversation` + its four prompts | `generation_service.py:1141`, `1036`, `1407`, `1530`, `1585` | **Dormant** (no caller; `plan`/`ask` now go to `discuss_conversation`) |
 | `_apply_python_code_edit` | `code_generation_service.py:122` | **Unused** (no caller, no test) |
 | `LiteLLMService._build_system_prompt` / `generate_sql` | `llm_service.py:1272`, `861` | **Unused** (`generate_sql` has no live caller; `generate_sql_with_context` is used instead) |
 | `validate_service`-style critic | — | Does **not** exist in `app/services/validation_service.py`; the critic is `prompts.critic_prompt` |
@@ -10003,11 +10430,11 @@ Reproduce these only if you need byte-parity with a direct (test or admin) calle
 
 | Prompt | Temperature | `max_tokens` | Other |
 |---|---|---|---|
-| Main SQL / SMQ system+user (`attempts.py:175-178`) | 0.0 (default) | 2048 (default) | `presence_penalty=0.4` only after a hallucination loop (`constants.py:56`) |
-| Optimization/provided-code (`builtin_sql_generator.py:456-461`) | 0.0 | 2048 | — |
-| Python/R/SAS system+user (`attempts.py:175`) | 0.0 | 2048 | — |
-| SQL/Python/R/SAS critics (`attempts.py:436/453/470/487`) | 0.0 | 2048 | `complete_json` |
-| Query analysis (`discovery_engine.py:81`) | 0.0 | 2048 | `complete_json`, no override |
+| Main SQL / SMQ system+user (`attempts.py:280-283`) | 0.0 (default) | 2048 (default) | `presence_penalty=0.4` only after a hallucination loop (`constants.py:59`); a repeated SMQ payload also sets `temperature=SemanticRepeatTemperature` (0.4, `constants.py:62`) |
+| Optimization/provided-code (`builtin_sql_generator.py:528-533`) | 0.0 | 2048 | — |
+| Python/R/SAS system+user (`attempts.py:280`) | 0.0 | 2048 | — |
+| SQL/Python/R/SAS critics (`attempts.py:637/654/671/688`) | 0.0 | 2048 | `complete_json` |
+| Query analysis (`discovery_engine.py:82`) | 0.0 | 2048 | `complete_json`, no override |
 | Scenario classification (`scenario.py:274-280`) | 0.0 | **16** | — |
 | Orchestrator intent (`router.py:170-173`) | 0.0 | **16** | — |
 | Coreference rewrite (`coreference.py:161-167`) | 0.0 | **256** | `complete_json` |
@@ -10028,8 +10455,8 @@ Reproduce these only if you need byte-parity with a direct (test or admin) calle
 | Visualization consultant (`visualization_service.py:56`) | **0.1** | provider default | `chat` |
 | Legacy pre-flight / join-path / KB eval (`llm_service.py:1121`, `1189`, `1543`) | **0** | provider default | `response_format={"type": "json_object"}` for the two validators; `timeout=30` |
 | Legacy schema reference / table extract / glue tables / filter values (`llm_service.py:975`, `1381`, `1430`, `1463`) | **0** | provider default | `timeout=30` |
-| Planning turn type (`generation_service.py:1065`) | **0.3** | provider default | dormant |
-| Planning intent / confidence / reply (`:1436`, `1545`, `1614`) | 0.0 | provider default | dormant |
+| Planning turn type (`generation_service.py:1066`) | **0.3** | provider default | dormant |
+| Planning intent / confidence / reply (`:1437`, `1546`, `1615`) | 0.0 | provider default | dormant |
 
 Provider shaping happens in `app/services/llm_conventions.py:12-25` before the request is sent from
 `LlmClient.complete`: models matching `("o1","o3","o4","gpt-5","deepseek-reasoner","reasoner")` get
@@ -10078,7 +10505,7 @@ Copy this list into your build plan and tick each item only when the rendered by
 
 **Router/planner prompts**
 
-- [ ] Query-analysis prompt uses the one-line system message and the 2000-char truncated user message with no prefix; failures fall back silently to deterministic complexity.
+- [ ] Query-analysis prompt sends the system message verbatim (it carries the two guardrails: a ranking number is a cardinality limit and never a `filter_values` entry, and `extracted_columns` is never inferred) and the 2000-char truncated user message with no prefix; failures fall back silently to deterministic complexity.
 - [ ] Scenario classifier sends `EDITOR SQL: present` unconditionally and matches labels in the order `drill_down → refinement → optimization → fresh_start` with `max_tokens=16`.
 - [ ] Orchestrator intent classifier uses its own label list and `max_tokens=16`; the discuss classifier is a separate prompt with `max_tokens=4096` in the **system** role.
 - [ ] Coreference prompt, `max_tokens=256`, rewrite validation rules (≤400 chars, ≥50 % of original, changed) and the deterministic `"{query} for {phrases}"` fallback are implemented.
@@ -10114,24 +10541,24 @@ Verified component map:
 | Component | File | Role |
 |---|---|---|
 | **Payload handling** | `app/services/semantic_smq.py` | Tolerant SMQ extraction, the payload-class guard, the typed parse, retry vocabulary — **§9.10** |
-| `SemanticCompiler` | `app/services/semantic_compiler.py:112` | Deterministic SMQ → SQL (ordered tables, BFS join plan, dialect quoting) |
-| `SmqCompileResult` | `app/services/semantic_compiler.py:72` | Guarded-compile outcome (`success`, `sql`, `detail`) |
-| `SemanticCompilationError` | `app/services/semantic_compiler.py:64` | Coded compile failure (`code`, `message`, `str(e) = "CODE: message"`) |
+| `SemanticCompiler` | `app/services/semantic_compiler.py:122` | Deterministic SMQ → SQL (ordered tables, BFS join plan, dialect quoting) |
+| `SmqCompileResult` | `app/services/semantic_compiler.py:81` | Guarded-compile outcome (`success`, `sql`, `detail`) |
+| `SemanticCompilationError` | `app/services/semantic_compiler.py:74` | Coded compile failure (`code`, `message`, `str(e) = "CODE: message"`) |
 | `SemanticModelService` | `app/services/semantic_model_service.py:16` | Per-source model CRUD, embeddings, activation, `is_enabled`, `search_models`; `get_active_model` degrades to `None` when the store is absent (`:129`) |
 | `SemanticModelExtractionService` | `app/services/semantic_extraction_service.py:14` | LLM-first / SQL-parse-fallback model authoring, ≥ 1 measure guarantee |
-| `SemanticModel`, `SemanticMeasure`, `SemanticDimension`, `SemanticJoin`, `SmqPayload` | `app/models/pipeline.py:285`–`322` | Data model |
+| `SemanticModel`, `SemanticMeasure`, `SemanticDimension`, `SemanticJoin`, `SmqPayload` | `app/models/pipeline.py:289`–`326` | Data model |
 | Admin surface | `app/api/endpoints/admin_semantic.py:14`–`59` | `GET /semantic-models`, `POST /semantic-models`, `POST /semantic-models/extract`, `POST /semantic-models/compile` |
 | Storage contract | `app/services/stores/schema_contracts.py:191`–`261`, `:359` | Six `semantic_*` collections + embedding source text |
 | Wiring | `app/services/stores/bundle.py:54`–`58` | `SemanticModelService(provider, source_id, enable_flag=settings.semantic_layer_enabled_for(source_id))` |
 | Mode decision | `app/core/orchestrator/builtin_sql_generator.py:170` | `semantic_mode = False if script_mode else stores.semantic.is_enabled(context.request.semantic_mode)` |
-| Attempt-loop guard + compile | `app/core/orchestrator/attempts.py:241`–`322` | payload-class guard → parse → guarded compile → semantic retry |
-| Terminal classification | `app/core/orchestrator/attempts.py:496`–`508` | exhausted semantic budget ⇒ `semantic_compilation` |
-| Semantic prompt | `app/core/orchestrator/prompts.py:62`–`82` | `DBMS CONTEXT (SEMANTIC MODE)` variant (+ `SEMANTIC_OUTPUT_CORRECTION`) |
-| Semantic critic | `app/core/orchestrator/prompts.py:533`–`540`, `app/core/orchestrator/attempts.py:429` | Model-aware validation prompt |
+| Attempt-loop guard + compile | `app/core/orchestrator/attempts.py:323`–`418` | payload-class guard → parse → guarded compile → semantic retry |
+| Terminal classification | `app/core/orchestrator/attempts.py:597`–`610` | exhausted semantic budget ⇒ `semantic_compilation` |
+| Semantic prompt | `app/core/orchestrator/prompts.py:160`–`178` | `DBMS CONTEXT (SEMANTIC MODE)` variant: mode/filter blocks + optional grain line + `ATTEMPT HISTORY` (+ `SEMANTIC_OUTPUT_CORRECTION` when a block reads as SMQ) + `_semantic_output_format(semantic_model)` |
+| Semantic critic | `app/core/orchestrator/prompts.py:651`–`657`, `app/core/orchestrator/attempts.py:531` | Model-aware validation prompt |
 | Error taxonomy | `app/services/sql_error_classifier.py:10`–`15`, `:45` | `UNKNOWN_METRIC` → `UnknownMetric`, … |
-| Constants | `app/core/constants.py:9`, `:51`, `:58`–`60`, `:97` | Timeouts, retry flag (unused), fallback flag, discovery top-K |
+| Constants | `app/core/constants.py:9`, `:54`, `:62`, `:65`–`66`, `:103` | Timeouts, retry flag (unused), repeat temperature, fallback flag, discovery top-K |
 | Config | `app/core/config.py:63`–`64`, `:96`–`115` | `ENABLE_SEMANTIC_LAYER_PER_DATA_SOURCE`, `SEMANTIC_COMPILATION_FALLBACK_TO_RAW_SQL` |
-| Tests | `tests/unit/test_semantic.py`, `tests/unit/test_semantic_smq.py` | 4 legacy tests + the 61-test SMQ extraction/guard/compiler matrix |
+| Tests | `tests/unit/test_semantic.py`, `tests/unit/test_semantic_smq.py` | 4 legacy tests + the 95-case SMQ extraction/guard/compiler matrix (99 collected) |
 
 Invariant: **semantic mode never changes the validation order, the retry budget, or the result envelope.** It only changes what the model is asked for (SMQ instead of SQL) and how the candidate artifact is produced (compiler instead of fence → text).
 
@@ -10195,9 +10622,9 @@ Request field — `app/models/schemas.py:119` (`GenerateSQLRequest.semantic_mode
 semantic_mode = False if script_mode else stores.semantic.is_enabled(context.request.semantic_mode)
 ```
 
-with `script_mode = python_mode or r_mode or sas_mode` (`:71`–`74`), derived from `target_language` (`"python"` / `"r"` / `"sas"` / `"sql"`). `generate_python_builtin` / `generate_r_builtin` / `generate_sas_builtin` (`:331`, `:339`, `:347`) call the same function with `target_language` set, so **the Python/R/SAS HTTP entry points inherit the veto automatically** — they cannot run semantic mode even if the caller sends `semantic_mode: true`.
+with `script_mode = python_mode or r_mode or sas_mode` (`:71`–`74`), derived from `target_language` (`"python"` / `"r"` / `"sas"` / `"sql"`). `generate_python_builtin` / `generate_r_builtin` / `generate_sas_builtin` (`:403`, `:411`, `:419`) call the same function with `target_language` set, so **the Python/R/SAS HTTP entry points inherit the veto automatically** — they cannot run semantic mode even if the caller sends `semantic_mode: true`.
 
-The restriction is enforced a second time inside the attempt loop, `app/core/orchestrator/attempts.py:97`–`102`:
+The restriction is enforced a second time inside the attempt loop, `app/core/orchestrator/attempts.py:132`–`137`:
 
 ```python
 python_mode = target_language == "python"
@@ -10210,7 +10637,7 @@ if script_mode:
 
 This second guard is defence in depth for direct callers of `run_attempt_loop` (e.g. tests). **Both guards must exist.**
 
-`semantic_mode` is then passed to the loop (`:301`) and to the system prompt builder (`:167`–`169`). Inside the loop, the active model is loaded once, before the first attempt (`:119`–`120`):
+`semantic_mode` is then passed to the loop (`app/core/orchestrator/builtin_sql_generator.py:357`) and to the system prompt builder (`attempts.py:260`–`267`). Inside the loop, the active model is loaded once, before the first attempt (`attempts.py:154`):
 
 ```python
 active_model = _load_active_model(stores) if semantic_mode else None
@@ -10219,10 +10646,14 @@ semantic_json = active_model.model_dump_json() if active_model else "[]"
 
 - `active_model` is loaded **once** and never refreshed between attempts — a model changed mid-generation is not picked up.
 - `semantic_json` is the Pydantic JSON dump of the whole model (measures, dimensions, joins, governance) and is reused for both the generator prompt and the critic prompt.
-- `_load_active_model` (`attempts.py:647`) is a try/except wrapper returning `None` on any store failure, so a store that is absent or predates the semantic tables yields "no active model" instead of propagating.
-- If `semantic_mode` is `True` but no model exists, `is_enabled` would have returned `False`, so `active_model is None` cannot happen via the normal entry point; a direct caller that forces `semantic_mode=True` without a model now records the semantic retry `"No active semantic model is available for this data source."` (`attempts.py:289`–`300`) and retries — the previous `compiler.compile(smq, None, …)` → `AttributeError` path is gone.
+- `_load_active_model` (`attempts.py:789`) is a try/except wrapper returning `None` on any store failure, so a store that is absent or predates the semantic tables yields "no active model" instead of propagating.
+- If `semantic_mode` is `True` but no model exists, `is_enabled` would have returned `False`, so `active_model is None` cannot happen via the normal entry point; a direct caller that forces `semantic_mode=True` without a model now records the semantic retry `"No active semantic model is available for this data source."` (`attempts.py:289`–`300`) and retries — the previous `compiler.compile(smq, None, …)` → `AttributeError` path is gone. `attempts.py:382`–`394` is that retry.
 
-> **Dialect source (verified absence):** `AgentContext.dbms_type` is declared with default `"SQL Server"` (`app/models/pipeline.py:145`) and **no assignment to `dbms_type` exists anywhere in the repository** (exhaustive grep for `dbms_type\s*=` and for the field in every module returns only the declaration and read sites at `attempts.py:96`, `:234`, `builtin_sql_generator.py:212`, `:366`, `sql_validator.py:13`, `sql_context_hydrator.py:47`). In the current Python port the compiler therefore always receives `"SQL Server"` from the orchestrator; other dialects are reachable only through the admin compile endpoint's `dbms` body field (`app/api/endpoints/admin_semantic.py:52`) and through direct service calls. Do not assume a request field sets it, and do not build dialect behaviour that depends on `context.dbms_type` being set by the pipeline.
+> **Dialect source (verified absence):** `AgentContext.dbms_type` is declared with default `"SQL Server"` (`app/models/pipeline.py:146`) and **no assignment to `dbms_type` exists anywhere in the repository** (exhaustive grep for `dbms_type\s*=` and for the field in every module returns only the declaration and read sites at `attempts.py:131`, `:245`, `:399`, `builtin_sql_generator.py:229`, `:438`, `prompts.py:159`, `:254`, `:259`, `:359`, `:472`, `:581`, `sql_validator.py:14`). In the current Python port the compiler therefore always receives `"SQL Server"` from the orchestrator; other dialects are reachable only through the admin compile endpoint's `dbms` body field (`app/api/endpoints/admin_semantic.py:56`) and through direct service calls. Do not assume a request field sets it, and do not build dialect behaviour that depends on `context.dbms_type` being set by the pipeline.
+
+**Availability gate (a third, per-turn gate).** Once the model is loaded, the loop asks whether that model can plausibly answer *this* question before spending an attempt on it: `can_answer(active_model, analysis.extracted_columns, build_question_tokens(question_tokens(question), analysis.entities))` (`attempts.py:155`–`172`) compares the question's tokens (plus the analysis entities) and the extracted columns against the model's measure/dimension vocabulary. When the question shares **no** significant token with that vocabulary, the turn sets `semantic_mode = False`, sets `context.grain_is_advisory = True` and falls through to the physical-SQL path — otherwise every attempt returns `UNKNOWN_METRIC` and the turn ends as a semantic failure even though the physical schema could answer it. It fails open: a missing model, or a model with an empty vocabulary, is never judged unfit. The tokenizer and comparison helpers live in `app/utils/query_vocabulary.py` (`question_tokens`, `build_question_tokens`, `can_answer`, `is_significant`, `STRUCTURAL_TOKENS`).
+
+**Availability gate (a third, per-turn gate).** Once the model is loaded, the loop asks whether that model can plausibly answer *this* question before spending an attempt on it: `can_answer(active_model, analysis.extracted_columns, build_question_tokens(question_tokens(question), analysis.entities))` (`attempts.py:155`–`172`) compares the question's tokens (plus the analysis entities) and the extracted columns against the model's measure/dimension vocabulary. When the question shares **no** significant token with that vocabulary, the turn sets `semantic_mode = False`, sets `context.grain_is_advisory = True` and falls through to the physical-SQL path — otherwise every attempt returns `UNKNOWN_METRIC` and the turn ends as a semantic failure even though the physical schema could answer it. It fails open: a missing model, or a model with an empty vocabulary, is never judged unfit. The tokenizer and comparison helpers live in `app/utils/query_vocabulary.py` (`question_tokens`, `build_question_tokens`, `can_answer`, `is_significant`, `STRUCTURAL_TOKENS`).
 
 ---
 
@@ -10230,7 +10661,7 @@ semantic_json = active_model.model_dump_json() if active_model else "[]"
 
 #### 9.3.1 Pydantic models (verbatim)
 
-`app/models/pipeline.py:285`–`322`:
+`app/models/pipeline.py:289`–`326`:
 
 ```python
 class SemanticMeasure(BaseModel):
@@ -10279,11 +10710,11 @@ Notes that matter for parity:
 
 #### 9.3.2 Accepted SMQ entry shapes
 
-`metrics` — logical measure names, case-insensitive, matched against `SemanticMeasure.name` (`app/services/semantic_compiler.py:164`, `:176`–`182`).
+`metrics` — logical measure names, case-insensitive, matched against `SemanticMeasure.name` (`app/services/semantic_compiler.py:185`, `:189`–`199`). A blank name is skipped; an unknown name raises `UNKNOWN_METRIC` with a closest-name hint (§9.5.10).
 
-`dimensions` — logical dimension names, case-insensitive, matched against `SemanticDimension.name` (`:165`, `:174`–`178`).
+`dimensions` — logical dimension names, case-insensitive, matched against `SemanticDimension.name` (`:186`, `:201`–`214`).
 
-`filters` — one entry per predicate; keys are read with `dict.get`, unknown keys ignored (`app/services/semantic_compiler.py:354`–`375`):
+`filters` — one entry per predicate; keys are read with `dict.get`, unknown keys ignored (`app/services/semantic_compiler.py:378`–`399`):
 
 | Key | Aliases | Type (accepted) | Default | Meaning |
 |---|---|---|---|---|
@@ -10291,7 +10722,7 @@ Notes that matter for parity:
 | `op` | `operator` | `str` | `"eq"` | `eq`/`ne`/`neq`/`gt`/`gte`/`lt`/`lte`/`like`; anything else → `=` |
 | `value` | — | `int`, `float`, `bool`, `str` | `None` | `None` ⇒ the whole filter renders to `""` and is dropped at assembly |
 
-`timeframes` — one entry per date range (`app/services/semantic_compiler.py:206`–`215`):
+`timeframes` — one entry per date range (`app/services/semantic_compiler.py:229`–`237`):
 
 | Key | Type (accepted) | Required for emission | Meaning |
 |---|---|---|---|
@@ -10300,6 +10731,10 @@ Notes that matter for parity:
 | `end` | any (stringified) | truthy | Upper bound, inclusive |
 
 Emission is `f"{field} BETWEEN {quote_string_literal(str(start), dbms)} AND {quote_string_literal(str(end), dbms)}"`. **A missing/falsy `field`, `start` or `end` silently drops the timeframe** — there is no error and no default range.
+
+**Where these dicts come from (types matter).** The two tables above describe a `SmqPayload` as the compiler receives it. On the live path the payload is built by `parse_smq` → `smq_from_object` (`app/services/semantic_smq.py:401`–`415`), which rebuilds every filter as `{"field": str, "op": str, "value": str}`: `value` is stringified by `_read_scalar`, an entry with no usable `field` is dropped, and `name` is accepted for `field` plus `operator` for `op` (`_read_filters`, `:352`–`375`; `_read_timeframes`, `:378`–`398`). Two consequences a re-implementation must reproduce: a filter value that arrived as the number `100` reaches the compiler as the string `"100"` and is therefore emitted **quoted** (`_filter_sql` inlines only a real `int`/`float`), and a filter that carried no value arrives as `""`, which renders as `field = N''` instead of the dropped-empty-string case. A `SmqPayload` constructed directly — the admin compile endpoint validates its body with `SmqPayload.model_validate` — keeps the caller's types and does inline numbers.
+
+**Where these dicts come from (types matter).** The two tables above describe a `SmqPayload` as the compiler receives it. On the live path the payload is built by `parse_smq` → `smq_from_object` (`app/services/semantic_smq.py:401`–`415`), which rebuilds every filter as `{"field": str, "op": str, "value": str}`: `value` is stringified by `_read_scalar`, an entry with no usable `field` is dropped, and `name` is accepted for `field` plus `operator` for `op` (`_read_filters`, `:352`–`375`; `_read_timeframes`, `:378`–`398`). Two consequences a re-implementation must reproduce: a filter value that arrived as the number `100` reaches the compiler as the string `"100"` and is therefore emitted **quoted** (`_filter_sql` inlines only a real `int`/`float`), and a filter that carried no value arrives as `""`, which renders as `field = N''` instead of the dropped-empty-string case. A `SmqPayload` constructed directly — the admin compile endpoint validates its body with `SmqPayload.model_validate` — keeps the caller's types and does inline numbers.
 
 #### 9.3.3 Storage DDL (SQLite sidecar)
 
@@ -10384,8 +10819,8 @@ Key-facts table:
 Insert semantics (`SqliteVecProvider.upsert`, `app/services/stores/sqlite_vec_provider.py:73`–`90`): every row is written with `INSERT OR REPLACE INTO {collection} ({cols}) VALUES (…)`, with the column list taken from the row dict. Consequences:
 
 - Every write must supply **every NOT NULL column without a default** (`data_source_id`, `model_id` where NOT NULL, the payload columns). `SemanticModelService` does exactly that (`app/services/semantic_model_service.py:38`–`123`).
-- Any `list`/`tuple` value whose key is `vector`, endswith `vector`, or endswith `_json` is JSON-dumped before write (`:80`–`85`). `embedding_json` is not a list here — the service pre-serializes with `dumps_vector` (`:58`, `app/services/stores/score_utils.py:40`).
-- Deletion is by `data_source_id` + one key field: `DELETE FROM {collection} WHERE data_source_id = ? AND {key_field} = ?` (`:92`–`98`). `SemanticModelService._replace_children` relies on `key_field="model_id"` deleting **all** child rows of that model.
+- Any `list`/`tuple` value whose key is `vector`, endswith `vector`, or endswith `_json` is JSON-dumped before write (`app/services/stores/sqlite_vec_provider.py:80`–`85`). `embedding_json` is not a list here — the service pre-serializes with `dumps_vector` (`app/services/semantic_model_service.py:58`, `app/services/stores/score_utils.py:40`).
+- Deletion is by `data_source_id` + one key field: `DELETE FROM {collection} WHERE data_source_id = ? AND {key_field} = ?` (`app/services/stores/sqlite_vec_provider.py:92`–`98`). `SemanticModelService._replace_children` relies on `key_field="model_id"` deleting **all** child rows of that model.
 
 Milvus backend (`app/services/stores/milvus_provider.py:109`–`170`, `app/services/stores/milvus_replicate.py:21`–`47`): all six semantic collections are `kind != "vector"`, so `uses_native_vector` is `False` and each collection is created with fields `pk VARCHAR(1024)`, `data_source_id VARCHAR(128, is_partition_key=True)`, the contract fields as `VARCHAR(65535)` (or `INT64` for `INTEGER`), plus a mandatory dummy `_pad_vector FLOAT_VECTOR(dim=2)` indexed `IVF_FLAT`/`COSINE`. Row PKs are `"|".join([data_source_id] + unique_with_source)` (`milvus_replicate.py:50`–`58`); for `semantic_governance_predicates` (no `unique_with_source`) the fallback candidate list hits `model_id`, so **on Milvus only one governance predicate per model can exist** even though SQLite allows many.
 
@@ -10430,7 +10865,7 @@ Sales | measure(revenue:rev:SUM(dbo.Orders.Amount)) | dimension(customer:c:dbo.O
 
 Storage format is a **JSON float array as TEXT** (`dumps_vector` = `json.dumps(list(vec))`, `app/services/stores/score_utils.py:40`). Reads go through `loads_vector` (`:44`), which tolerates `bytes`/`memoryview` and coerces to `float`.
 
-Retrieval (`SemanticModelService.search_models`, `app/services/semantic_model_service.py:138`–`153`) is **in-process cosine**, not the provider's ANN search:
+Retrieval (`SemanticModelService.search_models`, `app/services/semantic_model_service.py:145`–`160`) is **in-process cosine**, not the provider's ANN search:
 
 1. `active = [m for m in self.list_models() if m.is_active]` — inactive models are excluded outright; if none, return `[]`.
 2. Embed the query text with `embed_text(query, provider, source_id)`.
@@ -10442,7 +10877,7 @@ Retrieval (`SemanticModelService.search_models`, `app/services/semantic_model_se
 
 #### 9.3.5 Active-model selection rules
 
-`SemanticModelService.get_active_model` (`app/services/semantic_model_service.py:129`–`141`):
+`SemanticModelService.get_active_model` (`app/services/semantic_model_service.py:129`–`143`):
 
 ```python
 try:
@@ -10466,9 +10901,9 @@ Rules, exactly:
 3. **Newest wins** by lexicographic descending sort on `updated_at_utc`, which is written as `datetime.now(timezone.utc).isoformat()` (`:36`) — fixed-width ISO-8601 with an offset, so string ordering equals chronological ordering.
 4. **Ties** are resolved by SQLite row order (the sort is stable): the first row returned by `SELECT *` wins.
 5. Multiple active models are legal and expected; only the newest is used for compilation. "Newest" means *most recently saved*, not *most recently created* — re-saving an older model makes it active.
-6. **The lookup never raises.** Both the header read and the hydrate are guarded, so a data source whose vector index was never built (or predates the semantic tables) degrades to "no active model" — semantic mode off for that turn — instead of failing the generation request. This is also why the attempt loop wraps its own call in `_load_active_model` (`attempts.py:647`): a direct caller that forces `semantic_mode=True` against such a store now records `"No active semantic model is available for this data source."` as a semantic retry rather than raising `AttributeError`.
-7. `_hydrate` (`:155`–`203`) rebuilds the full model with 4 additional `fetch_all` reads (measures, dimensions, joins, governance) filtered in Python by `r.get("model_id") == mid`. Join `join_type` is normalized with `r.get("join_type") or "INNER"`; measure/dimension descriptions with `or ""`; `label` falls back to `model_id`; `is_active` is `bool(int(header.get("is_active") or 0))`.
-8. `list_models` (`:125`–`127`) returns **all** models for the source (active and inactive), newest-agnostic, in store order.
+6. **The lookup never raises.** Both the header read and the hydrate are guarded, so a data source whose vector index was never built (or predates the semantic tables) degrades to "no active model" — semantic mode off for that turn — instead of failing the generation request. This is also why the attempt loop wraps its own call in `_load_active_model` (`attempts.py:789`): a direct caller that forces `semantic_mode=True` against such a store now records `"No active semantic model is available for this data source."` as a semantic retry rather than raising `AttributeError`.
+7. `_hydrate` (`app/services/semantic_model_service.py:162`–`203`) rebuilds the full model with 4 additional `fetch_all` reads (measures, dimensions, joins, governance) filtered in Python by `r.get("model_id") == mid`. Join `join_type` is normalized with `r.get("join_type") or "INNER"`; measure/dimension descriptions with `or ""`; `label` falls back to `model_id`; `is_active` is `bool(int(header.get("is_active") or 0))`.
+8. `list_models` (`app/services/semantic_model_service.py:125`–`127`) returns **all** models for the source (active and inactive), newest-agnostic, in store order.
 
 Save path — `SemanticModelService.save` (`:35`–`64`):
 
@@ -10483,7 +10918,7 @@ model.model_id = model_id ; model.data_source_key = source_id ; return model
 
 *Execution-verified round trip* (temporary SQLite provider, `source_id="src1"`, two models saved in order A then B with `is_active=False` on B): `save` returns UUID model ids and sets `data_source_key == "src1"`; `get_active_model()` returns **A** with exactly its measure/dimension lists; `list_models()` returns both in store order; `semantic_embeddings` holds one 1536-float JSON array per model; `is_enabled(None) == is_enabled(True) == True` and `is_enabled(False) == False`; re-saving A with empty measures/dimensions **wipes those child rows** (`measures == []`); re-saving B with `is_active=True` makes **B** the active model.
 
-`_replace_children` (`:66`–`123`) performs, for each of the four child tables in this fixed order — `semantic_measures`/`measure_name`, `semantic_dimensions`/`dimension_name`, `semantic_joins`/`from_table`, `semantic_governance_predicates`/`predicate` — a `fetch_all` filtered by `model_id`, then `provider.delete(table, source_id, "model_id", model_id)`, then (if the incoming list is non-empty) a bulk `upsert` of the new children. The `for row in existing … break` shape (`:76`–`78`) is only a "is there anything to delete?" test; deletion is by `model_id`, so **all** rows of that model in that table are removed in one statement. Empty incoming lists therefore persist as "no rows" (a re-saved model with zero measures loses all measures — the ≥1-measure guarantee lives in the extraction service and the admin UI, not here).
+`_replace_children` (`app/services/semantic_model_service.py:66`–`123`) performs, for each of the four child tables in this fixed order — `semantic_measures`/`measure_name`, `semantic_dimensions`/`dimension_name`, `semantic_joins`/`from_table`, `semantic_governance_predicates`/`predicate` — a `fetch_all` filtered by `model_id`, then `provider.delete(table, source_id, "model_id", model_id)`, then (if the incoming list is non-empty) a bulk `upsert` of the new children. The `for row in existing … break` shape (`:76`–`78`) is only a "is there anything to delete?" test; deletion is by `model_id`, so **all** rows of that model in that table are removed in one statement. Empty incoming lists therefore persist as "no rows" (a re-saved model with zero measures loses all measures — the ≥1-measure guarantee lives in the extraction service and the admin UI, not here).
 
 ---
 
@@ -10491,49 +10926,74 @@ model.model_id = model_id ; model.data_source_key = source_id ; return model
 
 #### 9.4.1 System prompt (verbatim)
 
-Semantic mode replaces the entire strict-SQL system prompt. `app/core/orchestrator/prompts.py:63`–`76`:
+Semantic mode replaces the entire strict-SQL system prompt. `app/core/orchestrator/prompts.py:160`–`178`:
 
 ```python
 if semantic:
     semantic_blocks = [f"GENERATION MODE\n{context.generation_mode.value}"]
     if context.filter_state_text and context.filter_state_text != "(none)":
         semantic_blocks.append(_filter_block(context))
+    grain = grain_prompt_line(context)
+    if grain:
+        semantic_blocks.append(grain)
+    semantic_blocks.append(f"ATTEMPT HISTORY\n{attempt_history or '(first attempt)'}")
+    if any(looks_like_smq(block) for block in semantic_blocks if block):
+        semantic_blocks.append(SEMANTIC_OUTPUT_CORRECTION)
     semantic_extra = "\n\n".join(semantic_blocks)
     return (
         f"DBMS CONTEXT (SEMANTIC MODE)\nYou compile Semantic Model Queries for {dbms}.\n"
         f"AVAILABLE SEMANTIC MODELS (JSON)\n{semantic_models_json}\n"
         f"{semantic_extra}\n"
-        "SEMANTIC OUTPUT FORMAT (STRICT)\n"
-        "Reply with a fenced ```smq block containing "
-        '{"metrics":[],"dimensions":[],"filters":[],"timeframes":[]}. '
-        "Use only model names. No reasoning, view, or scripting sections."
+        f"{_semantic_output_format(semantic_model)}"
     )
 ```
 
 Rendered skeleton, for a `fresh_start` turn with no inherited filters and a model JSON of `<MODEL>`:
 
-```
+````text
 DBMS CONTEXT (SEMANTIC MODE)
 You compile Semantic Model Queries for SQL Server.
 AVAILABLE SEMANTIC MODELS (JSON)
 <MODEL>
 GENERATION MODE
 fresh_start
+
+ATTEMPT HISTORY
+(first attempt)
+
 SEMANTIC OUTPUT FORMAT (STRICT)
-Reply with a fenced ```smq block containing {"metrics":[],"dimensions":[],"filters":[],"timeframes":[]}. Use only model names. No reasoning, view, or scripting sections.
-```
+Return a fenced `smq` code block containing only JSON. A `smq` block is the ONLY accepted output in this mode: never answer with SQL, and never add prose, explanations, or extra keys.
+
+The block must contain exactly these four keys, with these exact types:
+{"metrics":["<metric_name>"],"dimensions":["<dimension_name>"],"filters":[],"timeframes":[]}
+
+Worked example using the metric and dimension names this model actually exposes:
+{"metrics":["<metric_name>"],"dimensions":["<dimension_name>"],"filters":[],"timeframes":[]}
+
+CRITICAL TYPE RULE: "metrics" and "dimensions" must be arrays of PLAIN STRINGS.
+- WRONG (rejected): {"metrics":[{"metric":"row_count"}],"dimensions":[{"dimension":"model"}]}
+- RIGHT (accepted): {"metrics":["row_count"],"dimensions":["model"]}
+
+Rules:
+- Use only metric names and dimension names present in AVAILABLE SEMANTIC MODELS. Never invent a metric.
+- Do not wrap a name in an object, and do not rename it with a key such as "metric", "measure", "name", or "dimension".
+- Preserve user intent, date scopes, and filters in SMQ form.
+
+````
 
 Differences from the strict-SQL prompt that the re-implementation must reproduce exactly:
 
 | Aspect | Strict SQL prompt | Semantic prompt |
 |---|---|---|
 | Dialect block | `DBMS CONTEXT (STRICT)` + per-dialect rules (`PostgreSQL: LIMIT not TOP …`) | `DBMS CONTEXT (SEMANTIC MODE)` + "You compile Semantic Model Queries for {dbms}" |
-| Query analysis / KB examples / value mappings / schemas / supplementary / attempt history | all present (`prompts.py:89`–`108`) | **absent** |
+| Query analysis / KB examples / value mappings / schemas / supplementary | all present (`prompts.py:193`–`216`) | **absent** |
 | Scenario rules | `scenario_rules(context)` (`OPTIMIZATION_INSTRUCTIONS` / `REFINEMENT_INSTRUCTIONS`) | only the bare `GENERATION MODE` line — scenario rules are **not** included |
-| Active filters | `_filter_block` + `SCOPE_GUARD` | `_filter_block` when `filter_state_text` is set and not `"(none)"` (identical helper, `:37`–`42`) |
-| Output format | `Optionally include a /* reasoning */ block, then fenced SQL.` | fenced ` ```smq ` JSON, model names only, no reasoning section |
+| Active filters | `_filter_block` + `SCOPE_GUARD` | `_filter_block` when `filter_state_text` is set and not `"(none)"` (identical helper, `:71`–`76`) |
+| Grain line | `grain_prompt_line(context)`, optional | `grain_prompt_line(context)`, optional (same helper) |
+| Attempt history | `ATTEMPT HISTORY` (`attempt_history or '(first attempt)'`) | `ATTEMPT HISTORY` — **present**, and scanned for an SMQ-shaped block |
+| Output format | reasoning comment block + fenced ```sql block | fenced ` ```smq ` JSON of plain metric/dimension names, built from the active model by `_semantic_output_format` |
 
-The user prompt is unchanged (`build_user_prompt`, `:168`–`177`): `User request:` + optional `Existing SQL:` + optional `Error to fix:` + optional `Pinned objects:`.
+The user prompt is unchanged (`build_user_prompt`, `prompts.py:291`–`299`): `User request:` + optional `Existing SQL:` + optional `Error to fix:` + optional `Pinned objects:`.
 
 #### 9.4.2 Naming rules the compiler enforces
 
@@ -10547,15 +11007,17 @@ The user prompt is unchanged (`build_user_prompt`, `:168`–`177`): `User reques
 The extractor no longer lives in `attempts.py`; it is `app/services/semantic_smq.py` (see §9.10.1 for the
 verbatim module). Candidate order, first valid candidate wins:
 
-1. a ` ```smq ` fenced block body (`_SMQ_FENCE_RE`, `:31`);
-2. any other fenced block body (`_ANY_FENCE_RE`, `:35`), with a leading language tag dropped by
-   `_drop_fence_tag` (`:59`);
-3. the first brace-balanced `{...}` region anywhere in the text (`_find_balanced_object`, `:72`);
+1. a ` ```smq ` fenced block body (`_SMQ_FENCE_RE`, `:32`);
+2. any other fenced block body (`_ANY_FENCE_RE`, `:36`), with a leading language tag dropped by
+   `_drop_fence_tag` (`:79`);
+3. the first brace-balanced `{...}` region anywhere in the text (`_find_balanced_object`, `:92`);
 4. the whole response.
 
-A candidate is accepted when it parses as a JSON **object** carrying a `metrics` **or** `dimensions`
-array (`_is_smq_object`, `:48`). Accepting either key alone is deliberate: a dimensions-only request is a
-valid detail query and must still be recognised, so that it is never executed as SQL.
+A candidate is accepted when it parses as a JSON **object** carrying any of `_SMQ_ROOT_KEYS` — `metrics`,
+`dimensions`, or the singular `metric` / `dimension` (`_is_smq_object`, `:66`). Accepting one key alone is
+deliberate: a dimensions-only request is a valid detail query and must still be recognised, so that it is
+never executed as SQL; and a *present* key whose value is a bare string, an empty array or a wrong element
+type is still an SMQ — the typed parse decides whether it can be used.
 
 Behaviour table (executed against the module; the full matrix lives in `tests/unit/test_semantic_smq.py`):
 
@@ -10569,8 +11031,10 @@ Behaviour table (executed against the module; the full matrix lives in `tests/un
 | `{"dimensions":["bctr_number"]}` | accepted (dimensions-only) |
 | `{"metrics":["row_count"],"filters":[{"value":"a \" b {c"}]}` | accepted — the brace scanner honours string state **and** backslash escapes (§9.10.1) |
 | Truncated payload, e.g. `{"metrics":["row_count"], "dimensions":[` | `None` (but `looks_like_smq` is `True`, so the attempt is a semantic retry — never SQL) |
-| `{"dimensions":"bctr_number"}` | `None` (key present, value not an array) |
-| `{"metrics":[1,2]}` | `None` — extraction succeeds structurally but `parse_smq` is `None` (Pydantic refuses int→str), which is an **explicit semantic retry**, not a fallback |
+| `{"dimensions":"bctr_number"}` | accepted — a bare string is a one-element list, so `parse_smq` compiles `bctr_number` |
+| `{"metric":"row_count"}` / `{"metrics":[{"measure":"row_count"}]}` | accepted — the singular root key and the element aliases are merged/unwrapped |
+| `{"metrics":[]}` | accepted — a present-but-empty array is a well-formed request for nothing, so the compiler rejects it with `EMPTY_REQUEST` (a semantic retry), never as SQL |
+| `{"metrics":[1,2]}` | extraction returns the object, then `parse_smq` raises `SmqShapeError` naming `metrics[0]`; the loop turns that into a `SCHEMA MISMATCH` retry, never a fallback |
 | Plain SQL / prose only / empty | `None`, and `looks_like_smq` is `False` |
 
 Note the interaction with the SQL extractor: `FENCE_SQL = re.compile(r"```(?:sql|tsql|smq)?\s*([\s\S]*?)```")`
@@ -10580,7 +11044,7 @@ exactly why the payload-class guard exists: without it, this body is what valida
 
 #### 9.4.4 Retry policy, timeout, and fallback
 
-`app/core/orchestrator/attempts.py:241`–`322` — the guarded three-way decision (abridged; §9.10.2–§9.10.3
+`app/core/orchestrator/attempts.py:323`–`418` — the guarded three-way decision (abridged; §9.10.2–§9.10.3
 gives the full rationale):
 
 ```python
@@ -10603,7 +11067,12 @@ if semantic_mode:
             continue
         # genuine SQL answer + fallback enabled: proceed as SQL
     else:
-        smq = parse_smq(smq_json)
+        try:
+            smq = parse_smq(smq_json)
+        except SmqShapeError as exc:
+            # An element with the wrong shape: name the index and the accepted aliases.
+            last_semantic_error = build_smq_shape_mismatch_feedback(exc, smq_json, active_model)
+            attempt_reports.append(...); semantic_retry = True; continue
         if smq is None:
             last_semantic_error = f"The SMQ payload could not be parsed. Received: {smq_json[:400]}"
             attempt_reports.append(...); semantic_retry = True; continue
@@ -10626,15 +11095,20 @@ Policy, itemized:
 | Reply carries an SMQ payload that cannot be extracted, **or** carries no payload while `looks_like_smq(raw_output)`/`looks_like_smq(cleaned_output)` is true, **or** the fallback is off | Semantic retry: report `stage="semantic_compilation"`, `what_was_tried="extract SMQ payload"`, `why_it_failed=<reason> + valid_names_hint(model)`, `continue`. The JSON never reaches the safety scan, the critic or `ValidateSql`. |
 | Reply carries **no** SMQ payload at all and the fallback is on | Fall through to the SQL path with the body from `extract_sql_body`. This is the only remaining meaning of the fallback. |
 | Payload extracted, `parse_smq` returns `None` | Semantic retry with the first 400 chars of the offending payload + valid names. |
+| Payload extracted, `parse_smq` raises `SmqShapeError` (a number, or an object with no recognised alias, inside `metrics`/`dimensions`) | Semantic retry whose feedback is `SCHEMA MISMATCH: the SMQ payload has the wrong element shape. …`, naming the offending index (`metrics[0]`) and the accepted aliases, then `valid_names_hint` (`app/services/semantic_smq.py:460`–`474`). |
+| Payload extracted, `parse_smq` raises `SmqShapeError` (a number, or an object with no recognised alias, inside `metrics`/`dimensions`) | Semantic retry whose feedback is `SCHEMA MISMATCH: the SMQ payload has the wrong element shape. …`, naming the offending index (`metrics[0]`) and the accepted aliases, then `valid_names_hint` (`app/services/semantic_smq.py:460`–`474`). |
 | `active_model is None` | Semantic retry naming the missing model. The previous `AttributeError` propagation is gone. |
 | `SemanticCompilationError` / compile timeout (any code, incl. `EMPTY_REQUEST`) | Semantic retry whose feedback names the offending item **and** the model's valid metric/dimension names (§9.10.3). |
 | Compile returns SQL | `sql` is replaced wholesale and `compiled_from_semantic_model = True`; safety, sentinels, structural hash, critic and DB validation then run on the compiled SQL exactly as on LLM SQL — **except** that the client-side object-scope rewrite is skipped (§9.10.5). |
-| Budget exhausted while the last attempt was a semantic retry | Terminal `_fail(ErrorCategory.SEMANTIC_COMPILATION, last_semantic_error, …)` (`attempts.py:496`–`508`) — **not** the generic `validation` exit, and never a `Incorrect syntax` message. |
+| Budget exhausted while the last attempt was a semantic retry | Terminal `_fail(ErrorCategory.SEMANTIC_COMPILATION, last_semantic_error, …)` (`attempts.py:597`–`610`) — **not** the generic `validation` exit, and never a `Incorrect syntax` message. |
 
-Constants (`app/core/constants.py:9`, `:58`–`60`, `:97`–`99`):
+**Repeat divergence.** Two identical payloads are detected by `semantic_payload_fingerprint(raw, cleaned)` (`app/services/semantic_smq.py:439`–`457`): SHA-256 (upper hex) of the fence- and whitespace-normalized JSON with key order preserved, and `""` when the reply carries no SMQ payload (so a plain-SQL reply stays out of the signal). A repeat sets `loop_breaker = True`, forcing the divergent rediscovery branch on the next attempt — the physical-SQL hallucination counter never moves on this path — and the *next* `llm.complete(...)` call carries `temperature = SemanticRepeatTemperature` (0.4) in addition to the presence penalty. The bump therefore lands on the attempt after the repeat, because the repeat is only known once the second copy exists (`attempts.py:186`–`199`, `:273`–`283`). An accepted compile clears the fingerprint, so a later retry starts clean.
+
+Constants (`app/core/constants.py:9`, `:62`, `:65`–`66`, `:103`–`105`):
 
 ```python
 SemanticCompilationTimeoutMs = 5_000        # passed to compile_guarded(); ENFORCED (§9.10.4)
+SemanticRepeatTemperature = 0.4             # temperature of the call after a repeated SMQ payload
 SemanticSmqParseRetryOnFailure = True       # declared, no reader — retries are bound by MaxRetries
 SemanticCompilationFallbackToRawSql = True  # module constant, unused (see below)
 
@@ -10645,13 +11119,13 @@ def semantic_compilation_fallback_to_raw_sql() -> bool:
 
 Two parity traps:
 
-1. The 5 s budget is real in `compile_guarded` (`semantic_compiler.py:124`–`147`): a daemon worker thread
+1. The 5 s budget is real in `compile_guarded` (`semantic_compiler.py:134`–`168`): a daemon worker thread
    runs `_render` and `join(timeout_ms/1000)` decides. Expiry yields
    `SmqCompileResult(detail="COMPILATION_TIMEOUT: semantic compilation exceeded {n} ms")`, which the loop
    reports as a semantic retry. The bare `compile()` entry point still ignores `timeout_ms`
-   (`_ = timeout_ms`, `:118`) — call sites that must enforce the budget use `compile_guarded`.
+   (`_ = timeout_ms`, `:131`) — call sites that must enforce the budget use `compile_guarded`.
 2. The module-level constant `SemanticCompilationFallbackToRawSql` is **shadowed** by the function of the
-   same name at `:97` (the function definition overwrites the constant). Settings key
+   same name at `:103` (the function definition overwrites the constant). Settings key
    `SEMANTIC_COMPILATION_FALLBACK_TO_RAW_SQL` (`app/core/config.py:64`, default `True`) is the operative
    value. Re-implementations should keep the function and may drop the dead constant, but must keep the
    settings name.
@@ -10666,7 +11140,7 @@ Two parity traps:
 
 #### 9.5.1 Signature and error types
 
-`app/services/semantic_compiler.py:64`–`85`, `:112`–`123`:
+`app/services/semantic_compiler.py:74`–`90`, `:122`–`141`:
 
 ```python
 class SemanticCompilationError(Exception):
@@ -10713,16 +11187,24 @@ _render(payload, model, dbms, include_governance):
   # ---- measure resolution (payload order)
   selected_measures = []
   for name in metrics:
-      m = measures_by_name.get((name or "").lower())
-      if m is None: raise SemanticCompilationError("UNKNOWN_METRIC", name)
+      cleaned = (name or "").strip()
+      if not cleaned: continue                       # a blank name is skipped, not an error
+      m = measures_by_name.get(cleaned.lower())
+      if m is None:
+          raise SemanticCompilationError("UNKNOWN_METRIC",
+              _unknown_name_detail("metric", cleaned, [item.name for item in model.measures]))
       selected_measures.append(m)
   # NOTE: no "first declared measure" default. An aggregate-only request simply has no metrics.
 
   # ---- dimension resolution (payload order)
   selected_dims = []
   for name in dimension_names:
-      d = dims_by_name.get((name or "").lower())
-      if d is None: raise SemanticCompilationError("UNKNOWN_DIMENSION", name)
+      cleaned = (name or "").strip()
+      if not cleaned: continue
+      d = dims_by_name.get(cleaned.lower())
+      if d is None:
+          raise SemanticCompilationError("UNKNOWN_DIMENSION",
+              _unknown_name_detail("dimension", cleaned, [item.name for item in model.dimensions]))
       selected_dims.append(d)                        # duplicates are NOT de-duplicated
 
   # ---- SELECT list (dimensions first, then measures; payload order within each group)
@@ -10761,12 +11243,12 @@ Observations that are load-bearing for identical behaviour:
 
 - Dictionary comprehensions make **later duplicate measure/dimension names win**; duplicate names in `payload.metrics`/`payload.dimensions` emit duplicate select items and duplicate `GROUP BY` items (no de-duplication anywhere).
 - **There is no measure default.** A payload requesting only dimensions produces a projection with no measure at all, and a payload requesting neither is rejected with `EMPTY_REQUEST`. The old `model.measures[0]` fallback (and the hard-coded `COUNT(*) AS row_count` used when the select list was empty) are gone — both silently answered a question that was not asked.
-- **`GROUP BY` requires a real aggregate.** `expression_has_aggregate` (`:88`) tests the measure expression with a delimiter-aware pattern for `COUNT|SUM|AVG|MIN|MAX|STDEV|STDEVP|VAR|VARP|STRING_AGG|GROUP_CONCAT|LISTAGG|ARRAY_AGG|MEDIAN|APPROX_COUNT_DISTINCT`, so `t.avg_cost` is not an aggregate call. A dimensions-only request is a detail query and is **not** grouped.
-- `d.table` is used as an opaque string for matching/dedup, but it is **normalized** by `_normalize_table` (`:78`): whitespace around dots is squeezed and surrounding `[` `]` `"` `'` `` ` `` are stripped, so `[dbo].[Orders]` and `dbo.Orders` are the same table for planning purposes. The compiled identifiers are re-quoted from the normalized form.
+- **`GROUP BY` requires a real aggregate.** `expression_has_aggregate` (`:98`) tests the measure expression with a delimiter-aware pattern for `COUNT|SUM|AVG|MIN|MAX|STDEV|STDEVP|VAR|VARP|STRING_AGG|GROUP_CONCAT|LISTAGG|ARRAY_AGG|MEDIAN|APPROX_COUNT_DISTINCT`, so `t.avg_cost` is not an aggregate call. A dimensions-only request is a detail query and is **not** grouped.
+- `d.table` is used as an opaque string for matching/dedup, but it is **normalized** by `_normalize_table` (`:93`): whitespace around dots is squeezed and surrounding `[` `]` `"` `'` `` ` `` are stripped, so `[dbo].[Orders]` and `dbo.Orders` are the same table for planning purposes. The compiled identifiers are re-quoted from the normalized form.
 
 #### 9.5.3 Identifier helpers
 
-`app/services/semantic_compiler.py:274`–`278`, `:348`–`352`:
+`app/services/semantic_compiler.py:298`–`302`, `:372`–`376`:
 
 ```python
 def _col(self, table: str, column: str, dbms: str) -> str:
@@ -10788,7 +11270,7 @@ def _table_ident(self, table: str, dbms: str) -> str:
 
 #### 9.5.4 Required tables, anchor, and join plan
 
-**Required tables** — `_required_tables` (`:224`). The list is built by seeding the model's declared tables
+**Required tables** — `_required_tables` (`:248`). The list is built by seeding the model's declared tables
 in a **fixed** order (every `joins[].from_table` in declaration order, then every `dimensions[].table` in
 declaration order), then appending the requested dimensions' tables and any table a measure expression
 names — but only if that table is **already in the model's declared set**:
@@ -10807,18 +11289,18 @@ for m in selected_measures:
         if table in required:  add(table)         # a stray name may not extend the plan
 ```
 
-`expression_source_tables` (`:93`) reads only explicit `FROM` clauses inside the expression
-(`_FROM_IN_EXPRESSION_RE`, `:51`) and skips SQL trailing words, so `SUM(dbo.Orders.Amount)` — which names a
+`expression_source_tables` (`:103`) reads only explicit `FROM` clauses inside the expression
+(`_FROM_IN_EXPRESSION_RE`, `:52`) and skips SQL trailing words, so `SUM(dbo.Orders.Amount)` — which names a
 *column* — contributes nothing, while `(SELECT COUNT(*) FROM bctr.transport)` contributes
 `bctr.transport`.
 
-**Anchor** — `_anchor` (`:256`), the deterministic rule:
+**Anchor** — `_anchor` (`:280`), the deterministic rule:
 
 1. the first **requested dimension's** table, if it is in the required set;
 2. else the table a **measure expression** reads from, if it is in the required set;
 3. else `required[0]` (which, for a measure-only request, is `model.joins[0].from_table`).
 
-**Join plan** — `_join_plan` (`:280`). The graph is undirected, and traversal is breadth-first over the
+**Join plan** — `_join_plan` (`:304`). The graph is undirected, and traversal is breadth-first over the
 **whole reachable component** (a required table may only be reachable through a table that is not itself
 required), but **only required tables are emitted**:
 
@@ -10874,8 +11356,10 @@ Traces (execution-verified for the rows that correspond to Examples A–E; the r
 
 #### 9.5.5 Filter rendering
 
-`app/services/semantic_compiler.py:354`–`375` (verbatim — unchanged from the original port, including the
-`field`/`dimension` alias and the numeric inlining):
+`app/services/semantic_compiler.py:378`–`399` (verbatim — unchanged from the original port, including the
+`field`/`dimension` alias and the numeric inlining; note that on the live path every `value` has already been
+stringified by the tolerant parse, so the numeric branch is reachable only for a directly constructed
+`SmqPayload` — see §9.3.2):
 
 ```python
 def _filter_sql(self, filt: dict, dbms: str) -> str:
@@ -10937,7 +11421,7 @@ for tf in payload.timeframes or []:
 
 #### 9.5.7 Governance predicate injection
 
-`if include_governance: where_parts.extend(model.governance_predicates)` (`app/services/semantic_compiler.py:216`–`217`).
+`if include_governance: where_parts.extend(model.governance_predicates)` (`app/services/semantic_compiler.py:238`–`239`).
 
 - Predicates are appended **last**, in stored order (which is the order returned by `fetch_all("semantic_governance_predicates", source_id)` filtered by `model_id` — i.e. insertion/row order, not sorted).
 - Each predicate is a bare string emitted verbatim, AND-joined with everything else, **without parentheses**.
@@ -10994,7 +11478,7 @@ dialect families.
 
 #### 9.5.9 SQL assembly order, and verified absences
 
-Assembly (`app/services/semantic_compiler.py:224`–`226`):
+Assembly (`app/services/semantic_compiler.py:241`–`246`):
 
 ```
 SELECT <dim1_alias>, …, <dimN_alias>, <measure1_alias>, …, <measureM_alias>
@@ -11034,17 +11518,17 @@ That trailing-space `WHERE` is emitted verbatim by `sql += "\nWHERE " + " AND ".
 
 #### 9.5.10 Error catalogue
 
-Raised only by `SemanticCompilationError`; catch sites: `app/api/endpoints/admin_semantic.py:51`–`53`
-(→ HTTP 400), `app/core/orchestrator/attempts.py:302`–`319` (→ attempt report + semantic retry).
+Raised only by `SemanticCompilationError`; catch sites: `app/api/endpoints/admin_semantic.py:56`–`58`
+(→ HTTP 400), `app/core/orchestrator/attempts.py:402`–`414` (→ attempt report + semantic retry).
 
 | Code | Line | Trigger | `message` payload |
 |---|---|---|---|
-| `UNKNOWN_METRIC` | `:182` | `payload.metrics` name not found in `model.measures` (case-insensitive) | the offending name, verbatim |
-| `UNKNOWN_DIMENSION` | `:189` | `payload.dimensions` name not found in `model.dimensions` | the offending name, verbatim |
-| `EMPTY_REQUEST` | `:171` | the payload requests **neither** metrics nor dimensions | the literal string `payload requests neither metrics nor dimensions` |
-| `INCOMPATIBLE_DIMENSIONS` | `:311` | A required table is unreachable from the anchor over the join graph | the missing tables in required order |
-| `MISSING_JOIN_PATH` | `:200` | No required table could be derived at all | the literal string `no source table` |
-| `MISSING_JOIN_PATH` | `:338`, `:343` | Defensive: a projected table has no join edge to a projected ancestor (unreachable in practice) | the table name |
+| `UNKNOWN_METRIC` | `:195` | `payload.metrics` name not found in `model.measures` (case-insensitive); blank names are skipped | `Unknown metric: <name>` — plus `. Closest valid metric in the active semantic model: <name>.` when `closest_name` finds one (`_unknown_name_detail`, `:65`–`71`) |
+| `UNKNOWN_DIMENSION` | `:208` | `payload.dimensions` name not found in `model.dimensions`; blank names are skipped | `Unknown dimension: <name>`, with the same closest-name suffix |
+| `EMPTY_REQUEST` | `:181` | the payload requests **neither** metrics nor dimensions | the literal string `payload requests neither metrics nor dimensions` |
+| `INCOMPATIBLE_DIMENSIONS` | `:335` | A required table is unreachable from the anchor over the join graph | the missing tables in required order |
+| `MISSING_JOIN_PATH` | `:224` | No required table could be derived at all | the literal string `no source table` |
+| `MISSING_JOIN_PATH` | `:362`, `:367` | Defensive: a projected table has no join edge to a projected ancestor (unreachable in practice) | the table name |
 
 `str(exc)` is `"{CODE}: {message}"`. The taxonomy mapping used elsewhere (`app/services/sql_error_classifier.py:10`–`15`, `:45`–`49`):
 
@@ -11251,21 +11735,21 @@ never missing (§9.10.5).
 |---|---|---|---|
 | 1 | Store construction | `app/services/stores/bundle.py:54`–`58` | `SemanticModelService(provider, source_id, enable_flag=settings.semantic_layer_enabled_for(source_id))`; the field is `SourceStores.semantic` (`:32`). `resolve_source_stores` is `lru_cache(maxsize=64)` (`:68`–`70`), so the service instance (and its `enable_flag`) is cached per `source_id`; a settings change needs a cache clear or process restart |
 | 2 | Mode decision | `app/core/orchestrator/builtin_sql_generator.py:170` | `semantic_mode = False if script_mode else stores.semantic.is_enabled(context.request.semantic_mode)` — evaluated **after** pin validation and routing, **before** the fast paths |
-| 3 | Precomputed-exact SMQ compilation | `app/core/orchestrator/builtin_sql_generator.py:200`–`263` | In semantic mode, if the exact precomputed row carries `smq_query`, the stored SMQ is re-compiled against the **current** active model via `SemanticCompiler().compile_guarded(payload, model, context.dbms_type)`. On success the compiled SQL is used; on failure the failure is **logged** (`logging.warning`) and `sql` falls back to the stored physical SQL — but only if that really is SQL (`_looks_like_sql`: non-empty body with a `FROM`/`JOIN` reference). If it is not, the turn returns a `semantic_compilation` failure result (`attempts=0`, branch `precomputed_exact`) rather than emitting a payload as SQL. The returned SQL is wrapped by `code_from_match`. Also note the fast path is skipped entirely on refinement turns carrying active filters (`preserve_filters`, `:183`) |
+| 3 | Precomputed-exact SMQ compilation | `app/core/orchestrator/builtin_sql_generator.py:208`–`262` | In semantic mode, if the exact precomputed row carries `smq_query`, the stored SMQ is re-compiled against the **current** active model via `SemanticCompiler().compile_guarded(payload, model, context.dbms_type)`. On success the compiled SQL is used; on failure the failure is **logged** (`logging.warning`) and `sql` falls back to the stored physical SQL — but only if that really is SQL (`_looks_like_sql`: non-empty body with a `FROM`/`JOIN` reference). If it is not, the turn returns a `semantic_compilation` failure result (`attempts=0`, branch `precomputed_exact`) rather than emitting a payload as SQL. The returned SQL is wrapped by `code_from_match`. Also note the fast path is skipped entirely on refinement turns carrying active filters (`preserve_filters`, `:183`) |
 | 4 | Precomputed SMQ storage | `app/services/stores/precomputed_store.py:31`, `:46`; `app/services/stores/schema_contracts.py:159` | `vec_data_group_queries.smq_query TEXT DEFAULT ''`; written by `DataGroupQueryGenerationService.generate_pairs` (`app/services/data_group_query_service.py:30`) and read back into `FewShotExample.smq_query` (`app/services/vector_search_service.py:105`, `:143`) |
-| 5 | Few-shot / precomputed payload injection into prompts | `app/core/orchestrator/prompts.py:186` (SQL), `:286` (Python), `:397` (R), `:504` (SAS) | `payload = ex.smq_query or ex.sql` — **the SMQ JSON is shown to the model in place of SQL whenever present**, in every language prompt, regardless of whether semantic mode is on |
-| 6 | Generator prompt context | `app/core/orchestrator/attempts.py:140`–`141`, `:197`–`204`; `app/core/orchestrator/prompts.py:62`–`82` | `active_model = _load_active_model(stores)` (a try/except wrapper that returns `None` instead of raising when the store is absent); `semantic_json = active_model.model_dump_json()` (or `"[]"`); passed as `semantic_models_json` only when `semantic_mode`. `build_system_prompt` also appends `SEMANTIC_OUTPUT_CORRECTION` when a `GENERATION MODE`/filter block reads as an SMQ payload |
-| 7 | Attempt-loop guard + compile + retry | `app/core/orchestrator/attempts.py:241`–`322` | See §9.4.4 and §9.10.2–§9.10.3 |
-| 7a | Terminal semantic classification | `app/core/orchestrator/attempts.py:496`–`508` | An exhausted budget whose last attempt set `semantic_retry` returns `_fail(ErrorCategory.SEMANTIC_COMPILATION, last_semantic_error, …, context_text=last_prompt)` instead of the generic `validation` exit |
-| 7b | Compiled-SQL validation | `app/core/orchestrator/attempts.py:407`–`417`, `:445`–`449`, `:600`–`631`; `app/services/sql_validator.py:17`–`34` | `_validate_candidate(..., compiled_from_semantic_model)` forwards `skip_object_scope=True` to `SqlValidator.validate`, so a server error on compiled semantic SQL is preserved verbatim instead of being rewritten as `TABLE_VALIDATION_ERROR` (§9.10.5) |
-| 8 | Semantic-aware critic | `app/core/orchestrator/attempts.py:420`–`429`; `app/core/orchestrator/prompts.py:533`–`540` | `semantic_json if semantic_mode else None` selects the model-aware critic prompt: system `"Validate the SMQ/SQL against the semantic model. Return JSON {requirements_satisfied:bool, schema_valid:bool, feedback:str, status:str\|null, canonical_question:str\|null, missing_objects:[]}."`, user `f"MODEL:\n{semantic_json}\nQUERY:\n{query}\nSQL:\n{sql}"`. The critic sees the **compiled physical SQL**, not the SMQ, plus the full model JSON. Critic failures follow the normal paths (requirements → retry; schema → missing-object expansion / `MISSING_GROUP_MEMBER` broadening) |
+| 5 | Few-shot / precomputed payload injection into prompts | `app/core/orchestrator/prompts.py:309` (SQL), `:411` (Python), `:524` (R), `:633` (SAS) | `payload = ex.smq_query or ex.sql` — **the SMQ JSON is shown to the model in place of SQL whenever present**, in every language prompt, regardless of whether semantic mode is on |
+| 6 | Generator prompt context | `app/core/orchestrator/attempts.py:154, 173, 260`–`267`; `app/core/orchestrator/prompts.py:160`–`178` | `active_model = _load_active_model(stores)` (a try/except wrapper that returns `None` instead of raising when the store is absent); `semantic_json = active_model.model_dump_json()` (or `"[]"`); passed as `semantic_models_json` only when `semantic_mode`, with the model itself passed as `semantic_model` so the worked example can name its measures/dimensions. `build_system_prompt` appends `ATTEMPT HISTORY` unconditionally in semantic mode and appends `SEMANTIC_OUTPUT_CORRECTION` when any block (history included) reads as an SMQ payload |
+| 7 | Attempt-loop guard + compile + retry | `app/core/orchestrator/attempts.py:323`–`418` | See §9.4.4 and §9.10.2–§9.10.3 |
+| 7a | Terminal semantic classification | `app/core/orchestrator/attempts.py:597`–`610` | An exhausted budget whose last attempt set `semantic_retry` returns `_fail(ErrorCategory.SEMANTIC_COMPILATION, last_semantic_error, …, context_text=last_prompt)` instead of the generic `validation` exit |
+| 7b | Compiled-SQL validation | `app/core/orchestrator/attempts.py:511`, `:549`, `:742`–`772`; `app/services/sql_validator.py:17`–`38` | `_validate_candidate(..., compiled_from_semantic_model)` forwards `skip_object_scope=True` to `SqlValidator.validate`, so a server error on compiled semantic SQL is preserved verbatim instead of being rewritten as `TABLE_VALIDATION_ERROR` (§9.10.5) |
+| 8 | Semantic-aware critic | `app/core/orchestrator/attempts.py:531`; `app/core/orchestrator/prompts.py:651`–`657` | `semantic_json if semantic_mode else None` selects the model-aware critic prompt: system `"Validate the SMQ/SQL against the semantic model. Return JSON {requirements_satisfied:bool, schema_valid:bool, feedback:str, status:str\|null, canonical_question:str\|null, missing_objects:[]}."`, user `f"MODEL:\n{semantic_json}\nQUERY:\n{query}\nSQL:\n{sql}"`. The critic sees the **compiled physical SQL**, not the SMQ, plus the full model JSON. Critic failures follow the normal paths (requirements → retry; schema → missing-object expansion / `MISSING_GROUP_MEMBER` broadening) |
 | 9 | Error-classification mapping | `app/services/sql_error_classifier.py:10`–`15`, `:20`–`21`, `:45`–`49` | `semantic_compilation` category; `UnknownMetric` / `UnknownDimension` / `IncompatibleDimensions` / `MissingJoinPath`. `ErrorCategory.SEMANTIC_COMPILATION = "semantic_compilation"` (`app/core/errors.py:18`) |
-| 10 | Expansion recovery | `app/core/orchestrator/attempts.py:659`–`670` | `_expand_missing(token, stores)` runs `stores.vector_search.search_objects(q, top_k=5)`, optional per-column searches (`top_k=3`), then `stores.semantic.search_models(q, top_k=2)` and **inserts each hit at the head** of the candidate list as `ScoredObject(schema_name="semantic", object_name=m.label, object_type="SemanticModel", required=True, score=1.0)`. Callers cap the batch with `MaxRecoveryExpansion = 5` (`app/core/constants.py:41`). The label (not the model JSON) becomes a `required` discovery object, and `merge_and_dedup` (`app/utils/rrf.py`) folds it into the prompt schema context |
-| 11 | Missing-object circuit breaker | `app/core/orchestrator/attempts.py:359`–`369`, `:471`–`478` | Unaffected by semantic mode, but semantic-model objects injected by (10) participate in `hash_history` / `missing_counts` bookkeeping like any other object |
+| 10 | Expansion recovery | `app/core/orchestrator/attempts.py:886`–`904` | `_expand_missing(token, stores)` runs `stores.vector_search.search_objects(q, top_k=5)`, optional per-column searches (`top_k=3`), then `stores.semantic.search_models(q, top_k=2)` and **inserts each hit at the head** of the candidate list as `ScoredObject(schema_name="semantic", object_name=m.label, object_type="SemanticModel", required=True, score=1.0)`. Callers cap the batch with `MaxRecoveryExpansion = 5` (`app/core/constants.py:44`). The label (not the model JSON) becomes a `required` discovery object, and `merge_and_dedup` (`app/utils/rrf.py`) folds it into the prompt schema context |
+| 11 | Missing-object circuit breaker | `app/core/orchestrator/attempts.py:455`–`469`, `:471`–`502` | Unaffected by semantic mode, but semantic-model objects injected by (10) participate in `hash_history` / `missing_counts` bookkeeping like any other object |
 | 12 | Admin HTTP surface | `app/api/endpoints/admin_semantic.py:14`–`59` | `GET /{api}/admin/semantic-models?source_id=` → `{"models": [model_dump()]}`; `POST .../semantic-models?source_id=` (body = `SemanticModel`) → saved dump; `POST .../semantic-models/extract?source_id=` (body `{schema_text, sql, label}`) → extracts **and saves** → saved dump; `POST .../semantic-models/compile?source_id=` (body `{"smq": {...}, "dbms": "..."}` or a bare SMQ object) → `{"sql": "..."}`, `404 "No active semantic model"` when none, `400 "Invalid SMQ payload: …"` when the body is not a valid `SmqPayload`, `400 str(exc)` on `SemanticCompilationError`. All four call `resolve_known_source_id(source_id)` first (`app/services/source_resolver.py:10`), which raises `400 "source_id is required"` / `404 "Resource not found"`. Router mounted at `{settings.API_V1_STR}/admin` with tag `admin-semantic` (`app/main.py:45`) |
-| 13 | Constants declared but unused | `app/core/constants.py:51`, `:59` | `SemanticModelDiscoveryTopK = 3` is **never referenced**: the only `search_models` call site passes `top_k=2` (`attempts.py:665`). `SemanticSmqParseRetryOnFailure = True` is likewise unreferenced after the payload-class guard replaced the one-shot parse retry. `docs/BUILT_IN_SQL_GENERATOR_PYTHON_PORT_PLAN.md:118` and `docs/AGENT_PROCESS.md:287` describe semantic candidates as a *discovery* stage input and the top-K as 3 — in the Python port the only entry point is the recovery expansion in (10) |
+| 13 | Constants declared but unused | `app/core/constants.py:54`, `:65` | `SemanticModelDiscoveryTopK = 3` is **never referenced**: the only `search_models` call site passes `top_k=2` (`attempts.py:901`). `SemanticSmqParseRetryOnFailure = True` is likewise unreferenced after the payload-class guard replaced the one-shot parse retry. `docs/BUILT_IN_SQL_GENERATOR_PYTHON_PORT_PLAN.md:118` and `docs/AGENT_PROCESS.md:287` describe semantic candidates as a *discovery* stage input and the top-K as 3 — in the Python port the only entry point is the recovery expansion in (10) |
 
-**Verified absence:** the Python port has **no** semantic-model retrieval inside `DiscoveryEngine.discover` — exhaustive grep of `app/core/orchestrator/discovery_engine.py` returns zero `semantic`/`search_models` symbols, and the only `search_models` call site in the repository is `attempts.py:665` inside `_expand_missing`. Treat integration (10) as the complete Python-port semantic retrieval surface.
+**Verified absence:** the Python port has **no** semantic-model retrieval inside `DiscoveryEngine.discover` — exhaustive grep of `app/core/orchestrator/discovery_engine.py` returns zero `semantic`/`search_models` symbols, and the only `search_models` call site in the repository is `attempts.py:901` inside `_expand_missing`. Treat integration (10) as the complete Python-port semantic retrieval surface.
 
 > ⚠️ Unverified: whether the C# engine merges semantic-model candidates into the discovery object set earlier (as `docs/BUILT_IN_SQL_GENERATOR_PYTHON_PORT_PLAN.md:619` and `docs/AGENT_PROCESS.md:287` imply). If full C# parity is required, this is the one place where the Python port is narrower than its own documentation.
 
@@ -11306,7 +11790,7 @@ Guarantee chain (each step is a fallback for the previous):
 1. **LLM extraction** — any exception is swallowed (`except Exception: model = None`). A successful call that returns `None` (empty/undecodable JSON) also falls through.
 2. **Deterministic SQL-parse fallback** — only when `sql` is truthy.
 3. **Empty model** — a bare `SemanticModel` with `uuid4()` id and the given label.
-4. **`EnsureAtLeastOneMeasure`, inline** — `if not model.measures: append row_count = COUNT(*)`. This is the hard guarantee: the returned model **always** has ≥ 1 measure, whatever path produced it. `docs/BUILT_IN_SQL_GENERATOR_PYTHON_PORT_PLAN.md:617` states the reason ("the editor refuses zero-measure models and compilation requires ≥ 1 metric"); the compiler does tolerate a zero-measure model (it emits `COUNT(*) AS row_count`), so downstream this is a data-quality rule, not a compiler precondition.
+4. **`EnsureAtLeastOneMeasure`, inline** — `if not model.measures: append row_count = COUNT(*)`. This is the hard guarantee: the returned model **always** has ≥ 1 measure, whatever path produced it. `docs/BUILT_IN_SQL_GENERATOR_PYTHON_PORT_PLAN.md:617` states the reason ("the editor refuses zero-measure models and compilation requires ≥ 1 metric"); the compiler does tolerate a zero-measure *model* — a dimensions-only payload compiles without any measure — but it never invents one: the old `COUNT(*) AS row_count` fallback is gone and a request with neither key is rejected with `EMPTY_REQUEST`. Downstream this is a data-quality rule, not a compiler precondition.
 
 > ⚠️ Unverified: no zero-measure ("MeasureRequired"-style) validation exists in this repository's Python or frontend code — the only evidence is the port-plan sentence cited above and the C# editor. Treat the guarantee as living in `extract` plus the admin/UI contract, not in `SemanticModelService.save` (which happily persists a model with no measures — execution-verified, §9.3.5).
 
@@ -11377,7 +11861,7 @@ Rules to reproduce exactly:
 
 #### 9.8.4 What validation prevents
 
-- **Zero-measure models**: prevented at the extraction boundary by the inline `row_count = COUNT(*)` append in `extract`; the compiler no longer tolerates a *request* with no metrics and no dimensions (it raises `EMPTY_REQUEST`, `app/services/semantic_compiler.py:171`), and `SemanticModelService.save` still persists a zero-measure model without complaint. So the guarantee is a data-quality rule enforced at authoring time, not a store precondition.
+- **Zero-measure models**: prevented at the extraction boundary by the inline `row_count = COUNT(*)` append in `extract`; the compiler no longer tolerates a *request* with no metrics and no dimensions (it raises `EMPTY_REQUEST`, `app/services/semantic_compiler.py:181`), and `SemanticModelService.save` still persists a zero-measure model without complaint. So the guarantee is a data-quality rule enforced at authoring time, not a store precondition.
 - **Alias-based measure expressions**: prevented only by prompt instruction ("full schema.table.column references (no aliases)"). Nothing in code strips or validates aliases; the compiler re-emits expressions verbatim and rebuilds `FROM`/`JOIN` without table aliases, so an alias-based expression compiles to SQL that fails at the database. A re-implementation should keep the instruction (and may add a validator, but must not change the emitted SQL shape).
 - **Models with unusable dimensions**: not prevented. `SemanticDimension.table`/`.column` may be empty strings; `_normalize_table` then drops the table from the required set entirely, and a dimensions-only request whose dimensions carry no usable table fails as `MISSING_JOIN_PATH: no source table` rather than emitting `"".""`.
 - **Measure expressions that name a table the model does not declare**: the name is ignored for planning purposes (§9.5.4), so a typo inside an expression cannot silently choose the `FROM` anchor.
@@ -11390,34 +11874,34 @@ Rules to reproduce exactly:
 |---|---|---|---|
 | 1 | Unset per-source flag ⇒ enabled | `semantic_model_service.py:26`–`33` | "Flag not set" must not mean "off" |
 | 2 | `semantic_mode=False` vetoes even with an active model | `:23`–`24` | Request override is checked first and short-circuits |
-| 3 | Script targets force `semantic_mode=False` in two places | `builtin_sql_generator.py:170`; `attempts.py:118`–`119` | One guard is not enough for direct callers |
-| 4 | **A payload is never executed as SQL, whatever the fallback setting says** | `attempts.py:251`–`272`; `semantic_smq.py:203` | This is the point of the payload-class guard: `looks_like_smq` is evaluated **before** the fallback policy |
-| 5 | The guard is structural, never a substring test | `semantic_smq.py:135`–`194` | `"metrics" in text` would refuse `SELECT [metrics] FROM [dbo].[audit]`; the guard requires the key token at JSON depth 1 (outside strings, outside nested objects) |
-| 6 | A truncated payload is still recognised as SMQ | `semantic_smq.py:135`, `:195` | A brace-led fragment cut off before its first value parses as nothing, so the fallback would otherwise execute it |
-| 7 | `extract_smq_json` and `parse_smq` are deliberately two passes | `semantic_smq.py:107`, `:226` | One answers "is something SMQ-shaped here?", the other "can I use it?"; collapsing them loses the guard's evidence |
-| 8 | Retry feedback enumerates the model's valid names | `semantic_smq.py:255`; `attempts.py:633` | A retry told only "unknown metric: gross_margin" cannot converge |
-| 9 | An exhausted semantic budget is `semantic_compilation`, not `validation` | `attempts.py:496`–`508` | Otherwise a payload bug is reported as a parse error and the symptom returns |
-| 10 | Compiled semantic SQL skips the object-scope rewrite | `attempts.py:600`–`631`; `sql_validator.py:26`–`34` | The model may own tables discovery never selected (the `BCTR`/`TSBC` case); rewriting buries the real cause |
-| 11 | `get_active_model` returns `None` when the store is absent or predates the tables | `semantic_model_service.py:129`–`141` | A source whose vector index was never built must degrade to "no active model", not fail the request |
-| 12 | The stored precomputed SMQ is compiled, and a failure is logged, not silent | `builtin_sql_generator.py:200`–`263` | The stored SQL may stand in — but only after `_looks_like_sql` confirms it is SQL |
-| 13 | `GROUP BY` requires a real aggregate | `semantic_compiler.py:88`, `:220` | Emitting it for a detail query silently collapses the result to distinct tuples, which validation accepts |
-| 14 | Aggregate detection is delimiter-aware | `semantic_compiler.py:46`–`49` | `t.avg_cost` / `t.county_name` are not aggregate calls |
-| 15 | There is **no** measure default; an empty request is rejected | `semantic_compiler.py:169`–`172` | `model.measures[0]` silently answered a question that was not asked |
-| 16 | Required tables and the anchor come from **ordered lists** | `semantic_compiler.py:224`–`272` | Set/dict iteration order made identical input compile to different SQL |
-| 17 | Traversal visits the whole component but emits only requested tables | `semantic_compiler.py:280`–`346` | Keeps multi-hop reachability without leaking unused joins |
-| 18 | `timeout_ms` is enforced by `compile_guarded` only | `semantic_compiler.py:124`–`147` | Expiry is a semantic retry; the raising `compile` still discards the budget |
-| 19 | `SemanticCompilationFallbackToRawSql` is shadowed by a same-named function | `constants.py:60`, `:97` | Import the function; the settings key is the real switch |
-| 20 | Filters/timeframes never extend the join plan and never resolve names | `semantic_compiler.py:354`–`375`, `:206`–`215` | Silently produces SQL referencing absent tables |
-| 21 | `edge_sql` is symmetric and last-write-wins per pair | `semantic_compiler.py:283`–`291` | Duplicate joins collapse; reverse lookups reuse the same predicate text |
-| 22 | `bool` values inline as `True`/`False` | `semantic_compiler.py:371`–`372` | `isinstance(True, int)` is `True` in Python |
-| 23 | Governance predicates are appended last, unparenthesized, verbatim | `semantic_compiler.py:216`–`217` | Precedence and row-level security semantics |
+| 3 | Script targets force `semantic_mode=False` in two places | `builtin_sql_generator.py:170`; `attempts.py:136`–`137` | One guard is not enough for direct callers |
+| 4 | **A payload is never executed as SQL, whatever the fallback setting says** | `attempts.py:323`–`345`; `semantic_smq.py:225` | This is the point of the payload-class guard: `looks_like_smq` is evaluated **before** the fallback policy |
+| 5 | The guard is structural, never a substring test | `semantic_smq.py:152`–`222` | `"metrics" in text` would refuse `SELECT [metrics] FROM [dbo].[audit]`; the guard requires the key token at JSON depth 1 (outside strings, outside nested objects), and now matches the singular `metric`/`dimension` keys too |
+| 6 | A truncated payload is still recognised as SMQ | `semantic_smq.py:157`, `:220`–`222` | A brace-led fragment cut off before its first value parses as nothing, so the fallback would otherwise execute it |
+| 7 | `extract_smq_json` and `parse_smq` are deliberately two passes | `semantic_smq.py:127`, `:418` | One answers "is something SMQ-shaped here?", the other "can I use it?"; collapsing them loses the guard's evidence |
+| 8 | Retry feedback enumerates the model's valid names | `semantic_smq.py:486`; `attempts.py:775` | A retry told only "unknown metric: gross_margin" cannot converge |
+| 9 | An exhausted semantic budget is `semantic_compilation`, not `validation` | `attempts.py:597`–`610` | Otherwise a payload bug is reported as a parse error and the symptom returns |
+| 10 | Compiled semantic SQL skips the object-scope rewrite | `attempts.py:742`–`772`; `sql_validator.py:30`–`37` | The model may own tables discovery never selected (the `BCTR`/`TSBC` case); rewriting buries the real cause |
+| 11 | `get_active_model` returns `None` when the store is absent or predates the tables | `semantic_model_service.py:129`–`143` | A source whose vector index was never built must degrade to "no active model", not fail the request |
+| 12 | The stored precomputed SMQ is compiled, and a failure is logged, not silent | `builtin_sql_generator.py:208`–`262` | The stored SQL may stand in — but only after `_looks_like_sql` confirms it is SQL |
+| 13 | `GROUP BY` requires a real aggregate | `semantic_compiler.py:98`, `:244` | Emitting it for a detail query silently collapses the result to distinct tuples, which validation accepts |
+| 14 | Aggregate detection is delimiter-aware | `semantic_compiler.py:47`–`50` | `t.avg_cost` / `t.county_name` are not aggregate calls |
+| 15 | There is **no** measure default; an empty request is rejected | `semantic_compiler.py:179`–`183` | `model.measures[0]` silently answered a question that was not asked |
+| 16 | Required tables and the anchor come from **ordered lists** | `semantic_compiler.py:248`–`296` | Set/dict iteration order made identical input compile to different SQL |
+| 17 | Traversal visits the whole component but emits only requested tables | `semantic_compiler.py:304`–`370` | Keeps multi-hop reachability without leaking unused joins |
+| 18 | `timeout_ms` is enforced by `compile_guarded` only | `semantic_compiler.py:134`–`168` | Expiry is a semantic retry; the raising `compile` still discards the budget |
+| 19 | `SemanticCompilationFallbackToRawSql` is shadowed by a same-named function | `constants.py:66`, `:103` | Import the function; the settings key is the real switch |
+| 20 | Filters/timeframes never extend the join plan and never resolve names | `semantic_compiler.py:378`–`399`, `:229`–`237` | Silently produces SQL referencing absent tables |
+| 21 | `edge_sql` is symmetric and last-write-wins per pair | `semantic_compiler.py:306`–`313` | Duplicate joins collapse; reverse lookups reuse the same predicate text |
+| 22 | `bool` values inline as `True`/`False` | `semantic_compiler.py:395`–`396` | `isinstance(True, int)` is `True` in Python |
+| 23 | Governance predicates are appended last, unparenthesized, verbatim | `semantic_compiler.py:238`–`239` | Precedence and row-level security semantics |
 | 24 | No `ORDER BY` / `LIMIT` / `TOP` / `DISTINCT` / table aliases | whole compiler | Do not "improve" the SQL shape |
-| 25 | A `WHERE` keyword plus trailing space is emitted whenever `where_parts` is a non-empty list, even if every part renders `""` | `semantic_compiler.py:218`–`219` | `if where_parts:` is a list test; `if any(where_parts)` changes the bytes |
-| 26 | Dimension select items and `GROUP BY` items are duplicated if the payload repeats a name | `:167`–`179`, `:210` | No de-duplication anywhere |
+| 25 | A `WHERE` keyword plus trailing space is emitted whenever `where_parts` is a non-empty list, even if every part renders `""` | `semantic_compiler.py:242`–`243` | `if where_parts:` is a list test; `if any(where_parts)` changes the bytes |
+| 26 | Dimension select items and `GROUP BY` items are duplicated if the payload repeats a name | `semantic_compiler.py:216`–`220`, `:244` | No de-duplication anywhere |
 | 27 | `_replace_children` deletes by `model_id`, so a re-save with empty children wipes them | `semantic_model_service.py:66`–`123` | The ≥1-measure guarantee lives in extraction, not in save |
-| 28 | `get_active_model` sorts by `updated_at_utc` string, ties by row order | `:129`–`141` | "Active" = most recently saved |
+| 28 | `get_active_model` sorts by `updated_at_utc` string, ties by row order | `:129`–`143` | "Active" = most recently saved |
 | 29 | `search_models` is in-process cosine over JSON vectors, active models only, missing embedding = 0.0 | `:145`–`160` | Not the provider ANN search; inactive models are invisible |
-| 30 | `is_enabled` does a full 5-query `get_active_model` on every non-short-circuited call | `:22`–`33`, `:129`–`141` | Per-request, per-attempt cost; a naive re-implementation may cache it and change behaviour when a model is deactivated mid-session |
+| 30 | `is_enabled` does a full 5-query `get_active_model` on every non-short-circuited call | `:22`–`33`, `:129`–`143` | Per-request, per-attempt cost; a naive re-implementation may cache it and change behaviour when a model is deactivated mid-session |
 | 31 | Extraction fallback names measures after the SQL function (`sum`, `count`, …) | `semantic_extraction_service.py:79`–`84` | Duplicate names collide on the PK on save |
 | 32 | Extraction truncates `schema_text` at 8 000 chars | `semantic_extraction_service.py:39` | Large schemas silently lose the tail |
 
@@ -11432,14 +11916,19 @@ using "extraction returned nothing" as the answer to *"is this SQL?"* — two di
 #### 9.10.1 Tolerant extraction (verified)
 
 ```python
-_SMQ_FENCE_RE = re.compile(r"```smq\s*\n?(?P<body>.*?)```", re.IGNORECASE | re.DOTALL)         # :31
-_ANY_FENCE_RE = re.compile(r"```(?:sql)?\s*\n?(?P<body>.*?)```", re.IGNORECASE | re.DOTALL)    # :35
+_SMQ_FENCE_RE = re.compile(r"```smq\s*\n?(?P<body>.*?)```", re.IGNORECASE | re.DOTALL)         # :32
+_ANY_FENCE_RE = re.compile(r"```(?:sql)?\s*\n?(?P<body>.*?)```", re.IGNORECASE | re.DOTALL)    # :36
 
-def _is_smq_object(obj) -> bool:                       # :48
-    return isinstance(obj, dict) and (
-        isinstance(obj.get("metrics"), list) or isinstance(obj.get("dimensions"), list))
+# Root keys that mark a payload as SMQ-shaped. Singular aliases are included so
+# {"metric":"row_count"} is compiled rather than executed as SQL.
+_SMQ_ROOT_KEYS = ("metrics", "dimensions", "metric", "dimension")    # :51
 
-def extract_smq_json(raw) -> Optional[str]:             # :107
+def _is_smq_object(obj) -> bool:                       # :66
+    if obj is None:
+        return False
+    return any(key in obj for key in _SMQ_ROOT_KEYS)
+
+def extract_smq_json(raw) -> Optional[str]:             # :127
     # 1. _SMQ_FENCE_RE body  2. _ANY_FENCE_RE body  3. first balanced {...}  4. whole text
 ```
 
@@ -11448,45 +11937,56 @@ Rules:
 1. **Candidate order matters** — the `smq` fence wins over any other fence; a bare fence wins over a
    balanced region; the whole text is last.
 2. **A leading fence language tag must be dropped.** `_ANY_FENCE_RE` does not enumerate tags, so a
-   ` ```json ` body arrives with `json` as its first line; `_drop_fence_tag` (`:59`) removes it.
-3. **The brace scanner must honour string state *and* escapes.** `_find_balanced_object` (`:72`) skips
+   ` ```json ` body arrives with `json` as its first line; `_drop_fence_tag` (`:79`) removes it.
+3. **The brace scanner must honour string state *and* escapes.** `_find_balanced_object` (`:92`) skips
    braces inside strings and treats `\"` as an escaped quote. Getting this wrong returns a truncated
    region for a value such as `"a \" b {c"`, the parse fails, and a perfectly good SMQ falls through to
    the SQL path — the original bug, reproduced by a one-character omission. Regression test:
    `test_escaped_quote_brace_scan_returns_whole_payload`.
-4. **Either key is enough.** Accepting only `metrics` would make a dimensions-only detail request
-   unrecognisable, and it would then be executed as SQL.
+4. **Any root key is enough.** `_SMQ_ROOT_KEYS` is `metrics`, `dimensions`, `metric`, `dimension`: accepting
+   only `metrics` would make a dimensions-only detail request unrecognisable, and a singular-keyed payload
+   would then be executed as SQL.
 
-`parse_smq` (`:226`) is the second, strongly typed pass: same tolerant extraction, then a requirement that
-the result is an SMQ object, then `SmqPayload.model_validate`. It returns `None` — an explicit semantic
-retry — rather than raising.
+`parse_smq` (`:418`) is the second, strongly typed pass: the same tolerant extraction, then a requirement
+that the result is an SMQ object, then `smq_from_object`, which builds a `SmqPayload` tolerantly — merging
+the singular root key, unwrapping element aliases (`metric`/`measure`/`name`/`id` for a metric,
+`dimension`/`field`/`column`/`name`/`id` for a dimension), accepting a bare string as a one-element list,
+keeping a present-but-empty array, and treating an absent key as `None`. It returns `None` for a response
+that is not an SMQ at all, and raises `SmqShapeError` — naming the offending index — when an *element*
+inside `metrics`/`dimensions` has no usable identifier. Either way the attempt is a semantic retry, never a
+SQL candidate.
 
 #### 9.10.2 The payload-class guard
 
-`looks_like_smq` (`:203`) answers only *"does this response carry SMQ-shaped JSON, usable or not?"*. It is
+`looks_like_smq` (`:225`) answers only *"does this response carry SMQ-shaped JSON, usable or not?"*. It is
 **independent of** the typed parse and must be `True` for a malformed SMQ attempt, because that is exactly
 the case that must not be executed. It is implemented by parsing structure, never by searching for the
 substring `metrics`:
 
 ```python
-def _looks_like_smq_text(text) -> bool:             # :182
+def _looks_like_smq_text(text) -> bool:             # :204
     obj = _parse_object(text)
-    if obj is not None and _is_smq_object(obj):     # valid object carrying metrics/dimensions
+    if obj is not None and _is_smq_object(obj):     # valid object carrying a root key
         return True
-    if _has_top_level_smq_key(text):                # :135 — a truncated attempt
+    if _has_top_level_smq_key(text):                # :157 — a truncated attempt
         return True
     head = text[:80]
     return text.startswith("{") and bool(_SMQ_KEY_RE.search(head))
 ```
 
 `_has_top_level_smq_key` walks the text once, tracking string state, escapes and brace depth, and accepts
-the token only when **all** of these hold: the quoted string sits at depth 1, its content is `metrics` or
-`dimensions`, and the next non-space character is `:`. Consequences, all covered by tests:
+the token only when **all** of these hold: the quoted string sits at depth 1, its content is one of
+`metrics`, `dimensions`, `metric`, `dimension` (`_SMQ_KEY_RE`, `:152`–`154`), and the next non-space
+character is `:`. Consequences, all covered by tests:
 
 | Input | `looks_like_smq` | Why |
 |---|---|---|
 | `{"metrics":["row_count"], "dimensions":[` | `True` | depth-1 key with its colon |
 | `{"metrics": "row_count"}` | `True` | key present even though the value is the wrong type |
+| `{"metric": "row_count"}` | `True` | the singular root key is matched too |
+| `{"metrics": {"a": 1}}` | `True` | the key still sits at depth 1 |
+| `{"metric": "row_count"}` | `True` | the singular root key is matched too |
+| `{"metrics": {"a": 1}}` | `True` | the key still sits at depth 1 |
 | `{"dimensions":[]}` | `True` | `_is_smq_object` |
 | `{"metrics":` (cut off before the colon) | `True` | brace-led fragment matching `_SMQ_KEY_RE` in its first 80 chars |
 | `SELECT [metrics] FROM [dbo].[audit] WHERE [metrics] IS NOT NULL;` | `False` | `metrics` is a bracketed identifier, not a quoted depth-1 key |
@@ -11495,17 +11995,19 @@ the token only when **all** of these hold: the quoted string sits at depth 1, it
 | `{"a":{"dimensions":[]}}` | `True` | still SMQ-shaped, so refused rather than executed |
 | `""`, `"   "`, prose only, plain SQL | `False` | the fallback decides (an empty reply is a generation failure) |
 
-The guard is called on **both** the raw model output and the fence-stripped body (`attempts.py:253`–`254`),
+The guard is called on **both** the raw model output and the fence-stripped body (`attempts.py:327`–`328`),
 because `extract_sql_body` may have removed context the guard needs.
 
 #### 9.10.3 Retry feedback and terminal classification
 
 Every semantic failure appends a report whose `why_it_failed` is the reason **plus**
-`valid_names_hint(model)` (`semantic_smq.py:255`):
+`valid_names_hint(model)` (`semantic_smq.py:486`):
 
 ```
- Return only a fenced smq code block with JSON of the shape
- {"metrics":[...],"dimensions":[...],"filters":[...],"timeframes":[...]}. Do not return SQL.
+ Return only a fenced smq code block with JSON of this exact shape:
+ {"metrics":["<metric_name>"],"dimensions":["<dimension_name>"],"filters":[],"timeframes":[]}.
+ CRITICAL: "metrics" and "dimensions" must be arrays of plain strings - never an array of objects such as [{"metric":"row_count"}].
+ Do not return SQL.
  Valid metrics: row_count, avg_response_minutes.
  Valid dimensions: bctr_number, arrival_date, transport_mode.
 ```
@@ -11513,17 +12015,31 @@ Every semantic failure appends a report whose `why_it_failed` is the reason **pl
 `valid_names_hint` accepts either a dict-shaped model (the shape the API transports) or an
 attribute-shaped one (a Pydantic instance), de-duplicates names, and always states that the reply must be an
 SMQ block rather than SQL — the retry prompt is the main corrective signal in semantic mode. It is also what
-`build_system_prompt` keys off: a `GENERATION MODE`/filter block that reads as an SMQ payload appends
-`SEMANTIC_OUTPUT_CORRECTION` (`prompts.py:28`, `:71`–`73`).
+`build_system_prompt` keys off: any block that reads as an SMQ payload — `ATTEMPT HISTORY` included, which is
+where a drifted reply ends up — appends `SEMANTIC_OUTPUT_CORRECTION` (`prompts.py:54`–`58`, `:170`–`171`).
 
-`build_semantic_compile_error_feedback` (`attempts.py:633`) wraps a compiler detail:
+`build_semantic_compile_error_feedback` (`attempts.py:775`) wraps a compiler detail:
 
 ```
 Semantic compilation failed: {detail}. Return only a fenced smq code block naming metrics and
 dimensions that exist in the semantic model; do not return SQL.
 ```
 
-**Terminal classification** (`attempts.py:496`–`508`): when the loop exhausts its budget and the last
+**A wrong element shape is its own retry.** `build_smq_shape_mismatch_feedback(error, smq_json, model)`
+(`semantic_smq.py:460`–`474`) reports `SCHEMA MISMATCH: the SMQ payload has the wrong element shape.`, the
+offending index and the accepted aliases (`metrics[0]: expected a string identifier or an object carrying one
+of metric|measure|name|id.`), the first 400 characters of what was received, and then `valid_names_hint`. It is
+what the loop appends when `parse_smq` raises `SmqShapeError` — the 350-character generic message it replaced
+made the model blame its Markdown fence and repeat the payload.
+
+**A wrong element shape is its own retry.** `build_smq_shape_mismatch_feedback(error, smq_json, model)`
+(`semantic_smq.py:460`–`474`) reports `SCHEMA MISMATCH: the SMQ payload has the wrong element shape.`, the
+offending index and the accepted aliases (`metrics[0]: expected a string identifier or an object carrying one
+of metric|measure|name|id.`), the first 400 characters of what was received, and then `valid_names_hint`. It is
+what the loop appends when `parse_smq` raises `SmqShapeError` — the 350-character generic message it replaced
+made the model blame its Markdown fence and repeat the payload.
+
+**Terminal classification** (`attempts.py:597`–`610`): when the loop exhausts its budget and the last
 attempt ended in a semantic retry, the turn ends as
 
 ```python
@@ -11546,6 +12062,14 @@ the last attempt was **not** a semantic retry, the pre-existing generic `validat
 | Detail queries stay ungrouped | a non-aggregate measure + dimensions emits no `GROUP BY` | `test_group_by_needs_a_real_aggregate` |
 | Join plan | BFS over an undirected join graph; only requested tables are emitted | `test_join_plan_skips_traversal_only_tables` |
 | Dimensions-only accepted | `EMPTY_REQUEST` only when both lists are empty | `test_dimensions_only_request_is_accepted`, `test_empty_request_is_rejected` |
+| Tolerant typed parse | `smq_from_object` merges the singular root key, unwraps element aliases (`metric`/`measure`/`name`/`id`), accepts a bare string, keeps a present-but-empty array, and raises `SmqShapeError` for a number or an alias-less object (`semantic_smq.py:270`–`335`) | `test_parse_unwraps_aliases_and_merges_singular_keys`, `test_parse_keeps_a_present_empty_array_and_rejects_an_absent_one`, `test_parse_reports_the_offending_index_for_a_bad_element`, `test_bare_string_metric_is_compiled_not_executed_as_json` |
+| Shape-mismatch feedback | `build_smq_shape_mismatch_feedback` names the offending index and the accepted aliases, then appends `valid_names_hint` | `test_shape_mismatch_feedback_names_the_element_and_the_vocabulary` |
+| Repeat divergence | `semantic_payload_fingerprint` detects two identical payloads; the following call carries `temperature = SemanticRepeatTemperature` | `test_fingerprint_ignores_whitespace_and_fences_but_not_key_order`, `test_repeated_smq_payload_bumps_temperature_on_the_following_attempt` |
+| Closest-name hint | `_unknown_name_detail` + `closest_name` (token overlap first, then a ≥ 5-character prefix) | `test_unknown_metric_names_the_closest_candidate`, `test_unknown_dimension_names_the_closest_candidate`, `test_unknown_metric_with_no_overlap_has_no_suggestion` |
+| Tolerant typed parse | `smq_from_object` merges the singular root key, unwraps element aliases (`metric`/`measure`/`name`/`id`), accepts a bare string, keeps a present-but-empty array, and raises `SmqShapeError` for a number or an alias-less object (`semantic_smq.py:270`–`335`) | `test_parse_unwraps_aliases_and_merges_singular_keys`, `test_parse_keeps_a_present_empty_array_and_rejects_an_absent_one`, `test_parse_reports_the_offending_index_for_a_bad_element`, `test_bare_string_metric_is_compiled_not_executed_as_json` |
+| Shape-mismatch feedback | `build_smq_shape_mismatch_feedback` names the offending index and the accepted aliases, then appends `valid_names_hint` | `test_shape_mismatch_feedback_names_the_element_and_the_vocabulary` |
+| Repeat divergence | `semantic_payload_fingerprint` detects two identical payloads; the following call carries `temperature = SemanticRepeatTemperature` | `test_fingerprint_ignores_whitespace_and_fences_but_not_key_order`, `test_repeated_smq_payload_bumps_temperature_on_the_following_attempt` |
+| Closest-name hint | `_unknown_name_detail` + `closest_name` (token overlap first, then a ≥ 5-character prefix) | `test_unknown_metric_names_the_closest_candidate`, `test_unknown_dimension_names_the_closest_candidate`, `test_unknown_metric_with_no_overlap_has_no_suggestion` |
 | Dialect quoting | `quote_identifier` / `quote_qualified` / `quote_string_literal` | `test_dialect_quoting` |
 | Timeout | `compile_guarded` runs `_render` on a daemon thread and `join(timeout_ms/1000)` | `test_guarded_compile_times_out` |
 
@@ -11554,7 +12078,7 @@ the last attempt was **not** a semantic retry, the pre-existing generic `validat
 1. **`attempts.py`** — the guard is evaluated before the fallback; every semantic failure records a report
    and `continue`s; success sets `compiled_from_semantic_model`, which `_validate_candidate` forwards as
    `skip_object_scope`, so `SqlValidator` preserves the server error instead of rewriting it into
-   `TABLE_VALIDATION_ERROR` (`sql_validator.py:26`–`34`).
+   `TABLE_VALIDATION_ERROR` (`sql_validator.py:30`–`37`, built in `_out_of_scope` at `:67`–`77`).
 2. **`builtin_sql_generator.py`** — the precomputed fast path compiles a stored `smq_query` through
    `compile_guarded`, logs a failure, and falls back to the stored SQL only when `_looks_like_sql` confirms
    it is SQL.
@@ -11579,17 +12103,17 @@ the last attempt was **not** a semantic retry, the pre-existing generic `validat
 
 ### Implementation checklist
 
-- [ ] Declare `SemanticMeasure`, `SemanticDimension`, `SemanticJoin`, `SemanticModel` (with `model_config = ConfigDict(protected_namespaces=())`), `SmqPayload` with the exact field names, types and defaults from `app/models/pipeline.py:285`–`322`.
+- [ ] Declare `SemanticMeasure`, `SemanticDimension`, `SemanticJoin`, `SemanticModel` (with `model_config = ConfigDict(protected_namespaces=())`), `SmqPayload` with the exact field names, types and defaults from `app/models/pipeline.py:289`–`326`.
 - [ ] Create the six semantic collections in the vector-store contract (`schema_contracts.py:191`–`261`) and verify the generated SQLite DDL matches §9.3.3 byte-for-byte, including the **missing** primary key on `semantic_governance_predicates` and the composite PKs that include `join_expression` / `measure_name` / `dimension_name`.
 - [ ] Store embeddings as JSON float arrays in a TEXT column (`dumps_vector`/`loads_vector`), 1536 dims, and build the embedding source text with the exact `semantic_embedding_source` format from `schema_contracts.py:359`.
 - [ ] Implement `SemanticModelService` with `is_enabled`, `save` + `_replace_children`, `list_models`, `get_active_model` (is_active = 1, newest `updated_at_utc`), `search_models` (active only, in-process cosine, missing embedding ⇒ 0.0), and `_hydrate`.
 - [ ] Implement `ENABLE_SEMANTIC_LAYER_PER_DATA_SOURCE` as a JSON-object settings field with the dict validator and the exact `ValueError` message, plus `semantic_layer_enabled_for` returning `None` for unknown/blank sources.
 - [ ] Wire `enable_flag` at store-construction time and honour the request `semantic_mode` override with the three-branch `is_enabled` logic.
 - [ ] Force `semantic_mode = False` for `python` / `r` / `sas` targets in **both** `generate_sql_builtin` and `run_attempt_loop`.
-- [ ] Implement `app/services/semantic_smq.py` exactly as §9.10.1–§9.10.3: the two fence regexes with `re.I|re.S`, `_is_smq_object` accepting `metrics` **or** `dimensions`, `_drop_fence_tag`, the escape-aware `_find_balanced_object`, `extract_smq_json` in the documented candidate order, `parse_smq` as a second typed pass, `looks_like_smq` built on `_has_top_level_smq_key` (**never** a substring search for `metrics`), and `valid_names_hint`.
-- [ ] Reproduce the semantic system-prompt block (`prompts.py:62`–`82`), including the absence of query analysis, KB examples, value mappings, schemas, attempt history and scenario rules, the presence of `GENERATION MODE` + `_filter_block`, and the conditional `SEMANTIC_OUTPUT_CORRECTION`.
+- [ ] Implement `app/services/semantic_smq.py` exactly as §9.10.1–§9.10.3: the two fence regexes with `re.I|re.S`, `_SMQ_ROOT_KEYS` (`metrics`, `dimensions`, `metric`, `dimension`) with `_is_smq_object` accepting **any** of them, `_drop_fence_tag`, the escape-aware `_find_balanced_object`, `extract_smq_json` in the documented candidate order, `smq_from_object`/`parse_smq` as a second typed pass with the element aliases and `SmqShapeError`, `semantic_payload_fingerprint`, `build_smq_shape_mismatch_feedback`, `looks_like_smq` built on `_has_top_level_smq_key` (**never** a substring search for `metrics`), and `valid_names_hint`.
+- [ ] Reproduce the semantic system-prompt block (`prompts.py:160`–`178`), including the absence of query analysis, KB examples, value mappings, schemas and scenario rules, the presence of `GENERATION MODE` + `_filter_block` + the optional grain line + `ATTEMPT HISTORY`, the conditional `SEMANTIC_OUTPUT_CORRECTION`, and the `_semantic_output_format(semantic_model)` tail with its model-named worked example.
 - [ ] Implement the **payload-class guard before the fallback**: with the fallback on **and** off, a reply carrying SMQ JSON that cannot be extracted or compiled must be a semantic retry, never a SQL candidate. Prove it by asserting the validator is called zero times (§9.10.6 case 1).
-- [ ] Implement the retry feedback: every semantic report carries `<reason> + valid_names_hint(model)` (offending item **and** the valid metric/dimension names), plus an explicit "return an smq block, not SQL".
+- [ ] Implement the retry feedback: every semantic report carries `<reason> + valid_names_hint(model)` (offending item **and** the valid metric/dimension names), a wrong element shape carries `build_smq_shape_mismatch_feedback` instead, and both state "return an smq block, not SQL". A repeated payload must additionally set the loop-breaker and raise `temperature` on the next call (§9.4.4).
 - [ ] Implement the terminal classifier: an exhausted budget whose last attempt was a semantic retry returns `ErrorCategory.SEMANTIC_COMPILATION` with `last_semantic_error`; the generic `validation` exit applies only when the last attempt was not a semantic retry.
 - [ ] Implement `SemanticCompiler._render` with dimensions-then-measures selection, **no** measure default, `EMPTY_REQUEST` for a payload with neither key, the ordered required-table list, the deterministic `_anchor` rule, `GROUP BY` gated on `expression_has_aggregate`, and the WHERE accumulation order filters → timeframes → governance.
 - [ ] Implement `compile_guarded` as a real per-call timeout (daemon worker + `join`), returning `COMPILATION_TIMEOUT` in `detail`; expiry is a semantic retry, not an exception.
@@ -11601,7 +12125,7 @@ the last attempt was **not** a semantic retry, the pre-existing generic `validat
 - [ ] Wire integration points: precomputed-exact SMQ recompilation through `compile_guarded` with a **logged** failure and a stored-SQL fallback gated on `_looks_like_sql`, `smq_query or sql` payload injection into the SQL/Python/R/SAS example blocks, `semantic_json` into the generator prompt and the critic prompt, `search_models(top_k=2)` inside `_expand_missing` (score 1.0, `required=True`, `schema_name="semantic"`, `object_type="SemanticModel"`, inserted at the head), and the `SqlErrorClassifier` semantic code map.
 - [ ] Pass `compiled_from_semantic_model` through `_validate_candidate` into `SqlValidator.validate(skip_object_scope=…)`, and make `get_active_model` degrade to `None` on an absent/unbuilt store.
 - [ ] Implement `SemanticModelExtractionService.extract` with the LLM-first path (8 000-char schema truncation, `Return JSON only.` system message), the `COUNT|SUM|AVG|MIN|MAX` regex fallback, and the unconditional `row_count = COUNT(*)` guarantee.
-- [ ] Port the test matrix in `tests/unit/test_semantic_smq.py`: extraction/rejection cases, the malformed-SMQ guard, the non-substring guard (`SELECT [metrics] …`), the escaped-quote brace scan, the fallback-on/off behavioural cases, retry-feedback content, terminal classification, compiler determinism, the `GROUP BY` matrix, the anchor rule, the traversal-only-join case, the dialect-quoting case, the all-empty-filter case asserting the trailing-space `WHERE`, and the `skip_object_scope` case. Keep the four legacy cases in `tests/unit/test_semantic.py`, plus a save/re-load round-trip proving `get_active_model` picks the newest `updated_at_utc` and that empty child lists are wiped.
+- [ ] Port the test matrix in `tests/unit/test_semantic_smq.py`: extraction/rejection cases, the malformed-SMQ guard, the non-substring guard (`SELECT [metrics] …`), the escaped-quote brace scan, the fallback-on/off behavioural cases, retry-feedback content, terminal classification, compiler determinism, the `GROUP BY` matrix, the anchor rule, the traversal-only-join case, the dialect-quoting case, the all-empty-filter case asserting the trailing-space `WHERE`, the `skip_object_scope` case, the tolerant-parse cases (element aliases, singular root key, bare string, present-empty array), the shape-mismatch feedback, the fingerprint/temperature divergence, and the closest-name hints. Keep the four legacy cases in `tests/unit/test_semantic.py`, plus a save/re-load round-trip proving `get_active_model` picks the newest `updated_at_utc` and that empty child lists are wiped.
 - [ ] Keep code comments at the points where the non-obvious rules are enforced: guard-before-fallback, no-plan-extension for filters, `GROUP BY` requiring an aggregate, only-requested-tables emission, and the skip-object-scope flag.
 
 ---
@@ -11630,19 +12154,19 @@ re-implements the attempt loop; where behaviour is owned by the generate pipelin
 ### 10.1 Ownership map (who produces SQL, who does not)
 
 `generation_service.generate_sql_for_request()` is the wrapper for **every** `queryMode` that hits
-`POST /api/v1/generate-sql` (`app/services/generation_service.py:1641`). It decides which of the
+`POST /api/v1/generate-sql` (`app/services/generation_service.py:1642`). It decides which of the
 following owners runs:
 
 | Trigger | Owner | Where | Produces SQL? |
 |---|---|---|---|
 | `queryMode` ∈ {`plan`, `ask`} | `discuss_service.discuss_conversation()` | `app/services/discuss_service.py:154` | **No** — `sql=""`, `query_type="ask"` |
-| `queryMode == "search"` | `search_data_objects()` | `app/services/generation_service.py:636` | No — object list, `query_type="search"` |
-| `forceGeneral == true` | `_handle_general_query()` | `app/services/generation_service.py:2840` | No — `query_type="general"` |
-| intent classified `off_topic` | `_handle_general_query()` | `app/services/generation_service.py:1787` | No — `query_type="general"` |
-| intent classified `system_metadata` | `build_system_catalog_prompt()` + 2 attempts | `app/services/generation_service.py:1795` | **Yes** — catalog views, `discovery_branch="system_catalog"` |
-| ≥ 2 `related_source_guids` | wrapper disambiguation message | `app/services/generation_service.py:1748` | No — `query_type="general"` |
-| `queryMode == "generate"` and `BUILTIN_SQL_GENERATOR=true` (default) | `generate_sql_builtin()` | `app/services/generation_service.py:1847` | Yes — see §04–§08 |
-| `queryMode == "generate"` and `BUILTIN_SQL_GENERATOR=false` | legacy in-process discovery path | `app/services/generation_service.py:1860`… | Yes — legacy |
+| `queryMode == "search"` | `search_data_objects()` | `app/services/generation_service.py:637` | No — object list, `query_type="search"` |
+| `forceGeneral == true` | `_handle_general_query()` | `app/services/generation_service.py:1720` | No — `query_type="general"` |
+| intent classified `off_topic` | `_handle_general_query()` | `app/services/generation_service.py:1790` | No — `query_type="general"` |
+| intent classified `system_metadata` | `build_system_catalog_prompt()` + 2 attempts | `app/services/generation_service.py:1804` | **Yes** — catalog views, `discovery_branch="system_catalog"` |
+| ≥ 2 `related_source_guids` | wrapper disambiguation message | `app/services/generation_service.py:1749` | No — `query_type="general"` |
+| `queryMode == "generate"` and `BUILTIN_SQL_GENERATOR=true` (default) | `generate_sql_builtin()` | `app/services/generation_service.py:1849-1857` | Yes — see §04–§08 |
+| `queryMode == "generate"` and `BUILTIN_SQL_GENERATOR=false` | legacy in-process discovery path | `app/services/generation_service.py:1861`… | Yes — legacy |
 | `POST /api/v1/code-advisor` | `code_advisor_service.generate_code_advisor_for_request()` | `app/services/code_advisor_service.py:104` | **No** — advisory prose only |
 | `POST /api/v1/generate-python` / `-r` / `-sas` | `code_generation_service.*_for_request()` | `app/services/code_generation_service.py:23,66,155` | Code, not SQL |
 | `POST /api/v1/execute-sql` / `-python` | execution services (§10.2, §10.3) | — | Runs SQL, may regenerate it |
@@ -11721,7 +12245,7 @@ registered under `settings.API_V1_STR` = `/api/v1` (`app/main.py:41`, `app/core/
 `ChartTypeLiteral = Literal['line','pie','scatter','column','stackedColumn','clusteredColumn','area','radar','treemap','funnel','none']`
 (`app/models/schemas.py:100`).
 
-> ⚠️ Stale documentation: `docs/SQL_EXECUTION_AUTO_RETRY_FEATURE.md:299` and
+> ⚠️ Stale documentation: `docs/SQL_EXECUTION_AUTO_RETRY_FEATURE.md:298` and
 > `docs/GENERATE_SQL.md:127` say the timeout default is 30 s. The code default is **60**
 > (`schemas.py:208`, `generation.py:526`).
 
@@ -11881,7 +12405,7 @@ So: transport errors are `400`/`404`/`401`; every runtime database failure is HT
   (`app/services/query_interceptor.py:20-31`, blocking `DROP/ALTER/TRUNCATE/GRANT/REVOKE/CREATE LOGIN/
   CREATE USER/EXEC xp_/SHUTDOWN` and `INSERT/UPDATE/DELETE/MERGE/CREATE/DROP/ALTER/TRUNCATE`, while
   allowing `#temp`/`tempdb.` writes) is invoked only from the generation attempt loop
-  (`app/core/orchestrator/attempts.py:92`, `277`). The execute endpoint runs the client-supplied
+  (`app/core/orchestrator/attempts.py:427-451`). The execute endpoint runs the client-supplied
   statement verbatim and then **commits** (`validation_service.py:251`). A re-implementation must not
   assume the execute path is read-only.
 - Resource limits are the client-controlled timeout and the client-side row cap; there is no
@@ -11956,7 +12480,7 @@ reports. `original_error` is only surfaced when a retry eventually succeeded.
 `GenerateSQLRequest` whose `error_message` is set and `existing_code` = the failing SQL, so:
 
 - the wrapper re-runs its 3-way intent classifier on `query` (`"Fix the SQL query"` when
-  `context.user_query` is absent) — `generation_service.py:1726-1732`;
+  `context.user_query` is absent) — `generation_service.py:1727-1733`;
 - `preprocess()` classifies `error_message + existing_code` → `generation_mode="debugging"`,
   `is_error_recovery=True` (`app/core/orchestrator/preprocessing.py:83-87`);
 - `route()` short-circuits to `RouteKind.CODE_FIXING` with intent `db_query`
@@ -11966,7 +12490,7 @@ reports. `original_error` is only surfaced when a retry eventually succeeded.
   `{"type":"result","payload":{...,"sql": ...}}`.
 
 The error text reaches the model through the standard attempt prompts:
-`build_user_prompt()` emits (`app/core/orchestrator/prompts.py:168-177`)
+`build_user_prompt()` emits (`app/core/orchestrator/prompts.py:291-300`)
 
 ```
 User request:
@@ -11981,7 +12505,7 @@ Error to fix:
 
 `build_user_prompt` applies **no** further conditioning — no word-count guard, no error-classification
 branch, no keyword filtering; the three blocks are emitted whenever the corresponding field is set, and
-`Pinned objects:` is appended only when `req.database_objects` is non-empty (`prompts.py:175-176`).
+`Pinned objects:` is appended only when `req.database_objects` is non-empty (`prompts.py:298-299`).
 
 **Schema context is not injected into the retry prompt by the endpoint.** `schema_context` is read
 (`generation.py:513`) but never used again; the retry inherits whatever schema discovery the
@@ -11989,15 +12513,15 @@ orchestrator performs for the debugging route. The **single LLM call per retry i
 own generation call** — there is no separate "fix this SQL" LLM call in this loop.
 
 **Unwired helper (present, exported, imported, never invoked).**
-`regenerate_sql_with_error_feedback()` (`app/services/generation_service.py:2850-2944`) is imported at
+`regenerate_sql_with_error_feedback()` (`app/services/generation_service.py:2851-2944`) is imported at
 `generation.py:491` and never called. Its contract, in case a re-implementation prefers it:
 
 - Signature: `(original_request, failed_sql, error_message, schema_context, attempt_number) -> str`.
 - `llm_service.chat(prompt, temperature=0.1)`; on exception it **returns the original `failed_sql`**
-  (`generation_service.py:2940-2943`).
+  (`generation_service.py:2941-2944`).
 - Post-processing: strip, then remove a leading ```` ```sql ````/```` ``` ```` fence and a trailing
-  ```` ``` ````, then strip a leading `sql:` (`generation_service.py:2925-2935`).
-- Prompt body (`generation_service.py:2877-2919`), verbatim shape:
+  ```` ``` ````, then strip a leading `sql:` (`generation_service.py:2926-2936`).
+- Prompt body (`generation_service.py:2878-2920`), verbatim shape:
 
 ```
 You are a T-SQL expert fixing a query that failed execution.
@@ -12047,7 +12571,7 @@ Return ONLY the corrected SQL script, with no additional text, markdown, or expl
 #### 10.2.9 Interaction with `ENABLE_AI_DATA_ANALYSIS`
 
 `app/core/config.py:65` — `ENABLE_AI_DATA_ANALYSIS: bool = True` (env var `ENABLE_AI_DATA_ANALYSIS`,
-documented in `docs/GENERATE_SQL.md:205`, `README.md:451`).
+documented in `docs/GENERATE_SQL.md:205`, `README.md:771`).
 
 The gate is evaluated **inside each attempt** (`validation_service.py:273-275`):
 
@@ -12349,7 +12873,7 @@ Insight types are constrained by the model to
 3. Prompt (verbatim, `insight_service.py:254-272`):
 
 ```
-Given the user's query and data insights below, rank the top 5 most relevant and actionable insights.
+Given the user's query and data insights below, rank the top {self.MAX_INSIGHTS_TO_RETURN} most relevant and actionable insights.
 
 User Query: "{safe_user_query}"
 
@@ -12703,7 +13227,7 @@ Ownership, scenario taxonomy and routing live in §04–§08; the contracts this
 - Routing: `RouteKind.REFINE` with `skip_discovery=False`; only `optimization` keeps
   `skip_discovery=True` (`app/core/orchestrator/router.py:115-138`, `148-155`).
 - Prompt: `REFINEMENT_INSTRUCTIONS` replaces the optimization block in the scenario section of the
-  system prompt (`app/core/orchestrator/prompts.py:18-21`):
+  system prompt (`app/core/orchestrator/prompts.py:21-24`):
 
 ```
 ### REFINEMENT INSTRUCTIONS
@@ -12712,7 +13236,7 @@ Ownership, scenario taxonomy and routing live in §04–§08; the contracts this
 3. Filter Preservation: Ensure established domain filters (e.g., specific products, categories, or date ranges) are maintained in the new query structure.
 ```
 
-  and, when filters are carried, the `SCOPE GUARD` (`prompts.py:23-24`):
+  and, when filters are carried, the `SCOPE GUARD` (`prompts.py:26-27`):
 
 ```
 ### SCOPE GUARD
@@ -12720,10 +13244,10 @@ Preserve all active filters from preceding turns unless the user explicitly requ
 ```
 
   `build_refinement_system_prompt()` is a thin delegate to `build_system_prompt()`
-  (`prompts.py:115-121`).
+  (`prompts.py:234-240`).
 - The optimization counterpart (for contrast, since the classifier must not confuse the two) is
-  `OPTIMIZATION_INSTRUCTIONS` (`prompts.py:11-15`), injected into a **schema-free** editor-code-only
-  prompt (`build_optimization_system_prompt`, `prompts.py:124-152`) — verbatim:
+  `OPTIMIZATION_INSTRUCTIONS` (`prompts.py:14-18`), injected into a **schema-free** editor-code-only
+  prompt (`build_optimization_system_prompt`, `prompts.py:243-275`) — verbatim:
 
 ```
 ### OPTIMIZATION INSTRUCTIONS
@@ -12735,7 +13259,7 @@ Change only syntax, structure, formatting or performance characteristics.
 
 - Refinement scope expansion mechanics (base objects promoted to required, discovery still enabled,
   `RefinementPromptContextCap = 12`, fast paths bypassed when filters are active) are documented in
-  `docs/AGENT_PROCESS.md:223-232` and owned by §06.
+  `docs/AGENT_PROCESS.md:235-244` and owned by §06.
 
 #### 10.7.3 Follow-up **code** edits (R / SAS / Python)
 
@@ -12806,7 +13330,7 @@ connection strings leak into prompts and logs.
 
 ### 10.8 Discuss / Ask / plan modes (`discuss_service.py` + `discuss_prompts.py`)
 
-**Routing from the wrapper** — `app/services/generation_service.py:1654-1662`:
+**Routing from the wrapper** — `app/services/generation_service.py:1655-1663`:
 
 ```python
 # Ask/Discuss mode — conversational discussion, never the SQL pipeline
@@ -12862,9 +13386,10 @@ in this mode:
    (`name`, `description`, `protocol`, `hints`/`trigger`/`keywords`, `instructions`, `server_url`,
    `mcp_tool`, `model`, `parameters`), cached by directory mtime (`markdown_tool_registry.py:55-104`).
    No tools → no lookup.
-3. `ToolFunctionInvoker.matches_tool_hint(query, tools)` — tokens minus stopwords, expanded with
+3. `ToolFunctionInvoker.matches_tool_hint(query, tools)` — tokens minus `STOP_WORDS` (the shared set from
+   `app.utils.query_vocabulary`, §12.11.5), expanded with
    `_HINT_ALIASES`, matched as substrings against `name + description + instructions + hints`
-   lower-cased (`tool_function_invoker.py:49-68`). No hint match → no lookup (no LLM cost).
+   lower-cased (`tool_function_invoker.py:44-63`). No hint match → no lookup (no LLM cost).
 4. `_select_tool(query, tools)` (`discuss_service.py:238-261`) — a **raw `litellm.completion` call**
    (not `llm_service.chat`), with `tools=ToolFunctionInvoker.build_function_tools_payload(tools)`,
    `tool_choice="auto"`, `max_tokens=1024`, `temperature=0.2`, `timeout=30`, and `model`/`base_url`/
@@ -13096,7 +13621,7 @@ Do NOT include any other text.
 
 #### 10.9.2 Catalog prompt and the 2-attempt validation path
 
-Caller: `generation_service.generate_sql_for_request` (`generation_service.py:1794-1843`). It builds
+Caller: `generation_service.generate_sql_for_request` (`generation_service.py:1795-1844`). It builds
 `database_info` from the selected source (or the primary) and calls
 `build_system_catalog_prompt(combined_query, database_info=database_info)`.
 
@@ -13130,7 +13655,7 @@ Prompt (`build_system_catalog_prompt`, `system_query_service.py:314-350`) — as
 {query}
 ```
 
-The validation loop (`generation_service.py:1805-1843`), **max 2 attempts**:
+The validation loop (`generation_service.py:1806-1843`), **max 2 attempts**:
 
 ```python
 max_system_attempts = 2
@@ -13211,7 +13736,7 @@ Return raw T-SQL code only. Do not wrap the code in markdown blocks (e.g. ``` sq
   and `data: {"type":"done"}` (**payload dropped**, unlike the wrapper). Errors become
   `data: {"type":"error","message":str(e)}` with a logged traceback. Headers:
   `Cache-Control: no-cache`, `Connection: keep-alive`, `X-RateLimit-Info: <message>`.
-- Service path (`code_advisor_service.generate_code_advisor_for_request`, `:104-131`): yields
+- Service path (`code_advisor_service.generate_code_advisor_for_request`, `app/services/code_advisor_service.py:104-131`): yields
   `AgentStatus(step_id=1, message="Analyzing your code...", type="status")`, then one LLM call, then
   `GenerateSQLResponse(sql="", explanation=advice, query_type="code_advisor", context_text="")`.
   **Code advisor returns no SQL by design.**
@@ -13261,7 +13786,7 @@ Please provide your analysis and optimized code below:
 - `GenerateSQLRequest.queryMode` includes the literal `"code_advisor"` (`schemas.py:112`), but
   `POST /generate-sql` does not branch on it: a `code_advisor` value there falls through the intent gate
   and, because `queryMode != "generate"`, misses the built-in fast path at
-  `generation_service.py:1848` and lands on the legacy pipeline. The advisor is only reachable through
+  `generation_service.py:1849` and lands on the legacy pipeline. The advisor is only reachable through
   its own route.
 
 #### 10.10.2 `generate-python` / `generate-r` / `generate-sas`
@@ -13275,7 +13800,7 @@ All three (`code_generation_service.py:23-106`, `155-195`) share the built-in or
 5. `builtin_source = resolve_or_primary(request.source_id)`, `stores = build_source_stores(builtin_source)`,
    then iterate `generate_python_builtin` / `generate_r_builtin` / `generate_sas_builtin` — the same
    routing, pin validation, KB/precomputed fast paths, discovery and bounded retry as SQL, with
-   `target_language` set and semantic mode disabled (`docs/AGENT_PROCESS.md:30`).
+   `target_language` set and semantic mode disabled (`docs/AGENT_PROCESS.md:32`).
 6. The edit post-processing flag from §10.7.3.
 
 The HTTP endpoints for R/SAS/Python are otherwise byte-for-byte the same streaming wrapper as
@@ -13307,7 +13832,7 @@ The body is declared as a **raw `dict`** — no Pydantic model on the wire:
 
 Two engine paths, chosen by `settings.BUILTIN_SQL_GENERATOR` (`default True`, `config.py:55`):
 
-**A. Built-in (`discover_for_api`, `app/core/orchestrator/builtin_sql_generator.py:542-545`)** —
+**A. Built-in (`discover_for_api`, `app/core/orchestrator/builtin_sql_generator.py:614-617`)** —
 `DiscoveryEngine(stores, llm).analyze_query(query, None)` then `.discover(query, analysis, top_k=top_k)`,
 where `stores = build_source_stores(source_id)`. Response shaping
 (`discovery.py:28-46`):
@@ -13330,13 +13855,13 @@ where `stores = build_source_stores(source_id)`. Response shaping
 
 `relevant_tables` is produced from `discovered.objects` (`ScoredObject`: `schema_name`, `object_name`,
 `object_type`, `score`, `vector_score`, `matched_columns`, `priority`, `required`, `description`,
-`markdown`, `data_source` — `app/models/pipeline.py:176-187`).
+`markdown`, `data_source` — `app/models/pipeline.py:180-191`).
 **Deliberate quirks to preserve:** `reasoning` carries the *branch name* (`kb_direct`, `dual_prong`,
 `group_anchored`, `kb_gap_fill`, `precomputed_exact`, `table_override`, … `app/core/branch_taxonomy.py:6-21`),
 not prose; `data_type` is always `""` and `columns` are derived from `matched_columns` only (full column
 lists are not returned); `glossary_terms` is always `{}`.
 `similar_queries` are the few-shot examples (`FewShotExample`: `question`, `sql`, `score`,
-`is_exact_match`, `smq_query`, `source` — `pipeline.py:251-257`), dumped as-is.
+`is_exact_match`, `smq_query`, `source` — `pipeline.py:255-261`), dumped as-is.
 
 **B. Legacy (`perform_discovery`, `app/services/discovery_service.py:96-133`)** — vector store
 `_search_schemas_scoped(query, top_k, source_id)` + `search_fewshots(query, top_k=3,
@@ -13413,12 +13938,12 @@ Do **not** re-specify these here; they belong to the generate-pipeline sections:
 
 | Behaviour | Owner section | Anchor |
 |---|---|---|
-| Wrapper history fold, intent gate, multi-source disambiguation | §04 | `generation_service.py:1641-1792` |
+| Wrapper history fold, intent gate, multi-source disambiguation | §04 | `generation_service.py:1642-1793` |
 | `generate_sql_builtin` routing, scenario classification, coreference, session filters | §05 | `app/core/orchestrator/{router,scenario,coreference,session_context}.py` |
-| Pin validation, KB/precomputed fast paths, discovery branches, hydration | §06 | `docs/AGENT_PROCESS.md:127-245` |
-| Attempt loop (≤ 5 attempts, ≤ 120 s), safety/sentinels/hash/critic/`SET NOEXEC ON` order, `failure_report` | §07 | `docs/AGENT_PROCESS.md:249-311` |
+| Pin validation, KB/precomputed fast paths, discovery branches, hydration | §06 | `docs/AGENT_PROCESS.md:131-259` |
+| Attempt loop (≤ 5 attempts, ≤ 120 s), safety/sentinels/hash/critic/`SET NOEXEC ON` order, `failure_report` | §07 | `docs/AGENT_PROCESS.md:261-349` |
 | Prompt assembly for SQL/Python/R/SAS and scenario rule blocks | §07/§08 | `app/core/orchestrator/prompts.py` |
-| Semantic (SMQ) mode and compilation | §08 | `docs/AGENT_PROCESS.md:257-262` |
+| Semantic (SMQ) mode and compilation | §08 | `docs/AGENT_PROCESS.md:267`, `315` |
 | Frontend SSE rendering, `is_code_edit` handling, chart re-visualisation trigger | §11 (frontend) | `docs/FRONTEND.md`, `frontend/src/App.tsx` |
 
 Interaction seams that this section *does* own and that §04–§08 must respect:
@@ -13479,7 +14004,7 @@ This section specifies how knowledge gets **into** the system. Without it the SQ
 |---|---|
 | Contract collection shapes / fields / PKs | `app/services/stores/schema_contracts.py:37-262` |
 | One partition field for everything | `PARTITION_FIELD = "data_source_id"` — `schema_contracts.py:10` |
-| Embedding dimension 1536, cosine metric | `schema_contracts.py:9,11`, `app/core/constants.py:66`, `app/core/config.py:49` |
+| Embedding dimension 1536, cosine metric | `schema_contracts.py:9,11`, `app/core/constants.py:72`, `app/core/config.py:49` |
 | Contract version | `VECTOR_SCHEMA_VERSION = "1.1.0"` — `app/core/constants.py:77` |
 | Provider selection (Milvus → SQLite fallback) | `app/services/stores/provider_factory.py:19-33` |
 | Per-source store bundle | `app/services/stores/bundle.py:37-70` |
@@ -13707,7 +14232,7 @@ plus `" Schema library and Milvus index updated."` or `" Schema library updated;
 | `sys.objects` ⨝ `sys.sql_modules` ⨝ `sys.parameters` ⨝ `sys.types`, `o.type IN ('FN','IF','TF')` | `object_discovery_service.py:78-94` | scalar/inline/multi-statement functions |
 | `sys.schemas` (minus a fixed system list) | `object_discovery_service.py:128-135` | `discover_all_schemas` (admin discovery endpoint only) |
 | `sys.extended_properties` ⨝ `sys.objects` ⨝ `sys.schemas` (`ep.minor_id = 0`, `ep.name = 'MS_Description'`, `o.type = 'U'|'V'`) | `ingest_service.py:247-257`, `admin_service.py:72-82` | table/view description |
-| SQLAlchemy `inspector.get_columns`, `get_pk_constraint`, `get_foreign_keys` | `ingest_service.py:396-398`, `schema_scan_service.py:518-520` | columns, PK, FK |
+| SQLAlchemy `inspector.get_columns` (`ingest_service.py:396`), `get_pk_constraint` (`:228`), `get_foreign_keys` (`:202`) | `schema_scan_service.py:514` (`get_foreign_key_map`) | columns, PK, FK |
 | `INFORMATION_SCHEMA.COLUMNS` ⨝ `TABLE_CONSTRAINTS`/`KEY_COLUMN_USAGE`; `sys.foreign_key_columns` ⨝ `sys.objects` | `schema_enhancement_service.py:171-211` | AI-enhancement context only |
 
 Verbatim description query (`ingest_service.py:247-257`):
@@ -13753,7 +14278,7 @@ ORDER BY o.name
 
 **Object exclusion** — `{ds_dir}/exclude_objects.txt`, one object per line, `#` comments and blank lines ignored, case-insensitive; `schema.object` → qualified set, bare `name` → unqualified set (`schema_scan_service.py:81-146`, `ingest_service.py:33-121`). Square brackets, quotes and apostrophes are stripped before parsing. Managed by `POST|GET|DELETE /api/v1/admin/data-sources/{source_id}/exclude-objects` (`data_sources.py:592-677`).
 
-**Scan order** is deterministic per schema but not globally sorted: `get_schema_names()` order, then `tables` then `views` inside each schema (`schema_scan_service.py:283`), then functions (`:309`). `ingest_metadata` uses the same table-then-view ordering (`ingest_service.py:373-377`).
+**Scan order** is deterministic per schema but not globally sorted: `get_schema_names()` order, then `tables` then `views` inside each schema (`schema_scan_service.py:226-228`), then functions (`:234`). `ingest_metadata` uses the same table-then-view ordering (`ingest_service.py:373-377`).
 
 **No batching and no segments.** Objects are processed strictly one at a time; there is no page size, cursor, or `LIMIT/OFFSET`. `ingest_metadata` accumulates every row in memory and performs one `provider.upsert("schemas", upsert_rows)` at the end (`ingest_service.py:421-439`).
 
@@ -14009,7 +14534,7 @@ Cell text = `', '.join(parts)` where parts are, in order: `Primary key` (tables 
 
 `search_columns_scored` filters `entity_type == "Column"` via `filter_fn` (`:79-90`). SQLite `search_vector` computes cosine **distance** with `min_score` acting as a maximum-distance cut and sorts ascending (`sqlite_vec_provider.py:141-178`).
 
-`DiscoveryEngine.discover_with_column_evidence` merges value-index seeds (`ColumnDetailValueSeedScore = 0.80`), column hits (`RelativeColumnScoreThreshold = 0.85` kept), then adds `ApplyColumnBoost = 0.15` capped at `ApplyColumnBoostCap = 1.0` and marks the object `required` (`discovery_engine.py:249-314`, `constants.py:46-50`).
+`DiscoveryEngine.discover_with_column_evidence` merges value-index seeds (`ColumnDetailValueSeedScore = 0.80`), column hits (`RelativeColumnScoreThreshold = 0.85` kept), then adds `ApplyColumnBoost = 0.15` capped at `ApplyColumnBoostCap = 1.0` and marks the object `required` (`discovery_engine.py:249-314`, `constants.py:49-53`).
 
 #### 11.3.5 The alternative write path: skills-folder rebuild
 
@@ -14049,7 +14574,7 @@ Rebuild status map (`skills_importer.py`): `_rebuild_status[source_id] = {source
 * `embed_text(text, provider, data_source_id, model=None) -> List[float]` — L1 dict `(data_source_id, text_hash) → vector` (max `EmbeddingCacheL1Size = 512`, cleared wholesale when full, `:131-136`); on L2 miss it calls `_live_embed` and falls back to `_hash_embed` (deterministic SHA-256 unit-vector, `:27-43`), then upserts L2 and evicts (`:101-128`).
 * `try_embed_text(...) -> Optional[List[float]]` — cache or live only; **no hash fallback** (`:92-98`).
 * L2 row written to `embedding_cache` (`:112-124`): `data_source_id, text_hash, text_content (first 8000 chars), embedding_json, embedding_model, created_at_utc, last_accessed_utc, access_count = 1`. A cache hit bumps `last_accessed_utc` and `access_count` (`:77-88`).
-* Eviction when `COUNT(*) > EmbeddingCacheL2Size = 10_000`: delete the `EmbeddingCacheL2EvictBatch = 1_000` oldest rows by `last_accessed_utc` via raw SQL, falling back to fetch-all + sort (`:138-167`). Constants: `constants.py:63-66`.
+* Eviction when `COUNT(*) > EmbeddingCacheL2Size = 10_000`: delete the `EmbeddingCacheL2EvictBatch = 1_000` oldest rows by `last_accessed_utc` via raw SQL, falling back to fetch-all + sort (`:138-167`). Constants: `constants.py:70-71`.
 
 `_live_embed` constructs an `EmbeddingConfig` from `settings.EMBEDDING_PROVIDER/EMBEDDING_MODEL/EMBEDDING_API_KEY or LLM_API_KEY/EMBEDDING_BASE_URL` and calls `EmbeddingFactory.create_client(config).embed_query(text)` (`:46-60`). `EmbeddingFactory.create_client` (`embedding_factory.py:21-42`): `openai`, `azure`, `openai_compatible` and any unknown provider → OpenAI-compatible client; `huggingface` → `NotImplementedError("Local HuggingFace provider is not yet implemented.")`.
 
@@ -14086,7 +14611,7 @@ skills/data-sources/
 * Group title line: `# {Group Name}` — `_parse_data_group_file` strips a trailing ` Group` from the title regex (`skills_service.py:287`).
 * Table/view markdown filename = `{schema}.{object}.md`, function = `{schema}.fn.{function}.md` (`schema_scan_service.py:292,313`).
 * Data-group object links are **relative** to the group file: `../schemas/{schema}/{file}` (`schema_scan_service.py:628`); `_parse_data_group_file` resolves them to absolute paths (`skills_service.py:304-309`).
-* Slugs must never be `_`-prefixed: `load_object_indices` skips directories starting with `_` (`skills_service.py:809`).
+* Slugs must never be `_`-prefixed: `load_object_indices` skips directories starting with `_` (`skills_service.py:800`).
 
 #### 11.4.2 Per-object markdown (exact structure)
 
@@ -14128,7 +14653,7 @@ With no parameters the usage line is `SELECT [s].[f]()` and the `### **Parameter
 
 `sync_schema_file_from_database(file_path)` (`schema_scan_service.py:436-508`) rebuilds one file: parse `…/data-sources/{slug}/schemas/{schema}/{schema}.{obj}[-fn.]{name}.md` (`:402-433`), introspect the live DB, build only the description+columns block, and splice it into the existing `## Description` section, preserving everything before and after (`_merge_description_section`, `:535-559`). If the file has no `## Description` section at all, the whole file is regenerated with `_build_object_markdown`. Afterwards `_data_sources_cache` and `_data_groups_cache` are cleared (`:500-506`). Endpoint: `POST /api/v1/admin/skills/sync-schema-markdown` with `{"file_path": "…"}` (`admin.py:1051-1070`).
 
-Header validation regexes used to read files back (`skills_service.py:561-588`): the H1 `^#\s+Table:\s+\[?(\w+)\]?\.\[?(\w+)\]?`, `**Type:**\s*(\w+)`, an optional `## Columns` section (`### ColumnName (DataType) - tags` blocks), else the `| Ord | Name | Data Type | Description |` table.
+Header validation regexes used to read files back (`skills_service.py:552-568`): the H1 `^#\s+Table:\s+\[([^\]]+)\]\.\[([^\]]+)\]` (the brackets are required, so `[dbo].[Sales by Category]` parses as one object name; a file whose H1 does not match falls back to its filename stem at `:554-555`), `**Type:**\s*(\w+)`, an optional `## Columns` section (`### ColumnName (DataType) - tags` blocks), else the `| Ord | Name | Data Type | Description |` table.
 
 #### 11.4.3 Index files and runtime lookup
 
@@ -14174,7 +14699,7 @@ self.provider.upsert("few_shots", [rec])
 
 There is **no mirror/companion table**. `few_shots_meta` was a duplicate scalar table; it is listed in `RETIRED_COLLECTIONS = ("few_shots_meta",)` (`schema_contracts.py:275`) and dropped on `ensure_schema` (`sqlite_vec_provider.py:36-42`) and again lazily on first few-shot use (`fewshot_vector_service.py:141-163`). Exact-question lookup is a plain scan of `few_shots`.
 
-Question normalization (`app/utils/hashing.py:30-36`):
+Question normalization (`app/utils/hashing.py:34-40`):
 
 ```python
 def normalize_question(text: str) -> str:
@@ -14183,6 +14708,10 @@ def question_lookup_key(text: str) -> str:
     return normalize_question(text)
 ```
 i.e. trim → lowercase → collapse internal whitespace. Nothing else (no punctuation stripping, no stemming).
+The **read** side normalizes one step further: `try_get_exact` and `search` key and embed through
+`kb_similarity_key` (§12.15.1), which drops a ranking count first (`top 10` → `top`, `limit 20` → gone), so a
+question that differs only by its limit still matches the stored row. `upsert`/`replace` embed the question
+as written — only the lookup key and the search vector are limit-normalized.
 
 `replace(key, question, sql)` (`:56-80`) regenerates the vector with `try_embed_text`; on `None` it calls `_update_scalars_without_vector` which fetches the existing row, overwrites `question`/`sql` and re-upserts, so the previous vector survives (`:192-201`). `created_at_utc` is preserved via `_try_get_created_at_utc` (`:182-190`). `delete(key)` → `provider.delete("few_shots", source_id, "key", key)` (`:82-84`). `list_all()` → `fetch_all` (`:135-139`).
 
@@ -14364,7 +14893,7 @@ In `discover()` the group members become their own RRF list with weight `RRF_WEI
 rrf_merge({"schema_vector": schema_list, "value_index": value_objects, "few_shot": fewshot_objects,
            "data_group": group_objects, "bm25": bm25_list}, max_results=MaxRerankTables)   # 8
 ```
-and the branch is promoted to `GROUP_ANCHORED` when any merged object appears in `member_groups` (`discovery_engine.py:204-231`). Other RRF weights: value index 1.0, few-shot 1.0, schema vector 1.0, BM25 default 0.5, `RrfK = 60.0` (`constants.py:23-29`).
+and the branch is promoted to `GROUP_ANCHORED` when any merged object appears in `member_groups` (`discovery_engine.py:237-239`). Other RRF weights: value index 1.0, few-shot 1.0, schema vector 1.0, BM25 default 0.5, `RrfK = 60.0` (`constants.py:25-29`).
 
 #### 11.7.4 Group population paths
 
@@ -14527,7 +15056,7 @@ All paths below are absolute as registered in `app/main.py:40-57` with `settings
 
 `create_data_source` raises `ValueError("Data source name is required")` and `ValueError("Data source '{name}' already exists")` (both become HTTP 400/500 depending on the route); `create_data_group` requires `name` and `data_source` and rejects an existing `_{slug}-group.md`; `create_table_schema` requires `data_source` and `table_name` and rejects an existing file (`skills_admin_service.py:121-149,354-378,531-556`).
 
-`delete_data_source` (`:300-341`) resolves `source_id` from the skills index first, then calls `clear_schemas_collection(source_id)`, `clear_schemas_v2_collection(source_id)`, `clear_values_collection(source_id)`, `clear_fewshots_collection(source_id)`, `registry.mark_deleted(source_id)`, `shutil.rmtree(ds_dir)` and `_remove_from_index(name)` — in that order. Note it does **not** clear `data_group_*`, `vec_data_group_*` or `semantic_*` rows. `delete_schema_from_library` (`:661-757`) deletes `{schema}.{object}.md` in the first matching source folder and then rewrites `.object-index.json` and `.schema-index.json` counts.
+`delete_data_source` (`skills_admin_service.py:300-341`) resolves `source_id` from the skills index first, then calls `clear_schemas_collection(source_id)`, `clear_schemas_v2_collection(source_id)`, `clear_values_collection(source_id)`, `clear_fewshots_collection(source_id)`, `registry.mark_deleted(source_id)`, `shutil.rmtree(ds_dir)` and `_remove_from_index(name)` — in that order. Note it does **not** clear `data_group_*`, `vec_data_group_*` or `semantic_*` rows. `delete_schema_from_library` (`skills_admin_service.py:661-757`) deletes `{schema}.{object}.md` in the first matching source folder and then rewrites `.object-index.json` and `.schema-index.json` counts.
 
 #### Few-shots / knowledge base / contributions
 
@@ -14755,14 +15284,14 @@ This section covers two things that the rest of the blueprint depends on:
 | Body extraction + structural hash + syntax check + qualification (Python) | `app/utils/python_normalization.py` | `attempts.py`, `builtin_sql_generator.py`, `execution_service.py`, `prompts.py` |
 | Same for R | `app/utils/r_normalization.py` | `attempts.py`, `builtin_sql_generator.py`, `prompts.py` |
 | Same for SAS | `app/utils/sas_normalization.py` | `attempts.py`, `builtin_sql_generator.py`, `prompts.py` |
-| SQL fence/comment/object-ref normalization | `app/utils/sql_normalization.py` | `attempts.py:76`, `builtin_sql_generator.py:37,462`, `discovery_engine.py:317`, `sql_validator.py:9`, all three script modules |
+| SQL fence/comment/object-ref normalization | `app/utils/sql_normalization.py` | `attempts.py:92`, `builtin_sql_generator.py:37,534`, `discovery_engine.py:369`, `sql_validator.py:8`, all three script modules |
 | Named regexes | `app/utils/regexes.py` | `router.py`, `attempts.py`, `coreference.py`, `preprocessing.py`, `discovery_engine.py`, `sql_normalization.py` |
 | Prompt-input sanitization | `app/utils/sanitization.py` | `coreference.py`, `refinement_service.py`, `insight_service.py` |
 | Dialect quoting | `app/utils/dialect.py` | `semantic_compiler.py`, `sql_context_hydrator.py` |
 | Cache keys + sha256 | `app/utils/hashing.py` | `discovery_engine.py`, `stores/embeddings.py`, `fewshot_vector_service.py`, `vector_search_service.py` |
 | PII masking | `app/utils/pii.py` | `preprocessing.py:51` |
-| RRF merge | `app/utils/rrf.py` | `discovery_engine.py:34,179,211,221,227`, `attempts.py:556`, `builtin_sql_generator.py:270` |
-| Interceptors | `app/services/{python,r,sas,query}_interceptor.py` | `attempts.py:50-53` |
+| RRF merge | `app/utils/rrf.py` | `discovery_engine.py:35,187,219,229,235,354`, `attempts.py:908`, `builtin_sql_generator.py:36,318` |
+| Interceptors | `app/services/{python,r,sas,query}_interceptor.py` | `attempts.py:52-55` |
 | Workflow templates | `app/services/template_service.py` | nothing in `app/` (dormant; see §12.18) |
 
 ---
@@ -14771,7 +15300,7 @@ This section covers two things that the rest of the blueprint depends on:
 
 #### 12.2.1 Entry points
 
-`app/core/orchestrator/builtin_sql_generator.py:331-352`
+`app/core/orchestrator/builtin_sql_generator.py:403-425`
 
 ```python
 def generate_python_builtin(request, stores, llm=None):
@@ -14784,7 +15313,7 @@ def generate_sas_builtin(request, stores, llm=None):
     yield from generate_sql_builtin(request, stores, llm, target_language="sas")
 ```
 
-`target_language` defaults to `"sql"` (`builtin_sql_generator.py:66`, `attempts.py:89`) and is never read from the
+`target_language` defaults to `"sql"` (`builtin_sql_generator.py:66`, `attempts.py:107`) and is never read from the
 HTTP request body. The HTTP routes select it by *which endpoint* was called, in
 `app/services/code_generation_service.py`:
 
@@ -14813,22 +15342,28 @@ All three script services share the same prefix logic before delegating (`code_g
 | `builtin_sql_generator.py:87-94` `code_from_match()` | returns stored SQL unchanged | `materialize_python_code` / `materialize_r_code` / `materialize_sas_code` |
 | `builtin_sql_generator.py:170` | `semantic_mode = stores.semantic.is_enabled(...)` | `semantic_mode` forced `False` (`... if script_mode else ...`) |
 | `builtin_sql_generator.py:173-178` | no-discovery provided-code path | same path, calls `_generate_from_provided_sql(..., target_language=...)` |
-| `builtin_sql_generator.py:294-304` | `run_attempt_loop(..., target_language="sql")` | passes the language through |
-| `attempts.py:101-102` | — | `if script_mode: semantic_mode = False` (SMQ compilation unreachable) |
-| `attempts.py:154-162` | `build_system_prompt` + `build_user_prompt` | `build_{python,r,sas}_system_prompt` + `build_{python,r,sas}_user_prompt` |
-| `attempts.py:185-192` | `extract_sql_body(raw)` | `extract_python_body` / `extract_r_body` / `extract_sas_body` |
-| `attempts.py:193-207` | no embedded-SQL handling | `qualify_sql_in_python` / `_r` / `_sas` with `known = [(o.schema_name, o.object_name) for o in discovery.objects]` |
-| `attempts.py:255-277` | `QueryInterceptor.check(sql, ...)` | script interceptor first, then `QueryInterceptor.check` on **each** embedded SQL |
-| `attempts.py:292-298` | `structural_sql_hash(sql)` | `structural_python_hash` / `structural_r_hash` / `structural_sas_hash` |
-| `attempts.py:304-309` | `"Repeated SQL structure detected"` | `"Repeated Python/R/SAS structure detected"` |
-| `attempts.py:330-338` | `skip_critic = db_ok` | `skip_critic = db_ok and at least one embedded SQL was extracted` |
-| `attempts.py:343-350` | `_run_critic` | `_run_python_critic` / `_run_r_critic` / `_run_sas_critic` |
-| `attempts.py:500-520` | `validator.validate(code, allowed)` | syntax check, then per-extracted-SQL `validator.validate(sql, allowed)` |
+| `builtin_sql_generator.py:350-360` | `run_attempt_loop(..., target_language="sql")` | passes the language through |
+| `attempts.py:135-137` | — | `if script_mode: semantic_mode = False` (SMQ compilation unreachable) |
+| `attempts.py:250-268` | `build_system_prompt` + `build_user_prompt` | `build_{python,r,sas}_system_prompt` + `build_{python,r,sas}_user_prompt` |
+| `attempts.py:291-298` | `extract_sql_body(raw)` | `extract_python_body` / `extract_r_body` / `extract_sas_body` |
+| `attempts.py:299-313` | no embedded-SQL handling | `qualify_sql_in_python` / `qualify_sql_in_r` / `qualify_sql_in_sas` with `known = [(o.schema_name, o.object_name) for o in discovery.objects]` |
+| `attempts.py:427-451` | `QueryInterceptor.check(sql, ...)` | script interceptor first, then `QueryInterceptor.check` on **each** embedded SQL |
+| `attempts.py:471-477` | `structural_sql_hash(sql)` | `structural_python_hash` / `structural_r_hash` / `structural_sas_hash` |
+| `attempts.py:483-488` | `"Repeated SQL structure detected"` | `"Repeated Python/R/SAS structure detected"` |
+| `attempts.py:509-519` | `skip_critic = db_ok` | `skip_critic = db_ok and at least one embedded SQL was extracted` |
+| `attempts.py:524-531` | `_run_critic` | `_run_python_critic` / `_run_r_critic` / `_run_sas_critic` |
+| `attempts.py:742-772` | `validator.validate(code, allowed, skip_object_scope=compiled_from_semantic_model)` | syntax check, then per-extracted-SQL `validator.validate(sql, allowed, skip_object_scope=compiled_from_semantic_model)` |
 
-`_validate_candidate` (`attempts.py:500-520`) verbatim:
+`_validate_candidate` (`attempts.py:742-772`) verbatim:
 
 ```python
-def _validate_candidate(code, validator, allowed, target_language):
+def _validate_candidate(
+    code: str,
+    validator: SqlValidator,
+    allowed: List[str],
+    target_language: str,
+    compiled_from_semantic_model: bool = False,
+):
     extractors = {
         "python": (syntax_check_python, extract_sql_from_python),
         "r":      (syntax_check_r,      extract_sql_from_r),
@@ -14836,7 +15371,9 @@ def _validate_candidate(code, validator, allowed, target_language):
     }
     pair = extractors.get(target_language)
     if not pair:
-        return validator.validate(code, allowed)
+        return validator.validate(
+            code, allowed, skip_object_scope=compiled_from_semantic_model
+        )
     syntax_check, extract_sql = pair
     ok, err = syntax_check(code)
     if not ok:
@@ -14845,19 +15382,21 @@ def _validate_candidate(code, validator, allowed, target_language):
     if not sqls:
         return True, "", []          # script with no embedded SQL is "valid" by definition
     for sql in sqls:
-        db_ok, db_err, db_missing = validator.validate(sql, allowed)
+        db_ok, db_err, db_missing = validator.validate(
+            sql, allowed, skip_object_scope=compiled_from_semantic_model
+        )
         if not db_ok:
             return False, db_err, db_missing or []
     return True, "", []
 ```
 
 Note the asymmetry: a script with **no** extracted SQL passes `_validate_candidate` unconditionally, but the
-attempt-1 `skip_critic` gate (`attempts.py:333-337`) still requires at least one extracted statement per active script
+attempt-1 `skip_critic` gate (`attempts.py:509-519`) still requires at least one extracted statement per active script
 mode, so such a script always pays one extra LLM critic round.
 
 #### 12.2.3 "User requested write" flag
 
-`attempts.py:254` (identical for every language):
+`attempts.py:428` (identical for every language):
 
 ```python
 user_write = bool(
@@ -15054,23 +15593,23 @@ Verified consequence of step 4: `f"SELECT a FROM t WHERE x = {v}"` yields `['SEL
 constant fragment of the f-string), because `_const_str` refused the `JoinedStr` and the fallback walk collected the
 inner `Constant`.
 
-#### 12.4.2 R — `extract_sql_from_r(code)` (`r_normalization.py:252-254`)
+#### 12.4.2 R — `extract_sql_from_r(code)` (`r_normalization.py:252-256`)
 
-R has no parser: `_scan_r_strings` (`:129-178`) is a hand-written character scanner that returns the *contents* of
+R has no parser: `_scan_r_strings` (`:129-179`) is a hand-written character scanner that returns the *contents* of
 every string literal in order:
 
 * R raw strings `r"..."` / `R"..."` with optional raw delimiter `(`, `[`, `{` (`_RAW_OPENERS`,
   `{"(": ")", "[": "]", "{": "}"}`); the terminator is `closer` followed by `"`.
 * single/double quoted literals with backslash escapes; `\"` and `\'` are unescaped before returning.
 
-`_extract_call_string_args` (`:233-249`) then filters those contents with `_looks_like_sql_fragment`. There is no
+`_extract_call_string_args` (`:233-251`) then filters those contents with `_looks_like_sql_fragment`. There is no
 `dbGetQuery`-specific check — any SQL-shaped literal anywhere in the script is treated as an embedded statement.
 Verified: `'result <- dbGetQuery(con, r"(SELECT 1 FROM a)")'` → `['SELECT 1 FROM a']`.
 
-#### 12.4.3 SAS — `extract_sql_from_sas(code)` (`sas_normalization.py:146-174`)
+#### 12.4.3 SAS — `extract_sql_from_sas(code)` (`sas_normalization.py:146-175`)
 
 1. If either `_CONNECTION_OPEN = (?is)CONNECTION\s+TO\s+\w+\s*\(` or `_EXECUTE_OPEN = (?is)EXECUTE\s*\(` matches, pull
-   the balanced parenthesised body with `_extract_balanced_paren` (`:121-143`) — a depth counter that ignores
+   the balanced parenthesised body with `_extract_balanced_paren` (`:121-144`) — a depth counter that ignores
    parens inside `'…'` / `"…"` strings — and return **only** those bodies. `None` (unbalanced) is dropped by `_add`.
 2. Otherwise fall back to scanning every `"…"` literal, then every `'…'` literal, with
    `r'"(?:\\.|[^"\\])*"'` and `r"'(?:\\.|[^'\\])*'"`, keeping the SQL-shaped ones.
@@ -15134,7 +15673,7 @@ and `from sqlalchemy import create_engine` is untouched (`tests/unit/test_python
 ### 12.5 Materialization templates (verbatim)
 
 Used when a stored/few-shot/precomputed SQL answer (or the caller's `existing_code`) has to become script code:
-`builtin_sql_generator.py:87-94` (`code_from_match`) and `builtin_sql_generator.py:408-415`
+`builtin_sql_generator.py:87-94` (`code_from_match`) and `builtin_sql_generator.py:480-487`
 (`_generate_from_provided_sql`). Entry points: `materialize_python_code` / `materialize_r_code` /
 `materialize_sas_code`, which are one-line aliases of `wrap_sql_as_python` / `wrap_sql_as_r` / `wrap_sql_as_sas`.
 
@@ -15412,7 +15951,7 @@ def apply_language_result(result, target_language):
   `GenerateSQLResponse.query_type` likewise (`models/schemas.py:166`).
 * `apply_language_result` is called only in `builtin_sql_generator.finalize()` (`:83-85`), i.e. on every result that
   leaves the script generator — including failures, whose `query_type` therefore also becomes `python_code`/`r_code`/
-  `sas_code` (asserted in `tests/parity/test_builtin_python_fast_paths.py:58`).
+  `sas_code` (asserted in `tests/parity/test_builtin_{python,r,sas}_fast_paths.py`).
 * Conversational immediates keep `query_type == "general"` (set by `router._conversational`, `router.py:71-83`) and are
   therefore *not* rewritten (asserted at `test_builtin_python_fast_paths.py:36-43`).
 * Other services use other values (`"search"`, `"plan"`, `"code_advisor"`, `"ask"`) — those never flow through the
@@ -15478,7 +16017,7 @@ return True, "", []
    the `EXPLAIN` branch above). `EXPLAIN PLAN FOR` writes rows into `PLAN_TABLE`; the port does not roll that back, and
    the returned missing-object list is always `[]` on this path (the SQL Server path is the only one that parses
    `Invalid object name '…'` into `missing_objects`).
-2. **Out-of-scope check** — `SqlValidator._out_of_scope` (`sql_validator.py:59-70`) is dialect-independent and still
+2. **Out-of-scope check** — `SqlValidator._out_of_scope` (`sql_validator.py:67-78`) is dialect-independent and still
    runs for Oracle whenever `allowed_objects` is non-empty:
 
 ```python
@@ -15498,14 +16037,14 @@ if missing:
    only; the generation prompts merely receive the DBMS name as text.
 
 **Prompt blocks that differ.** For scripts the only per-DBMS prompt text is one line in each system prompt
-(`prompts.py:236, 347, 454`):
+(`prompts.py:359, 472, 581`):
 
 ```
 DBMS CONTEXT
 Target dialect: {context.dbms_type or "SQL Server"}. Embedded SQL must use this dialect.
 ```
 
-The SQL prompt (`prompts.py:83-85`) additionally carries dialect guidance that the script prompts do **not**:
+The SQL prompt (`prompts.py:187-189`) additionally carries dialect guidance that the script prompts do **not**:
 
 ```
 DBMS CONTEXT (STRICT)
@@ -15513,10 +16052,12 @@ Target dialect: {dbms}. Use dialect-specific identifier quoting. Do not emit cro
 PostgreSQL: LIMIT not TOP; CASE not IF(); explicit casts; schema-qualify objects.
 ```
 
-and its `OUTPUT FORMAT` tail is dialect-templated (`Return a single valid {dbms} statement`, `prompts.py:111`).
-Everything else in the prompt — scenario section, query analysis, business context, KB examples, verified mappings,
-available/supplementary schemas, attempt history — is shared and is specified verbatim in **§08** (this section does not
-repeat it).
+and its `OUTPUT FORMAT` tail is dialect-templated (`Return a single valid {dbms} statement` plus the literal
+`/* Reasoning: … */` + fenced `sql` layout, `prompts.py:218-230`).
+Everything else in the prompt — scenario section, query analysis, business context, `AUTHORIZED OBJECT SCOPE`, the
+KB-examples header, verified mappings, available/supplementary schemas, attempt history — is shared and is specified
+verbatim in **§08** (this section does not repeat it); `ZERO_HALLUCINATION_POLICY` is the one block the SQL prompt
+inserts and the script prompts do not.
 
 **Validations skipped or replaced for scripts** (independent of DBMS):
 
@@ -15524,17 +16065,17 @@ repeat it).
 |---|---|---|
 | Semantic-mode SMQ compile | yes (`attempts.py:208-244`) | never — `semantic_mode` forced `False` (`:101-102`, `builtin_sql_generator.py:170`) |
 | Real SQL parse | `SqlValidator.validate(code)` | replaced by per-embedded-statement `validate` |
-| Structural index check on the parse error | `classifier.extract_missing_object(db_err)` + `TABLE_VALIDATION_ERROR` prefix handling (`attempts.py:387-397`) | runs on the *embedded statement's* error text |
-| Sentinel scan of the raw LLM output | `parse_validation_sentinels(raw)` (`attempts.py:282`) | also runs on the raw script output — a sentinel-looking string inside a script triggers recovery |
-| `existing_code` fast path | returns the SQL unchanged if it validates | materializes the script first (`builtin_sql_generator.py:408-415`) |
+| Structural index check on the parse error | `classifier.extract_missing_object(db_err)` + `TABLE_VALIDATION_ERROR` prefix handling (`attempts.py:570-580`) | runs on the *embedded statement's* error text |
+| Sentinel scan of the raw LLM output | `parse_validation_sentinels(raw)` (`attempts.py:456`) | also runs on the raw script output — a sentinel-looking string inside a script triggers recovery |
+| `existing_code` fast path | returns the SQL unchanged if it validates | materializes the script first (`builtin_sql_generator.py:480-487`) |
 | Language interceptors on the no-discovery path | n/a | **skipped**: `_generate_from_provided_sql` never calls `PythonInterceptor`/`RInterceptor`/`SASInterceptor`/`QueryInterceptor` |
 
 > ⚠️ Latent / unverified from the HTTP surface: `AgentContext.dbms_type` is declared once with the default
 > `"SQL Server"` (`models/pipeline.py:145`) and is **never assigned** anywhere in `app/` (only read at
-> `attempts.py:96,234`, `builtin_sql_generator.py:212,366`, `prompts.py:62,135,140,236,347,454`). `preprocess` and
+> `attempts.py:131,245,399`, `builtin_sql_generator.py:229,438`, `prompts.py:159,254,259,359,472,581`). `preprocess` and
 > `build_agent_request` do not populate it from the data source. Therefore the Oracle branch of `SqlValidator` and the
 > dialect-specific quoting are dormant for `/generate-sql|-python|-r|-sas` today; they are reachable only when a caller
-> constructs `AgentContext`/`SemanticCompiler` with an explicit DBMS (e.g. `api/endpoints/admin_semantic.py:52`). Decide
+> constructs `AgentContext`/`SemanticCompiler` with an explicit DBMS (e.g. `api/endpoints/admin_semantic.py:56`). Decide
 > explicitly whether your re-implementation wires `dbms_type` from the data-source record; if you do, the Oracle
 > validation path above becomes live and the script materialization templates (still SQL-Server ODBC) will mismatch the
 > dialect.
@@ -15617,8 +16158,9 @@ Behaviour:
 * Order preserved, case-insensitive de-duplication by the first spelling.
 * Verified: `FROM [dbo].[Order Details] join x.y` → `['dbo.Order Details', 'x.y']`.
 
-Consumers: `sql_validator._out_of_scope` (`sql_validator.py:63`), `discovery_engine._objects_from_sql` (`:316-323`),
-`builtin_sql_generator._base_objects_from_sql` (`:313-328` — refinement turns promote the editor code's tables to
+Consumers: `sql_validator._out_of_scope` (`sql_validator.py:67`), `discovery_engine._objects_from_sql` (`discovery_engine.py:361-386`),
+`attempts._allowed_objects` (`attempts.py:733-738` — only the catalog-confirmed refs), and
+`builtin_sql_generator._base_objects_from_sql` (`builtin_sql_generator.py:385-400` — refinement turns promote the editor code's tables to
 `priority=True, required=True, score=1.0` objects).
 
 #### 12.10.6 `qualify_unqualified_objects(sql, known_objects=None, default_schema="dbo") -> str` (`:71-110`)
@@ -15689,7 +16231,7 @@ Exported surface of the module, complete: `strip_reasoning_header`, `extract_sql
 These live in `app/core/orchestrator/session_context.py` (not in `coreference.py`); `coreference.py` owns the rewrite
 decision and the filter *merge*, and `scenario.py` owns the clear/replace signal vocabulary.
 
-#### 12.11.1 Alias-resolution algorithm — `extract_filters_from_sql(sql, turn_index=1)` (`session_context.py:133-185`)
+#### 12.11.1 Alias-resolution algorithm — `extract_filters_from_sql(sql, turn_index=1)` (`session_context.py:137-189`)
 
 Regexes (`:57-67`):
 
@@ -15724,12 +16266,22 @@ Algorithm:
    * de-duplicate on `(entity.lower(), column.lower())`; stop at `MaxActiveFilters = 12` (`:55`).
    * emit `ActiveFilter(entity, attribute=column, operator, value, origin_turn=turn_index, source="sql")`.
 
-`_normalize_identifier(raw) = (raw or "").strip().strip("[]").strip()` (`:129-130`).
+`_normalize_identifier(raw) = (raw or "").strip().strip("[]").strip()` (`:133-134`).
 
-#### 12.11.2 Lifecycle: clear and replace (`:191-246`)
+**Output grain — `extract_grain_from_sql(sql)` (`:199-220`).** The same deterministic pass reads the
+statement's grain for the session. It finds every `\bgroup\s+by\b` and keeps the **last** one (in
+`SELECT … FROM (SELECT … GROUP BY x) s GROUP BY y` the outer grouping is the statement's grain), then takes
+the projection up to the first `HAVING` / `ORDER BY` / `LIMIT` / `;` / end of text, collapses whitespace,
+strips a trailing comma or semicolon, and returns `""` when the grouping is empty or longer than
+`MaxGrainLength = 200` characters. No `GROUP BY` also yields `""`, and `record_generation_outcome` treats
+`""` as "no change", so the session keeps the grain it already had. Columns stay qualified exactly as
+written, because the next prompt hands the string back to the model as a physical expression.
 
-`_REPLACEMENT_PATTERNS` (`:69-78`, re.I), first match wins, and the captured value must not be in
-`_REPLACEMENT_STOPWORDS = {"all","every","the","a","an","me","them","this","that","now","instead"}`:
+#### 12.11.2 Lifecycle: clear and replace (`:246-281`)
+
+`_REPLACEMENT_PATTERNS` (`:73-82`, re.I), first match wins, and the captured value must not be in
+`_REPLACEMENT_STOPWORDS = STOP_WORDS` — the app-wide stop-word set from `app.utils.query_vocabulary`
+(§12.11.5), no longer a literal defined here:
 
 ```python
 r"\b(?:now\s+)?(?:do|show|run|make|give)\s+(?:this|it|that)\s+for\s+(?P<value>[A-Za-z][\w\-]*)"
@@ -15744,7 +16296,7 @@ r"\bfor\s+(?P<value>[A-Za-z][\w\-]*)\s+instead\b"
 * `detect_filter_clear(query)` (from `scenario.py`, i.e. `detect_reset(text) or _matches(_COMPILED["filter_clear"], text)`;
   `FILTER_CLEAR_PATTERNS` at `scenario.py:40-48`) → returns `([], bool(held), False, notes)`.
 * Else a replacement value rewrites **only** filters whose `operator.lower() in _VALUE_OPERATORS` via
-  `_requote(template, value)` (`:202-208`): keeps the `N'…'` prefix if the template had one, and re-wraps with `%…%`
+  `_requote(template, value)` (`:237-243`): keeps the `N'…'` prefix if the template had one, and re-wraps with `%…%`
   when the template contained a `%`; everything else is left untouched. Rewritten filters get
   `origin_turn=turn_index, source="session"`.
 
@@ -15754,10 +16306,10 @@ r"\bfor\s+(?P<value>[A-Za-z][\w\-]*)\s+instead\b"
 `((f.entity or "").lower(), (f.attribute or "").lower())`; a later entry **replaces** an earlier one in place, otherwise
 it is appended. Order of first appearance is preserved.
 
-`prepare_conversation_context(request, llm=None, store=None)` (`session_context.py:266-324`):
+`prepare_conversation_context(request, llm=None, store=None)` (`session_context.py:301-360`):
 
 1. `key = session_key(request)` → `f"session:{source_id}:{session_id}"` when a source is present, else
-   `f"session:{session_id}"`, else `None` (`:252-263`).
+   `f"session:{session_id}"`, else `None` (`:287-298`).
 2. `turn_index = previous.turn_index + 1 if previous else 1`.
 3. filters = previous filters merged with `extract_filters_from_sql(request.existing_code, turn_index)`; if that yields
    nothing, re-parse `previous.last_sql`.
@@ -15766,10 +16318,17 @@ it is appended. Order of first appearance is preserved.
    `GenerationMode.OPTIMIZATION` (`:287-297`); otherwise `resolve_coreference(...)` and then
    `coref.active_filters = merge_filters(filters, coref.carried_filters)`.
 6. Persist `SessionSemanticContext(session_id, source_id, active_filters, active_domains, target_grain, turn_index,
-   last_sql=request.existing_code or previous.last_sql)` in a 256-entry LRU (`MaxSessionContexts`, `:54`).
+   last_sql=request.existing_code or previous.last_sql)` in a 256-entry LRU (`MaxSessionContexts`, `:55`), with
+   `target_grain=<carried grain>` and `coref.target_grain = <carried grain>`, where the carried grain is
+   `previous.target_grain` unless a full reset (`detect_reset`, e.g. "start over") drops it — a bare filter clear
+   ("for all products") keeps it. This turn only *carries* the grain; the accepted statement's `GROUP BY` is what
+   sets it, in `record_generation_outcome` below.
 
-`record_generation_outcome(context, sql, target_grain=None, store=None)` (`:339-358`) re-parses the filters out of the
-**generated artifact** and merges them forward — in script mode that artifact is the materialized *script*, so
+`record_generation_outcome(context, sql, store=None)` (`:376-400`) re-parses the filters out of the
+**generated artifact** and merges them forward, and derives `target_grain` from that same artifact with
+`extract_grain_from_sql(sql)` (the *last* `GROUP BY`'s projection, trimmed at `HAVING`/`ORDER BY`/`LIMIT`/`;`,
+`""` when absent or longer than `MaxGrainLength = 200`, in which case the stored grain is left as it was) —
+in script mode that artifact is the materialized *script*, so
 `extract_filters_from_sql` runs over Python/R/SAS source text (the `_PREDICATE` regex will still find literal predicates
 inside the embedded `SELECT`, but `_ALIAS_TABLE` may also latch onto unrelated `from …` text). This is intentional in
 the port and must be preserved (it is what makes filter inheritance work for `/generate-python` too).
@@ -15784,6 +16343,29 @@ immediately for SQL-shaped text or when `extract_qualified_object_names(text, 1)
 `_valid_rewrite` rejects empty/identical rewrites, `len > 400`, or `len < max(8, int(len(original) * 0.5))`.
 `_deterministic_rewrite` appends `" for A and B"` (dropping a trailing `.`/`?`/`!`) built from
 `ActiveFilter.phrase()` for filters whose value-token is not already present in the query.
+
+#### 12.11.5 The shared query vocabulary (`app/utils/query_vocabulary.py`)
+
+The vocabulary helpers used by routing, prompt building and name matching live in one module,
+`app/utils/query_vocabulary.py`; `semantic_compiler.py` imports `closest_name` from it and defines none of
+them itself. Three normalizations coexist and are **not** interchangeable:
+
+| Helper | Role |
+|---|---|
+| `question_tokens(query) -> list[str]` | running text → comparison tokens: lowercased, stop words and tokens of ≤ 2 chars dropped (except `get`), camel case **not** split |
+| `tokenize(name) -> list[str]` | identifier → tokens: schema path dropped, quoting stripped, `_` and camel humps become boundaries, tokens < 3 chars dropped |
+| `hashing.normalize_question(text) -> str` | whitespace-collapsed lowercase **string key** (§12.15.1) — a key for exact lookups, not a token list |
+
+`STOP_WORDS` is the single stop-word list for the application — `session_context.py`'s
+`_REPLACEMENT_STOPWORDS`, `tool_function_invoker`, `schema_scan_service`, `skills_service` and
+`generation_service` all use this one frozenset (the last keeps a local `| {'top','best','most'}` extension
+for table-name search), so the per-module sets are gone. `STRUCTURAL_TOKENS` is the separate list of shape
+words (`count`, `total`, `name`, `date`, …): they still match the model's vocabulary, but `is_significant`
+keeps them from creating a match on their own. `can_answer(model, extracted_columns, question_tokens)` uses
+both to decide whether the active semantic model shares any vocabulary with the question;
+`build_question_tokens(tokens, entities)` adds entity phrases to the token list; `model_items` /
+`model_item_name` read a model's `measures`/`dimensions` whether the model is a dict or an object (this is
+what `_first_model_name` wraps for the semantic worked example, §8.4).
 
 ---
 
@@ -15868,7 +16450,7 @@ pipeline.
 | `FENCE_SQL` | 18 | `` ```(?:sql\|tsql\|smq)?\s*([\s\S]*?)``` ``, re.I | fence stripping for LLM output | `strip_markdown_fences` → `extract_sql_body` |
 | `OBJECT_NAME` | 20-22 | `(?:\[(?P<schema1>[^\]]+)\]\|(?P<schema2>\w+))\.(?:\[(?P<object1>[^\]]+)\]\|(?P<object2>\w+))` | schema-qualified names in free text | `extract_qualified_object_names` → `preprocessing.py:76`, `coreference.py:89` |
 | `BARE_OBJECT` | 24 | `\b(?:from\|join\|into\|update\|table)\s+\[?([A-Za-z_][\w]*)\]?`, re.I | bare object capture | **no callers** (kept in the catalogue) |
-| `SENTINEL_TABLE` | 26 | `TABLE_VALIDATION_ERROR[:\s]+([^\n;]+)`, re.I | recovery sentinel | `parse_validation_sentinels` → `attempts.py:282` |
+| `SENTINEL_TABLE` | 26 | `TABLE_VALIDATION_ERROR[:\s]+([^\n;]+)`, re.I | recovery sentinel | `parse_validation_sentinels` → `attempts.py:456` |
 | `SENTINEL_COLUMN` | 27 | `COLUMN_VALIDATION_ERROR[:\s]+([^\n;]+)`, re.I | recovery sentinel | same |
 | `COMPLEX_KEYWORDS` | 29-39 | tuple: `join`, `group by`, `having`, `union`, `except`, `intersect`, `compare`, `versus`, ` vs ` | complexity tiering | `complexity_tier` → `discovery_engine.py:78`, `router.py:62` |
 | `STRONG_DB_WORDS` | 41-54 | tuple: `select`,`insert`,`update`,`delete`,`merge`,`from`,`where`,`table`,`view`,`database`,`query`,`sql` | DB vocabulary | **no callers** (kept in the catalogue) |
@@ -15968,7 +16550,7 @@ def normalize_pinned_function_calls(sql, function_names=None) -> str:      # :37
 | `normalize_qualifiers` | nowhere (defined; no callers) |
 | `normalize_pinned_function_calls` | nowhere (defined; no callers) |
 
-`quote_qualified` is also reachable from the HTTP surface through `admin_semantic.py:52`
+`quote_qualified` is also reachable from the HTTP surface through `admin_semantic.py:56`
 (`SemanticCompiler().compile(smq, model, payload.get("dbms") or "SQL Server")`).
 
 **Not applied** to: the script materialization templates (§12.5 — always SQL Server ODBC placeholders), the embedded-SQL
@@ -16000,13 +16582,26 @@ def as_text_token(value: Any) -> str:                                       # :1
         return ""
     return str(value).strip()
 
-def normalize_question(text: str) -> str:                                   # :30-32
+def normalize_question(text: str) -> str:                                   # :34-36
     return re.sub(r"\s+", " ", (text or "").strip().lower())
 
-def question_lookup_key(text: str) -> str:                                  # :35-36
+def question_lookup_key(text: str) -> str:                                  # :39-40
     return normalize_question(text)
 
-def discovery_cache_key(entities, complexity, top_k, extracted_columns=None) -> str:   # :39-50
+_RANKING_COUNT = re.compile(r"\b(top|bottom|last)\s+\d+\b")                 # :30
+_OTHER_LIMIT   = re.compile(r"\b(?:limit|first)\s+\d+\b")                   # :31
+
+def kb_similarity_key(text: str) -> str:                                    # :43-54
+    stripped = _RANKING_COUNT.sub(r"\1", normalize_question(text))          # "top 10" -> "top"
+    stripped = _OTHER_LIMIT.sub(" ", stripped)                              # "limit 20" -> gone
+    return re.sub(r"\s+", " ", stripped).strip()
+
+def kb_match_drops_limit(query: str, stored_question: str) -> bool:         # :57-61
+    if question_lookup_key(query) == question_lookup_key(stored_question):
+        return False
+    return kb_similarity_key(query) == kb_similarity_key(stored_question)
+
+def discovery_cache_key(entities, complexity, top_k, extracted_columns=None) -> str:   # :64-75
     entity_part = ",".join(sorted(t.lower() for t in (as_text_token(e) for e in entities) if t))
     key = f"{entity_part}|{complexity}|{top_k}"
     if extracted_columns:
@@ -16014,13 +16609,16 @@ def discovery_cache_key(entities, complexity, top_k, extracted_columns=None) -> 
         key = f"{key}|cols:{sha256_text(cols)}"
     return key
 
-def query_analysis_cache_key(combined_query, existing_code) -> str:         # :53-57
+def query_analysis_cache_key(combined_query, existing_code) -> str:         # :78-82
     raw = f"{(combined_query or '').strip()}|{(existing_code or '').strip()}"
     return sha256_text(raw) if len(raw) > 512 else raw
 ```
 
 Normalization before hashing: for `question_lookup_key` it is whitespace-collapse + lower (so
 `"  Hello   World "` and `"hello world"` collide — asserted in `tests/unit/test_utils_and_routing.py:22-23`); for
+`kb_similarity_key` it is that same key with the limit tokens normalized first — `top`/`bottom`/`last` keep
+their keyword while the count is dropped, `limit`/`first` are removed with their count, and a word with no
+number (`last month`) is left alone; for
 `discovery_cache_key` it is per-token `as_text_token(...).lower()` + `sorted()` + `,`-join (order-insensitive); for
 `query_analysis_cache_key` it is a plain strip of both parts, with sha256 applied only above 512 characters.
 
@@ -16028,12 +16626,14 @@ Every use:
 
 | Use | Call site |
 |---|---|
-| Discovery result cache key (`_discovery_cache`, max 256 entries) | `discovery_engine.py:155-157`, `_remember` `:332-336` |
-| Query-analysis (LLM analysis) cache key | `discovery_engine.py:75` |
-| Few-shot vector lookup: comparing stored question to the incoming one | `services/fewshot_vector_service.py:99,104` |
-| Vector/precomputed lookup: same | `services/vector_search_service.py:93,99` |
+| Discovery result cache key (`_discovery_cache`, max 256 entries) | `discovery_engine.py:163-165`, `_remember` `:395-403` |
+| Query-analysis (LLM analysis) cache key | `discovery_engine.py:76` |
+| Few-shot exact lookup: comparing stored question to the incoming one (limit-normalized) | `services/fewshot_vector_service.py:99,104` |
+| Few-shot vector search: the embedded query is the limit-normalized key | `services/fewshot_vector_service.py:116` |
+| Limit gate: a stored question that matches only without its limit token is routed to `force_kb_example` instead of being replayed | `builtin_sql_generator.py:187` (`kb_match_drops_limit`) |
+| Vector/precomputed lookup: same (plain key, no limit normalization) | `services/vector_search_service.py:93,99` |
 | Embedding-cache key (`embedding_cache.text_hash`, L1 + L2) | `stores/embeddings.py:64,103` — `sha256_text(f"{model_name}|{text}")` |
-| Entity/column token coercion for cache keys and analysis | `discovery_engine.py:41,103` |
+| Entity/column token coercion for cache keys and analysis | `discovery_engine.py:42,111` |
 
 #### 12.15.2 Per-language structural hashes (hallucination / loop detection)
 
@@ -16051,7 +16651,7 @@ All four end in `hashlib.sha256(text.encode("utf-8")).hexdigest()`. Consequences
 * `tests/unit/test_python_normalization.py` / `test_r_normalization.py` never assert the hash directly; only
   `tests/unit/test_utils_and_routing.py:32-35` asserts the SQL one (comments + whitespace insensitive).
 * The digest list (`hash_history`) is per attempt loop; the failure path uses
-  `HallucinationExitThreshold = 2` / `HallucinationExitThresholdWithBreaker = 1` (`attempts.py:299-323`).
+  `HallucinationExitThreshold = 2` / `HallucinationExitThresholdWithBreaker = 1` (`attempts.py:479-488`).
 
 ---
 
@@ -16080,7 +16680,7 @@ def mask_pii(text: str) -> str:
 | US/NA phone | `[PHONE]` | optional `+1`, optional parens; area+exchange+line |
 | card-like digit runs | `[CARD]` | 13–19 digits with optional spaces/dashes; greedy-ish, so a long numeric ID is masked too |
 
-Applied exactly once, on intake (`preprocessing.build_agent_request`, `:50-69`):
+Applied exactly once, on intake (`preprocessing.build_agent_request`, `preprocessing.py:50-51`):
 
 ```python
 masked = mask_pii(http.query or "")
@@ -16140,7 +16740,7 @@ per call; `weight` comes from the `weights` dict, defaulting to **1.0** for any 
 
 **Tie-breaking:** there is no explicit secondary key. Python's `sorted` is stable, so equal fused scores keep the
 insertion order of the `objects` dict, which is the order in which lists were iterated
-(`ranked_lists` insertion order — in `discovery_engine.py:211-220` that is `schema_vector`, `value_index`, `few_shot`,
+(`ranked_lists` insertion order — in `discovery_engine.py:219-228` that is `schema_vector`, `value_index`, `few_shot`,
 `data_group`, `bm25`) and, within a list, ascending rank. Reproduce that list order exactly or equal-score rankings
 will swap.
 
@@ -16260,7 +16860,7 @@ The module also imports `AnalysisContext` from `app.models.schemas` (`:12`) with
 | 8 | `wrap_sql_as_python` | fence flip on `"""`, 8-space indent, `final_result_df`, `engine.raw_connection()` + `try/finally` | KB/precomputed fast paths return code the Python engine cannot execute |
 | 9 | `wrap_sql_as_r` | `r"( … )"` raw string, 4-space indent, `tryCatch(... finally = dbDisconnect(con))` | R script fails to parse (unterminated string) or leaks connections |
 | 10 | `wrap_sql_as_sas` | `work.result`, `CONNECT TO ODBC AS dbcon`, `NOPROMPT="Driver={SQL Server};…"`, trailing `PROC PRINT` | SAS fast-path answers become unusable |
-| 11 | `structural_python_hash` / `_r` / `_sas` | comment stripping → SQL extraction → per-statement `normalize_for_hash`, else whitespace-collapsed lower | Loop breaker fires on unrelated edits or never fires on identical SQL |
+| 11 | `structural_python_hash` / `structural_r_hash` / `structural_sas_hash` | comment stripping → SQL extraction → per-statement `normalize_for_hash`, else whitespace-collapsed lower | Loop breaker fires on unrelated edits or never fires on identical SQL |
 | 12 | Interceptor regexes + strip order | Python triple→single→double→comments; R raw→double→single→comments; SAS block→star→double→single; Query block→line→strings | A blocked op slips through (security regression) or legitimate SQL/Python is rejected |
 | 13 | `parse_validation_sentinels` | `TABLE_VALIDATION_ERROR[:\s]+([^\n;]+)` and `COLUMN_VALIDATION_ERROR[:\s]+([^\n;]+)`, re.I | Recovery expansion stops working; the loop exhausts 5 attempts instead of self-healing |
 | 14 | `rrf_score` + default weights + tie order | `weight/(60+rank+1)`, 0-based rank, `bm25` overridden by `settings.BM25_WEIGHT`, stable sort in list order | Different table sets ranked into the prompt → different SQL for the same question |
@@ -16291,7 +16891,7 @@ The module also imports `AnalysisContext` from `app.models.schemas` (`:12`) with
       SQL-shaped-string fallback, with a `_TRIPLE_SQL` regex fallback on `SyntaxError`).
 * [ ] `extract_sql_from_r` scans string and raw-string literals; `extract_sql_from_sas` prefers balanced
       `CONNECTION TO`/`EXECUTE` pass-through bodies and falls back to quoted literals.
-* [ ] `qualify_sql_in_python` / `_r` / `_sas` schema-qualify only SQL-shaped literals using `discovery.objects`
+* [ ] `qualify_sql_in_python` / `qualify_sql_in_r` / `qualify_sql_in_sas` schema-qualify only SQL-shaped literals using `discovery.objects`
       (`[(schema_name, object_name), …]`), with Python's count-1 literal replacement quirk preserved.
 * [ ] `wrap_sql_as_python` / `wrap_sql_as_r` / `wrap_sql_as_sas` reproduce the templates byte-for-byte (indent widths
       8/4/8, `"""`↔`'''` flip, `r"( … )"`, `work.result`), and short-circuit when the input already looks like code.
@@ -16313,9 +16913,13 @@ The module also imports `AnalysisContext` from `app.models.schemas` (`:12`) with
       currently have no callers (`BARE_OBJECT`, `STRONG_DB_WORDS`).
 * [ ] `dialect.py` quoting rules match the mapping table; the two unused helpers (`normalize_qualifiers` no-op,
       `normalize_pinned_function_calls`) are implemented for API completeness.
-* [ ] `hashing.py` keys (`normalize_question`, `question_lookup_key`, `discovery_cache_key`,
+* [ ] `hashing.py` keys (`normalize_question`, `question_lookup_key`, `kb_similarity_key`,
+      `kb_match_drops_limit`, `discovery_cache_key`,
       `query_analysis_cache_key`, `as_text_token`, `sha256_text`) are byte-compatible, including the `|cols:` suffix and
       the 512-character sha256 cut-over.
+* [ ] `query_vocabulary.py` exposes the shared `STOP_WORDS` / `STRUCTURAL_TOKENS` sets and the tokenizer,
+      matcher and model-name helpers (§12.11.5); `semantic_compiler.py` imports `closest_name` from it rather
+      than defining its own.
 * [ ] `rrf_score`/`rrf_merge`/`merge_and_dedup` use `k=60.0`, the 0-based rank, the default weight table, and stable
       tie order over the caller's list order.
 * [ ] `mask_pii` runs exactly once, on `request.query` only, before coreference/routing.
@@ -16633,42 +17237,41 @@ Everything in this section has caused, or would cause, a silent parity failure. 
 | I5 | Fast paths (`kb_exact`, `precomputed_exact`, KB-vector exact) are **skipped** when the turn is a refinement/drill-down and active session filters exist | `builtin_sql_generator.py:183-231` | §05 |
 | I6 | An unresolved pin is terminal with `error_category = priority_validation_failed` and `attempts = 0`; no generation runs | `builtin_sql_generator.py:117-166` | §05 |
 | I7 | Required/priority objects and pin objects are never dropped by context caps or score floors | hydrator + cap logic | §06 |
-| I8 | Semantic mode is force-disabled for script targets (`python`/`r`/`sas`) | `attempts.py:101-102` | §09 |
+| I8 | Semantic mode is force-disabled for script targets (`python`/`r`/`sas`) | `attempts.py:135-137` | §09 |
 | I9 | Every store read and write is partitioned by `source_id`; no query may span sources | `services/stores/*` | §04, §11 |
 | I10 | LLM request shaping is centralised (token-parameter naming, temperature omission, reasoning budget); no call site hardcodes provider-specific parameters | `llm_conventions.py` + the LLM client | §07, §12 |
 | I11 | Safety interception is terminal, not retryable (`error_category = safety`) | `attempts.py:253-279` | §07 |
 | I12 | A missing object that trips the circuit breaker (`MissingObjectBreakThreshold = 2`) terminates with `deterministic_missing_object` | `attempts.py:284-289, 390-395, 567-568` | §07 |
 | I13 | Failure results carry the failure text **as a comment wrapper** in `sql`, never as executable SQL | `app/core/errors.py:40-43, 90-93` | §07 |
 | I14 | The scenario prefix is applied to the discovery branch only for `refinement` / `drill_down` (`refinement/<base>`, `drill_down/<base>`) | `branch_taxonomy.py:82-88` | §06 |
-| I15 | **A reply carrying an SMQ payload is never executed as SQL**, whatever the raw-SQL fallback says. The payload-class guard is evaluated *before* the fallback policy; a payload that cannot be extracted or compiled is a semantic retry, and an exhausted semantic budget terminates as `semantic_compilation` | `attempts.py:241-322, 496-508`; `semantic_smq.py:203` | §9.10 |
-| I16 | `GROUP BY` is emitted only when a resolved measure actually aggregates; a dimensions-only request is returned at its natural grain | `semantic_compiler.py:220` | §9.10.4 |
-| I17 | Compiled semantic SQL skips the client-side object-scope rewrite, so the server error survives | `attempts.py:600-631`; `sql_validator.py:26-34` | §9.10.5 |
+| I15 | **A reply carrying an SMQ payload is never executed as SQL**, whatever the raw-SQL fallback says. The payload-class guard is evaluated *before* the fallback policy; a payload that cannot be extracted or compiled is a semantic retry, and an exhausted semantic budget terminates as `semantic_compilation` | `attempts.py:315-418, 592-610`; `semantic_smq.py:225` | §9.10 |
+| I16 | `GROUP BY` is emitted only when a resolved measure actually aggregates; a dimensions-only request is returned at its natural grain | `semantic_compiler.py:244-245` | §9.10.4 |
+| I17 | Compiled semantic SQL skips the client-side object-scope rewrite, so the server error survives | `attempts.py:417,511-513`; `sql_validator.py:34-38` | §9.10.5 |
 
 ### 15.2 Known quirks in the reference implementation (decide deliberately, do not copy blindly)
 
 | Quirk | Evidence | Guidance |
 |---|---|---|
 | `HallucinationExitThresholdWithBreaker = 1` is effectively **unreachable**: the only assignments to `circuit_breaker = True` are immediately followed by `return _fail(...)`, so the "with breaker" threshold branch can never observe it | `attempts.py:287-289, 393-395, 302-303` | Implement the *documented intent* (exit after 1 repeat if a missing-object breaker has already fired earlier in the loop) **or** mirror the code; either way, document the choice. Observable behaviour is currently identical because both paths return. |
-| The attempt loop receives a **no-op** status callback (`lambda stage, msg, **kw: None`), so `attempt` / `critic` / `db_validation` / `recovery` frames are not emitted from inside the loop; the orchestrator emits only its opening statuses plus one closing `Completed in N attempt(s)` | `builtin_sql_generator.py:299, 307`; `attempts.py:145, 331, 342, 361, 367` | Either wire a real emitter (better UX: mirrors the documented stage vocabulary) or accept the reduced stream. The stage vocabulary exists for the client — see §03 for the wire contract. |
 | `app/services/admin_service_fixed.py` has **no importers** (dead module, superseded by `admin_service.py`) | repository-wide grep | Do not port it. |
 | The Python `llm_conventions.py` implements a *reduced* rule set compared with the desktop engine (reasoning families → `max_completion_tokens` + drop temperature; Moonshot/Kimi → drop temperature; DeepSeek → drop `thinking`) | `app/services/llm_conventions.py:8-25` | Implement at least these rules; extend for other providers only additively (§07 documents the call-site contract). |
 | `SqlValidator` scope checking uses the discovered allow-list; generated SQL referencing objects outside it fails as out of scope even if the object exists | `sql_validator.py` (see §07) | Keep it: it prevents "creative" SQL over objects the retrieval never grounded. |
 | **`AgentContext.dbms_type` is never populated** — it stays at its default `"SQL Server"` for every request, so prompts, the validator and the SMQ compiler always receive SQL Server even though multi-dialect plumbing exists (`utils/dialect.py`, per-dialect validator paths) | `models/pipeline.py:145`; no assignment anywhere in `app/` (grep `dbms_type`) | Decide explicitly: either keep the SQL-Server-only behaviour of the reference, or add a documented configuration/detection point that sets `dbms_type` before the attempt loop. Adding it changes prompt text and validator behaviour — treat it as a product change, not a fix. |
 | **The default LLM client path silently drops request parameters.** `get_llm_service()` returns `LiteLLMService`, which has no `.client` attribute, so `LlmClient.complete` takes the `svc.chat_completion(...)` fallback branch: `max_tokens`, `presence_penalty` and the configured model are never forwarded, and token usage stays `{0,0,0}` (usage is accumulated only on the SDK branch) | `services/llm_service.py:1654-1655` (factory), `:820` (class; no `self.client`), `services/llm_client.py:40-61` | Do **not** reproduce this. A rebuilt client must forward the shaped parameters (including the hallucination-loop `presence_penalty=0.4`) and record usage on every path. Treat parity of *behaviour* (what the model receives) as the goal, not parity of the bug. |
-| **A missing `X-API-Key` on generation routes returns HTTP 422**, not 401, because the dependency declares `Header(...)` (required); an invalid key returns 401 with `"Invalid or missing API key"`. Conversation routes use a different dependency and return 401 with different text | `core/auth.py:88` (`verify_api_key`), `:31-59` (`get_current_user`) | Decide the contract and test it explicitly; clients that special-case 401 for missing keys will mis-handle the reference behaviour. |
+| **A missing `X-API-Key` on generation routes returns HTTP 422**, not 401, because the dependency declares `Header(...)` (required); an invalid key returns 401 with `"Invalid or missing API key"`. Conversation routes use a different dependency and return 401 with different text | `core/auth.py:87` (`verify_api_key`), `:30-61` (`get_current_user`) | Decide the contract and test it explicitly; clients that special-case 401 for missing keys will mis-handle the reference behaviour. |
 | **Activity logging never records tokens**: the endpoint reads `final_result.usage.total_tokens`, but the response model exposes `token_usage` | `api/endpoints/generation.py:99` | Implement the correct field access in the rebuild (or the analytics will show zero tokens forever). |
 | **No per-user authorization of `source_id`** exists: any authenticated caller may pass any registered `source_id` | `api/endpoints/generation.py:61`, `services/source_resolver.py`, `services/data_source_registry_service.py` (no owner column) | Multi-tenant isolation of *data* is implemented in the stores; *access control* is not. If the rebuild is multi-tenant, add ownership checks — and document the deviation, since the reference does not enforce it. |
 | `POST /api/v1/summarize-results` has **no auth dependency** | `api/endpoints/summarize.py:18-19` | Add auth in the rebuild unless you intentionally keep it public. |
 | `execute_python_endpoint`'s `finally` block evaluates `if result`, but `result` is only assigned later **inside** the `try`; an exception before that assignment raises `UnboundLocalError` and masks the real error | `api/endpoints/generation.py:300` (try), `:332` (assignment), `:473-486` (finally) | Initialise the accumulator before the `try` in the rebuild. |
 | **Auto-extracted objects never become pins**: `preprocess` stores them in `schema_metadata.resolved_object_names`, which nothing reads, and does not append them to `request.database_objects`; `resolution_notes` is likewise write-only (only de-duplicated by the router) | `preprocessing.py:75-79,92`; `router.py:87-88`; no reader (grep) | Decide deliberately: either keep extraction as informational metadata, or promote it into pins so the objects are validated and anchored. Promoting them changes the pin-validation path (§05 Stage B) and therefore failure behaviour. |
-| **Session state is process-local and unbounded in time**: a module-level LRU (256 entries) keyed `session:{source_id}:{session_id}`, with `updated_at` recorded but never used for expiry; `active_domains` and `target_grain` are never populated by the orchestrator | `session_context.py:89-123, 272-350` | With more than one worker/replica, turns of one chat section may land on different processes and lose filter inheritance. The rebuild must choose a shared store (Redis/Postgres) or pin sessions to a worker — and must document the choice, because the reference has neither. |
+| **Session state is process-local and unbounded in time**: a module-level LRU (256 entries) keyed `session:{source_id}:{session_id}`, with `updated_at` recorded but never used for expiry; `active_domains` is never populated by the orchestrator (`target_grain` is, by `record_generation_outcome` from the accepted SQL's `GROUP BY`) | `session_context.py:87-123, 301-400` | With more than one worker/replica, turns of one chat section may land on different processes and lose filter inheritance. The rebuild must choose a shared store (Redis/Postgres) or pin sessions to a worker — and must document the choice, because the reference has neither. |
 | **The no-discovery optimizer prompt omits the session-filter blocks**: `build_optimization_system_prompt` carries only the scenario rules, so `ACTIVE SESSION FILTERS` / `SCOPE GUARD` are absent even when filters are inherited | `prompts.py` (optimization builders) | If filter preservation matters on optimization turns in the rebuild, add the blocks deliberately — it is a prompt change, so snapshot tests must be regenerated from the new contract. |
 | The precomputed **exact** lookup does not skip rows with an empty `sql_query` (the few-shot exact lookup does skip empty `sql`) | `stores/precomputed_store.py` vs `fewshot_vector_service.py` | Guard against empty stored SQL in the rebuild, or accept that such a row yields an empty answer. |
-| **The no-discovery provided-code path runs no safety interceptor**: `_generate_from_provided_sql` validates the supplied/rewritten code against the database but never calls `QueryInterceptor` / `PythonInterceptor` / `RInterceptor` / `SASInterceptor` | `core/orchestrator/builtin_sql_generator.py:361-512` (no interceptor import or call) | The rebuild must keep this path for the `optimization` scenario. Decide explicitly whether to add the interceptor; adding it is a behaviour change for optimization turns and must be documented. |
+| **The no-discovery provided-code path runs no safety interceptor**: `_generate_from_provided_sql` validates the supplied/rewritten code against the database but never calls `QueryInterceptor` / `PythonInterceptor` / `RInterceptor` / `SASInterceptor` | `core/orchestrator/builtin_sql_generator.py:433-584` (no interceptor import or call) | The rebuild must keep this path for the `optimization` scenario. Decide explicitly whether to add the interceptor; adding it is a behaviour change for optimization turns and must be documented. |
 | **"Syntax checking" for R and SAS is not a parser**: R is comment-stripped and delimiter-balanced only; SAS is comment-count plus `()`/`[]` balance only. There is also **no SQL statement splitter** anywhere, despite a validator comment implying a "split on GO" step | `utils/r_normalization.py`, `utils/sas_normalization.py`, `validation_service.py:44-49` (comment only) | Do not assume statement-level validation for R/SAS; if the rebuild adds a real parser/splitter, validation outcomes change relative to the reference. |
 | **Materialization templates are DBMS-independent**: the Python/R/SAS wrappers always emit SQL Server ODBC placeholders and `dbo.` qualification, while `dialect.py` is DBMS-aware | `utils/python_normalization.py`, `utils/r_normalization.py`, `utils/sas_normalization.py` (`wrap_sql_as_*`) | Accept the limitation, or parameterise the templates by dialect as a documented product change. |
 | **Retrieval caches do not survive a turn**: `DiscoveryEngine` is constructed per request, so the 256-entry discovery cache and 100-entry analysis cache only de-duplicate work *within* one request, and `clear_analysis_cache()` is a no-op | `core/orchestrator/builtin_sql_generator.py:168-169`; `discovery_engine.py` (instance-level caches) | If the rebuild wants cross-turn caching, it must hoist the engine/caches to a longer-lived scope — and then must define invalidation. Do not assume the reference has it. |
-| **`DiscoveryResult.allowed_schemas` is declared but never populated**; the real object allow-list is `[f"{schema}.{object}" for o in discovery.objects]`, enforced by the validator's out-of-scope check (`TABLE_VALIDATION_ERROR`) | `models/pipeline.py:265`; `attempts.py:325`; `sql_validator.py:59-70` | Build the allow-list from the discovered objects, not from `allowed_schemas`. |
+| **`DiscoveryResult.allowed_schemas` is declared but never populated**; the real object allow-list is `_allowed_objects(discovery, stores)` — discovered objects plus the catalog-confirmed objects of injected examples — enforced by the validator's out-of-scope check (`TABLE_VALIDATION_ERROR`) | `models/pipeline.py:269`; `attempts.py:504`; `sql_validator.py:67-78` | Build the allow-list from the discovered objects plus catalog-confirmed example objects, not from `allowed_schemas`. |
 | **`kb_direct` and `table_override` branches ignore pins and are uncapped**; only the `dual_prong` merge applies the object cap and pin promotion | `discovery_engine.py` (branch exits before the merge/cap) | If pins must always be honoured, that is a deliberate behaviour change — the reference lets a strong KB hit or an explicit override win outright. |
 | **Hydration is asymmetric**: objects pruned for budget are dropped from `schema_context` but retained in `supplementary_objects` and `schema_context_for_validation` | `services/sql_context_hydrator.py:73-82` | Keep the asymmetry (the critic may see more objects than the generator) or document the difference; `set_value_mappings()` is stored but never read by the hydrator — the prompt builder renders mappings itself. |
 | `_merge_column_hits` never overwrites an existing object's `score`/`vector_score`, so a value-index seed (0.80 → 0.95 after the boost) stays even when a column hit scored higher | `discovery_engine.py:299-314` | Preserve or explicitly change; it decides which object ranks first when both signals fire. |
@@ -16740,7 +17343,7 @@ Also verified doc drift (fix the docs, not the code): the execute timeout is 60 
 ### Implementation checklist
 
 - [ ] Encode I1–I14 as comments at the enforcement points and as tests where observable.
-- [ ] Decide and document the two reference quirks in §15.2 (unreachable breaker threshold; no-op attempt emitter).
+- [ ] Decide and document the reference quirk in §15.2 (the unreachable breaker threshold).
 - [ ] Add a constants test asserting every §04 value.
 - [ ] Add a two-source isolation test.
 - [ ] Add a "critic parse failure defaults to pass" test.
@@ -16874,7 +17477,8 @@ Use this to navigate the reference implementation while building. "Section" is w
 | `app/utils/regexes.py` | Named regex catalogue + sentinel parser + heuristics | §12 |
 | `app/utils/sanitization.py` | Output/input sanitisation | §12 |
 | `app/utils/dialect.py` | Dialect rules (quoting/literals/paging) | §12 |
-| `app/utils/hashing.py` | Cache/dedup hashing | §12 |
+| `app/utils/hashing.py` | Cache/dedup hashing + question keys (exact and limit-normalized) | §12 |
+| `app/utils/query_vocabulary.py` | Shared stop words, tokenizers, name matching and model-name helpers | §12 |
 | `app/utils/pii.py` | PII masking patterns | §12 |
 | `app/utils/rrf.py` | Reciprocal Rank Fusion + merge/dedup | §12 |
 | `app/utils/sse.py` | SSE envelope helpers | §03 |

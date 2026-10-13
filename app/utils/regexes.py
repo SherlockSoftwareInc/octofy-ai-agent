@@ -83,6 +83,67 @@ def strip_markdown_fences(text: str) -> str:
     return text.strip()
 
 
+def _split_outside_brackets(text: str) -> List[str]:
+    parts: List[str] = []
+    buf: List[str] = []
+    depth = 0
+    for ch in text:
+        if ch == "[":
+            depth += 1
+            buf.append(ch)
+        elif ch == "]":
+            depth = max(0, depth - 1)
+            buf.append(ch)
+        elif ch == "," and depth == 0:
+            parts.append("".join(buf))
+            buf = []
+        else:
+            buf.append(ch)
+    if buf:
+        parts.append("".join(buf))
+    return [part.strip() for part in parts if part.strip()]
+
+
+def _bare_object_name(raw: str) -> str:
+    text = (raw or "").strip()
+    if not text:
+        return ""
+    bracketed = re.findall(r"\[([^\]]+)\]", text)
+    if bracketed:
+        return bracketed[-1].strip()
+    cleaned = text.replace("[", "").replace("]", "").strip()
+    if "." in cleaned:
+        schema, _, rest = cleaned.partition(".")
+        if schema and " " not in schema:
+            return rest.strip()
+    return cleaned
+
+
+def parse_table_validation_names(text: str) -> List[str]:
+    """Object names from a table-validation error or a comma-separated ref list.
+
+    Keeps multi-word names: ``Sales by Category``, ``[dbo].[Sales by Category]``,
+    and ``dbo.Sales by Category``.
+    """
+    raw = (text or "").strip()
+    if not raw:
+        return []
+    match = re.search(r"TABLE_VALIDATION_ERROR[:\s]+([^\n;]+)", raw, re.IGNORECASE)
+    payload = match.group(1).strip() if match else raw
+    names: List[str] = []
+    seen = set()
+    for part in _split_outside_brackets(payload):
+        name = _bare_object_name(part)
+        if not name:
+            continue
+        key = name.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        names.append(name)
+    return names
+
+
 def parse_validation_sentinels(text: str) -> Tuple[Optional[str], Optional[str]]:
     """Return (table_error, column_error) extracted from LLM/validator output."""
     table = None

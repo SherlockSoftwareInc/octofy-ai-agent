@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import logging
 import time
 from typing import Any, Dict, Generator, Optional, Union
@@ -33,6 +32,7 @@ from app.services.sql_context_hydrator import SqlContextHydrator
 from app.services.sql_validator import SqlValidator
 from app.services.stores.bundle import SourceStores, build_source_stores
 from app.services.stores.skills_folder import markdown_lookup_for_objects
+from app.utils.hashing import kb_match_drops_limit
 from app.utils.rrf import merge_and_dedup
 from app.utils.sql_normalization import extract_sql_object_refs
 from app.utils.python_normalization import (
@@ -183,6 +183,12 @@ def generate_sql_builtin(
     preserve_filters = context.is_refinement and bool(context.active_filters)
     effective_query = context.effective_query
     kb_exact = None if preserve_filters else engine.kb_exact(effective_query)
+    forced_kb = None
+    if kb_exact and kb_match_drops_limit(effective_query, kb_exact.question):
+        # The stored question matches once "top 10" / "limit 20" is ignored.
+        # Keep the example for schema hydration and let generation apply the limit.
+        forced_kb = kb_exact
+        kb_exact = None
     if kb_exact:
         result = BuiltInGenerateResult(
             success=True,
@@ -204,14 +210,18 @@ def generate_sql_builtin(
         sql = pre_exact.sql
         smq_failure = ""
         if semantic_mode and pre_exact.smq_query:
-            from app.models.pipeline import SmqPayload
             from app.services.semantic_compiler import SemanticCompiler
+            from app.services.semantic_smq import SmqShapeError, parse_smq
 
             # The stored answer carries an SMQ, so the semantic layer compiles it. When that
             # is impossible the stored SQL stands in -- but only because it is real SQL the
             # user accepted. A stored payload that is not SQL is never executed.
+            # parse_smq is the same entry point as the live path, so an object-shaped
+            # metric list compiles instead of being treated as unusable JSON.
             try:
-                payload = SmqPayload.model_validate(json.loads(pre_exact.smq_query))
+                payload = parse_smq(pre_exact.smq_query)
+                if payload is None:
+                    raise SmqShapeError("stored SMQ payload is not an SMQ")
                 model = stores.semantic.get_active_model()
                 if model is None:
                     smq_failure = "no active semantic model for the stored SMQ"
@@ -314,6 +324,8 @@ def generate_sql_builtin(
         discovery.branch = scenario_branch(discovery.branch, context.generation_mode)
     discovery.active_groups = groups
     discovery.query_analysis = analysis
+    if forced_kb:
+        engine.force_kb_example(discovery, forced_kb)
     hydrator = (
         SqlContextHydrator(cap=RefinementPromptContextCap)
         if context.is_refinement

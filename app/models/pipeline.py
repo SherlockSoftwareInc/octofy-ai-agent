@@ -96,6 +96,7 @@ class ConversationContextResult(BaseModel):
     notes: List[str] = Field(default_factory=list)
     session_id: Optional[str] = None
     source: str = "deterministic"
+    target_grain: Optional[str] = None
 
     def filter_state_text(self) -> str:
         if not self.active_filters:
@@ -148,6 +149,9 @@ class AgentContext(BaseModel):
     coreference_notes: List[str] = Field(default_factory=list)
     active_filters: List[ActiveFilter] = Field(default_factory=list)
     filter_state_text: str = ""
+    target_grain: Optional[str] = None
+    # Set when the semantic availability gate forces physical SQL for this turn.
+    grain_is_advisory: bool = False
 
     @property
     def scenario(self) -> GenerationMode:

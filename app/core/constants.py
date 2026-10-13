@@ -12,6 +12,9 @@ SemanticCompilationTimeoutMs = 5_000
 KbExactMatchThreshold = 0.05
 KbConfidenceThreshold = 0.70
 KbScoreThreshold = 0.35
+# An object named by an injected example is hard-locked, so its score has to beat every
+# ranked candidate (C# KbRequiredObjectScore).
+KbRequiredObjectScore = 1000.0
 
 # Vector / precomputed
 DefaultObjectSearchVectorScoreThreshold = 0.50
@@ -54,6 +57,9 @@ SemanticModelDiscoveryTopK = 3
 HallucinationExitThreshold = 2
 HallucinationExitThresholdWithBreaker = 1
 PresencePenaltyAfterLoop = 0.4
+# Applied only after a semantic retry repeats the previous SMQ payload. A presence
+# penalty alone does not move a provider pinned to a low default temperature.
+SemanticRepeatTemperature = 0.4
 
 # Semantic layer
 SemanticSmqParseRetryOnFailure = True

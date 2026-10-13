@@ -10,6 +10,36 @@ from app.core.constants import CatalogCacheTtlSeconds
 _cache: Dict[str, Tuple[float, List[dict]]] = {}
 
 
+def split_object_ref(ref: str) -> Tuple[str, str]:
+    """``(schema, object)`` for a possibly bracket-quoted reference.
+
+    Multi-word object names survive: ``[dbo].[Sales by Category]`` splits into ``dbo``
+    and ``Sales by Category``. A bare name is assumed to be in ``dbo``.
+    """
+    cleaned = (ref or "").replace("[", "").replace("]", "").strip()
+    if "." in cleaned:
+        schema, _, name = cleaned.partition(".")
+        return schema.strip(), name.strip()
+    return "dbo", cleaned
+
+
+def catalog_has_object(catalog, schema_name: str, object_name: str) -> bool:
+    """Whether the catalog can serve this object.
+
+    Fails open when there is no catalog, when it cannot be read, or when it lists
+    nothing: an unreachable or never-built catalog cannot prove an object is missing,
+    and treating that as absence would reject SQL the prompt just authorized.
+    """
+    if catalog is None or not (object_name or "").strip():
+        return True
+    try:
+        if not catalog.list_objects():
+            return True
+        return bool(catalog.object_exists(schema_name, object_name))
+    except Exception:
+        return True
+
+
 class DatabaseCatalog:
     def __init__(self, source_id: str):
         self.source_id = source_id

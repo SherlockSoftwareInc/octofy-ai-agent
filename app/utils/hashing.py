@@ -27,6 +27,10 @@ def as_text_token(value: Any) -> str:
     return str(value).strip()
 
 
+_RANKING_COUNT = re.compile(r"\b(top|bottom|last)\s+\d+\b")
+_OTHER_LIMIT = re.compile(r"\b(?:limit|first)\s+\d+\b")
+
+
 def normalize_question(text: str) -> str:
     collapsed = re.sub(r"\s+", " ", (text or "").strip().lower())
     return collapsed
@@ -34,6 +38,27 @@ def normalize_question(text: str) -> str:
 
 def question_lookup_key(text: str) -> str:
     return normalize_question(text)
+
+
+def kb_similarity_key(text: str) -> str:
+    """Question key for KB lookup.
+
+    ``top 10`` keeps the word ``top`` so ``find top 10 selling products`` matches
+    ``find top selling products``; ``bottom 3`` and ``last 20`` keep their keyword for
+    the same reason. ``limit 20`` and ``first 10`` drop out entirely. Removing the
+    number is what lets a stored answer be found when only the limit differs -- the
+    caller then regenerates rather than replaying the stored SQL.
+    """
+    stripped = _RANKING_COUNT.sub(r"\1", normalize_question(text))
+    stripped = _OTHER_LIMIT.sub(" ", stripped)
+    return re.sub(r"\s+", " ", stripped).strip()
+
+
+def kb_match_drops_limit(query: str, stored_question: str) -> bool:
+    """True when the questions match only after a limit token is removed."""
+    if question_lookup_key(query) == question_lookup_key(stored_question):
+        return False
+    return kb_similarity_key(query) == kb_similarity_key(stored_question)
 
 
 def discovery_cache_key(

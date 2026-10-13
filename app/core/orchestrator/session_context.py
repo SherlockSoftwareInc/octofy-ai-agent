@@ -14,7 +14,7 @@ The state is intentionally small and explicit::
          "value": "'%chocolate%'", "origin_turn": 1}
       ],
       "active_domains": ["Sales Analytics"],
-      "target_grain": "summary_by_product"
+      "target_grain": "p.ProductName"
     }
 
 Lifecycle rules (Phase 2.2):
@@ -41,7 +41,7 @@ from typing import Dict, List, Optional, Sequence, Tuple
 from app.core.branch_taxonomy import GenerationMode
 from app.core.orchestrator.coreference import merge_filters, resolve_coreference
 from app.core.orchestrator.preprocessing import fold_conversation
-from app.core.orchestrator.scenario import classify_scenario, detect_filter_clear
+from app.core.orchestrator.scenario import classify_scenario, detect_filter_clear, detect_reset
 from app.models.pipeline import (
     ActiveFilter,
     AgentContext,
@@ -50,9 +50,13 @@ from app.models.pipeline import (
     ConversationTurn,
     SessionSemanticContext,
 )
+from app.utils.query_vocabulary import STOP_WORDS
 
 MaxSessionContexts = 256
 MaxActiveFilters = 12
+# A carried grain longer than this is not a grain hint any more; the prompt simply
+# omits the line rather than quoting an unreadable fragment.
+MaxGrainLength = 200
 
 _ALIAS_TABLE = re.compile(
     r"\b(?:from|join)\s+((?:\[[^\]]+\]|\w+)(?:\s*\.\s*(?:\[[^\]]+\]|\w+))?)\s*(?:as\s+)?(\w+)?",
@@ -77,7 +81,7 @@ _REPLACEMENT_PATTERNS = [
     re.compile(r"\bfor\s+(?P<value>[A-Za-z][\w\-]*)\s+instead\b", re.IGNORECASE),
 ]
 
-_REPLACEMENT_STOPWORDS = {"all", "every", "the", "a", "an", "me", "them", "this", "that", "now", "instead"}
+_REPLACEMENT_STOPWORDS = STOP_WORDS
 
 
 class SessionContextStore:
@@ -183,6 +187,37 @@ def extract_filters_from_sql(sql: Optional[str], turn_index: int = 1) -> List[Ac
         if len(filters) >= MaxActiveFilters:
             break
     return filters
+
+
+_GROUP_BY_KEYWORD = re.compile(r"\bgroup\s+by\b", re.IGNORECASE)
+_GRAIN_TAIL = re.compile(
+    r"\s*(?P<columns>.+?)(?:\bhaving\b|\border\s+by\b|\blimit\b|;|$)",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def extract_grain_from_sql(sql: Optional[str]) -> str:
+    """The statement's output grain: the projection of its ``GROUP BY``, or ``""``.
+
+    A statement without ``GROUP BY`` is returned at its own natural row-level grain,
+    which is not worth carrying into the next turn, so it yields ``""`` and the session
+    keeps the grain it already had. The columns are kept in source order and qualified
+    exactly as written, because a physical expression is what the next prompt can use.
+
+    The *last* ``GROUP BY`` wins: in ``SELECT ... FROM (SELECT ... GROUP BY x) s GROUP BY y``
+    the outer grouping is the statement's grain, and a subquery's grouping comes first.
+    """
+    text = sql or ""
+    starts = [match.end() for match in _GROUP_BY_KEYWORD.finditer(text)]
+    if not starts:
+        return ""
+    match = _GRAIN_TAIL.match(text[starts[-1] :])
+    if not match:
+        return ""
+    columns = re.sub(r"\s+", " ", match.group("columns")).strip().rstrip(",;").strip()
+    if not columns or len(columns) > MaxGrainLength:
+        return ""
+    return columns
 
 
 # --- Lifecycle rules --------------------------------------------------------
@@ -308,6 +343,13 @@ def prepare_conversation_context(
     coref.filters_cleared = cleared
     coref.replacement_applied = replaced
     coref.session_id = key
+    # A full reset ("start over", "new query") abandons the grain along with the filters.
+    # Carrying it would tell the next turn to keep a breakdown the user just dropped. A bare
+    # filter clear ("for all products") removes a predicate only, so the grain stays.
+    carried_grain = None
+    if previous and not detect_reset(request.query):
+        carried_grain = previous.target_grain
+    coref.target_grain = carried_grain
 
     if key:
         store.put(
@@ -316,7 +358,7 @@ def prepare_conversation_context(
                 source_id=request.source_id,
                 active_filters=coref.active_filters,
                 active_domains=list(previous.active_domains) if previous else [],
-                target_grain=previous.target_grain if previous else None,
+                target_grain=carried_grain,
                 turn_index=turn_index,
                 last_sql=request.existing_code or (previous.last_sql if previous else None),
             )
@@ -331,6 +373,7 @@ def apply_conversation_context(context: AgentContext, result: ConversationContex
     context.coreference_notes = list(result.notes)
     context.active_filters = list(result.active_filters)
     context.filter_state_text = result.filter_state_text()
+    context.target_grain = result.target_grain
     if result.was_rewritten and result.rewritten_query:
         context.combined_query = fold_conversation(result.rewritten_query, context.request.conversation_history)
     return context
@@ -339,10 +382,14 @@ def apply_conversation_context(context: AgentContext, result: ConversationContex
 def record_generation_outcome(
     context: AgentContext,
     sql: Optional[str],
-    target_grain: Optional[str] = None,
     store: Optional[SessionContextStore] = None,
 ) -> None:
-    """Persist what the generated query actually filters on for the next turn."""
+    """Persist what the generated query actually filters on for the next turn.
+
+    The grain is read out of the accepted statement, the same way its filters are: the
+    session then knows the grain the conversation has established, so a follow-up turn
+    can be told what it currently is instead of re-deriving it.
+    """
     store = store or _session_store
     key = context.session_id
     if not key:
@@ -351,8 +398,9 @@ def record_generation_outcome(
     generated = extract_filters_from_sql(sql, current.turn_index) if sql else []
     current.active_filters = merge_filters(current.active_filters, generated)
     current.last_sql = sql or current.last_sql
-    if target_grain:
-        current.target_grain = target_grain
+    grain = extract_grain_from_sql(sql)
+    if grain:
+        current.target_grain = grain
     if context.request.source_id:
         current.source_id = context.request.source_id
     store.put(current)

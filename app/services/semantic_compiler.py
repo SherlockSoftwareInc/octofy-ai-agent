@@ -22,6 +22,7 @@ from typing import Dict, List, Optional, Sequence, Tuple
 from app.core.constants import SemanticCompilationTimeoutMs
 from app.models.pipeline import SemanticDimension, SemanticModel, SmqPayload
 from app.utils.dialect import quote_identifier, quote_qualified, quote_string_literal
+from app.utils.query_vocabulary import closest_name
 
 # Aggregate functions whose presence makes a projection grouped. Delimiter-aware:
 # AVG( in a measure is an aggregate, but a column named avg_cost is not.
@@ -59,6 +60,15 @@ _SQL_TRAILING_WORDS = {
     "on", "as", "where", "and", "or", "group", "order", "having", "join", "inner",
     "left", "right", "full", "outer", "cross", "union", "select", "from", "limit",
 }
+
+
+def _unknown_name_detail(kind: str, requested: str, candidates: Sequence[str]) -> str:
+    """Unknown-name detail, naming the closest valid candidate when one exists."""
+    detail = f"Unknown {kind}: {requested}"
+    closest = closest_name(requested, candidates)
+    if closest is None:
+        return detail
+    return f"{detail}. Closest valid {kind} in the active semantic model: {closest}."
 
 
 class SemanticCompilationError(Exception):
@@ -177,16 +187,30 @@ class SemanticCompiler:
 
         selected_measures = []
         for name in metrics:
-            m = measures_by_name.get((name or "").lower())
+            cleaned = (name or "").strip()
+            if not cleaned:
+                continue
+            m = measures_by_name.get(cleaned.lower())
             if not m:
-                raise SemanticCompilationError("UNKNOWN_METRIC", name)
+                raise SemanticCompilationError(
+                    "UNKNOWN_METRIC",
+                    _unknown_name_detail("metric", cleaned, [item.name for item in model.measures]),
+                )
             selected_measures.append(m)
 
         selected_dims = []
         for name in dimension_names:
-            d = dims_by_name.get((name or "").lower())
+            cleaned = (name or "").strip()
+            if not cleaned:
+                continue
+            d = dims_by_name.get(cleaned.lower())
             if not d:
-                raise SemanticCompilationError("UNKNOWN_DIMENSION", name)
+                raise SemanticCompilationError(
+                    "UNKNOWN_DIMENSION",
+                    _unknown_name_detail(
+                        "dimension", cleaned, [item.name for item in model.dimensions]
+                    ),
+                )
             selected_dims.append(d)
 
         select_parts = [

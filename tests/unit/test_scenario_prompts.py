@@ -90,6 +90,21 @@ def test_fresh_start_prompt_has_no_scenario_rules():
     assert "GENERATION MODE\nfresh_start" in prompt
 
 
+def test_sql_prompt_shows_the_literal_output_layout():
+    context = _context("show total sales by country")
+    prompt = build_system_prompt(context, _discovery())
+    assert "OUTPUT FORMAT" in prompt
+    # Shown, not only described: reasoning comment first, fenced SQL directly below.
+    assert prompt.index("/* Reasoning:") < prompt.index("```sql")
+
+
+def test_optimization_prompt_shows_the_literal_output_layout():
+    context = _context("make it faster", EXISTING_SQL)
+    prompt = build_optimization_system_prompt(context, EXISTING_SQL)
+    assert "no markdown fence" in prompt
+    assert prompt.index("OUTPUT FORMAT") < prompt.index("<rewritten")
+
+
 def test_scenario_rules_helper():
     context = _context("make it faster", EXISTING_SQL)
     context.generation_mode = GenerationMode.OPTIMIZATION

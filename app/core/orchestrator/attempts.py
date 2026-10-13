@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+import re
 import time
 from typing import Any, Callable, Dict, Generator, List, Optional, Tuple
 
@@ -13,9 +15,11 @@ from app.core.constants import (
     MaxRecoveryExpansion,
     MaxRetries,
     MissingGroupMemberValidationStatus,
+    RefinementPromptContextCap,
     MissingObjectBreakThreshold,
     PresencePenaltyAfterLoop,
     SemanticCompilationTimeoutMs,
+    SemanticRepeatTemperature,
     semantic_compilation_fallback_to_raw_sql,
 )
 from app.core.errors import (
@@ -50,10 +54,18 @@ from app.services.query_interceptor import QueryInterceptor
 from app.services.r_interceptor import RInterceptor
 from app.services.sas_interceptor import SASInterceptor
 from app.services.semantic_compiler import SemanticCompiler
+from app.utils.query_vocabulary import (
+    build_question_tokens,
+    can_answer,
+    question_tokens,
+)
 from app.services.semantic_smq import (
+    SmqShapeError,
+    build_smq_shape_mismatch_feedback,
     extract_smq_json,
     looks_like_smq,
     parse_smq,
+    semantic_payload_fingerprint,
     valid_names_hint,
 )
 from app.services.sql_error_classifier import SqlErrorClassifier
@@ -76,8 +88,10 @@ from app.utils.sas_normalization import (
     structural_sas_hash,
     syntax_check_sas,
 )
-from app.utils.regexes import parse_validation_sentinels
-from app.utils.sql_normalization import extract_sql_body, structural_sql_hash
+from app.utils.regexes import parse_table_validation_names, parse_validation_sentinels
+from app.utils.sql_normalization import extract_sql_body, extract_sql_object_refs, structural_sql_hash
+
+logger = logging.getLogger(__name__)
 
 
 def run_attempt_loop(
@@ -138,6 +152,24 @@ def run_attempt_loop(
     last_prompt = ""
     canonical = None
     active_model = _load_active_model(stores) if semantic_mode else None
+    # Availability gate. Semantic mode against a model that shares no vocabulary with
+    # the question cannot succeed: every attempt returns UNKNOWN_METRIC and the turn
+    # ends as a semantic failure even though the physical schema could answer it.
+    if semantic_mode and active_model is not None:
+        analysis = discovery.query_analysis
+        question = context.combined_query or (context.request.query if context.request else "") or ""
+        tokens = build_question_tokens(
+            question_tokens(question),
+            analysis.entities if analysis else None,
+        )
+        columns = analysis.extracted_columns if analysis else None
+        if not can_answer(active_model, columns, tokens):
+            logger.info(
+                "Semantic mode disabled for this turn: model %s shares no vocabulary with the question",
+                getattr(active_model, "label", None) or getattr(active_model, "model_id", ""),
+            )
+            semantic_mode = False
+            context.grain_is_advisory = True
     semantic_json = active_model.model_dump_json() if active_model else "[]"
     # Semantic-branch bookkeeping. ``semantic_retry`` records that the current attempt ended
     # in a semantic retry rather than a SQL candidate, so an exhausted budget can be reported
@@ -145,6 +177,26 @@ def run_attempt_loop(
     semantic_retry = False
     compiled_from_semantic_model = False
     last_semantic_error = ""
+    # A repeated SMQ payload needs divergence pressure. The physical-SQL hallucination
+    # counter never moves on this path, so without this the model emits the same JSON
+    # on every attempt.
+    semantic_repeat_detected = False
+    previous_semantic_fingerprint = ""
+
+    def _note_semantic_payload(raw_text: str, cleaned_text: str) -> None:
+        nonlocal semantic_repeat_detected, previous_semantic_fingerprint, loop_breaker
+        fingerprint = semantic_payload_fingerprint(raw_text, cleaned_text)
+        semantic_repeat_detected = bool(fingerprint) and fingerprint == previous_semantic_fingerprint
+        previous_semantic_fingerprint = fingerprint
+        # A repeated payload means more of the same schema will not help; force the
+        # divergent rediscovery branch on the next attempt.
+        if semantic_repeat_detected:
+            loop_breaker = True
+
+    def _accept_semantic_sql() -> None:
+        nonlocal semantic_repeat_detected, previous_semantic_fingerprint
+        semantic_repeat_detected = False
+        previous_semantic_fingerprint = ""
 
     for attempt in range(1, MaxRetries + 1):
         elapsed_ms = int((time.time() - started_at) * 1000)
@@ -176,10 +228,23 @@ def run_attempt_loop(
         )
 
         if pending_recovery or loop_breaker:
-            discovery.objects = _merge_recovery(discovery.objects, pending_recovery)
+            recovered = list(pending_recovery)
+            for obj in recovered:
+                obj.required = True
+            discovery.objects = _merge_recovery(discovery.objects, recovered)
             pending_recovery = []
             loop_breaker = False
             agentic_retry += 1
+            if recovered:
+                # Only a recovery merge changes the object pool, so this is the only retry
+                # that needs the prompt and critic text rebuilt. Every other retry (a critic
+                # complaint, a syntax error) reuses the attempt-1 context on purpose.
+                _refresh_schema_context(
+                    discovery,
+                    context.request.source_id,
+                    context.dbms_type,
+                    cap=RefinementPromptContextCap if context.is_refinement else None,
+                )
 
         history_text = _compact_history(attempt_reports)
         if python_mode:
@@ -197,15 +262,24 @@ def run_attempt_loop(
                 discovery,
                 semantic=semantic_mode,
                 semantic_models_json=semantic_json,
+                semantic_model=active_model if semantic_mode else None,
                 attempt_history=history_text,
             )
             user = build_user_prompt(context)
         last_prompt = system + "\n" + user
-        penalty = PresencePenaltyAfterLoop if hallucination_count else None
+        # A semantic retry that repeats the previous SMQ payload counts as a loop too.
+        # The bump applies on the *next* call: the repeat is only known once the payload
+        # has already been produced.
+        penalty = PresencePenaltyAfterLoop if (hallucination_count or semantic_repeat_detected) else None
+        call_kwargs: Dict[str, Any] = {}
+        if penalty is not None:
+            call_kwargs["presence_penalty"] = penalty
+        if semantic_repeat_detected:
+            call_kwargs["temperature"] = SemanticRepeatTemperature
         try:
             raw = llm.complete(
                 [{"role": "system", "content": system}, {"role": "user", "content": user}],
-                presence_penalty=penalty,
+                **call_kwargs,
             )
         except Exception as exc:
             attempt_reports.append(
@@ -267,10 +341,28 @@ def run_attempt_loop(
                         )
                     )
                     semantic_retry = True
+                    _note_semantic_payload(raw_output, cleaned_output)
                     continue
                 # Genuine SQL answer with the fallback enabled: proceed as SQL.
+                _accept_semantic_sql()
             else:
-                smq = parse_smq(smq_json)
+                try:
+                    smq = parse_smq(smq_json)
+                except SmqShapeError as exc:
+                    last_semantic_error = build_smq_shape_mismatch_feedback(
+                        exc, smq_json, active_model
+                    )
+                    attempt_reports.append(
+                        BuiltInAttemptReport(
+                            attempt_number=attempt,
+                            stage="semantic_compilation",
+                            what_was_tried="parse SMQ payload",
+                            why_it_failed=last_semantic_error,
+                        )
+                    )
+                    semantic_retry = True
+                    _note_semantic_payload(raw_output, cleaned_output)
+                    continue
                 if smq is None:
                     last_semantic_error = (
                         f"The SMQ payload could not be parsed. Received: {smq_json[:400]}"
@@ -284,6 +376,7 @@ def run_attempt_loop(
                         )
                     )
                     semantic_retry = True
+                    _note_semantic_payload(raw_output, cleaned_output)
                     continue
 
                 if active_model is None:
@@ -297,6 +390,7 @@ def run_attempt_loop(
                         )
                     )
                     semantic_retry = True
+                    _note_semantic_payload(raw_output, cleaned_output)
                     continue
 
                 compiled = compiler.compile_guarded(
@@ -316,10 +410,12 @@ def run_attempt_loop(
                         )
                     )
                     semantic_retry = True
+                    _note_semantic_payload(raw_output, cleaned_output)
                     continue
 
                 sql = compiled.sql
                 compiled_from_semantic_model = True
+                _accept_semantic_sql()
 
         if not sql:
             attempt_reports.append(
@@ -359,7 +455,12 @@ def run_attempt_loop(
         # 2. Sentinels
         table_err, col_err = parse_validation_sentinels(raw)
         if table_err or col_err:
-            objs = _expand_missing(table_err or col_err, stores, exact_columns=context.request and discovery.query_analysis.extracted_columns if col_err else None)
+            objs = _expand_missing(
+                table_err or col_err,
+                stores,
+                exact_columns=context.request and discovery.query_analysis.extracted_columns if col_err else None,
+                sql=sql,
+            )
             pending_recovery.extend(objs[:MaxRecoveryExpansion])
             _bump_missing(missing_counts, missing_cat_counts, table_err or col_err, "sentinel")
             if _breaker_tripped(missing_counts):
@@ -400,7 +501,7 @@ def run_attempt_loop(
                 )
         hash_history.append(digest)
 
-        allowed = [f"{o.schema_name}.{o.object_name}" for o in discovery.objects]
+        allowed = _allowed_objects(discovery, stores)
         db_ok, db_err, db_missing = False, "", []
         skip_critic = False
 
@@ -440,7 +541,7 @@ def run_attempt_loop(
                     broadened = True
                     yield emit(PipelineStage.RECOVERY, "Broadened group-member recovery")
                     continue
-                pending_recovery.extend(_expand_missing(",".join(critic_result.missing_objects), stores)[:MaxRecoveryExpansion])
+                pending_recovery.extend(_expand_missing(",".join(critic_result.missing_objects), stores, sql=sql)[:MaxRecoveryExpansion])
                 continue
 
         if not skip_critic:
@@ -471,12 +572,12 @@ def run_attempt_loop(
         missing_obj = classifier.extract_missing_object(db_err)
         if missing_obj:
             _bump_missing(missing_counts, missing_cat_counts, missing_obj, category)
-            pending_recovery.extend(_expand_missing(missing_obj, stores)[:MaxRecoveryExpansion])
+            pending_recovery.extend(_expand_missing(missing_obj, stores, sql=sql)[:MaxRecoveryExpansion])
             if _breaker_tripped(missing_counts):
                 circuit_breaker = True
                 return _fail(ErrorCategory.DETERMINISTIC_MISSING_OBJECT, missing_obj, attempt, attempt_reports, discovery, llm, started_at, hallucination_count, agentic_retry, context, sql)
         if db_err.upper().startswith("TABLE_VALIDATION_ERROR"):
-            pending_recovery.extend(_expand_missing(db_err, stores)[:MaxRecoveryExpansion])
+            pending_recovery.extend(_expand_missing(db_err, stores, sql=sql)[:MaxRecoveryExpansion])
         attempt_reports.append(
             BuiltInAttemptReport(
                 attempt_number=attempt,
@@ -597,6 +698,47 @@ def _run_sas_critic(llm, code, schema, query) -> CombinedValidationResult:
         return CombinedValidationResult()
 
 
+def _allowed_objects(discovery: DiscoveryResult, stores=None) -> List[str]:
+    """Discovered objects plus every table or view named by an injected example.
+
+    Knowledge-base and precomputed SQL is pre-verified. Those objects stay legal for
+    this turn even when discovery did not hydrate their column lists, so the scope
+    check cannot reject a reference the prompt just authorized.
+
+    An example object the catalog does not have is *not* authorized: a stale example must
+    not widen the allow-list to an object the database cannot serve. This is the same
+    "exact hit only" rule the recovery path applies to a name it resolves.
+    """
+    from app.services.database_catalog import catalog_has_object, split_object_ref
+
+    catalog = getattr(stores, "catalog", None) if stores is not None else None
+    allowed: List[str] = []
+    seen = set()
+
+    def add(name: str) -> None:
+        text = (name or "").replace("[", "").replace("]", "").strip()
+        key = text.lower()
+        if not text or key in seen:
+            return
+        seen.add(key)
+        allowed.append(text)
+
+    for obj in discovery.objects or []:
+        schema = (getattr(obj, "schema_name", None) or "").strip()
+        name = (getattr(obj, "object_name", None) or "").strip()
+        if schema and name:
+            add(f"{schema}.{name}")
+        elif name:
+            add(name)
+    for example in discovery.few_shot_examples or []:
+        for ref in extract_sql_object_refs(getattr(example, "sql", "") or ""):
+            schema, name = split_object_ref(ref)
+            if not catalog_has_object(catalog, schema, name):
+                continue
+            add(ref)
+    return allowed
+
+
 def _validate_candidate(
     code: str,
     validator: SqlValidator,
@@ -656,15 +798,107 @@ def _load_active_model(stores):
         return None
 
 
-def _expand_missing(token: str, stores, exact_columns=None) -> List[ScoredObject]:
-    from app.models.pipeline import ScoredObject
+def _refresh_schema_context(discovery: DiscoveryResult, source_id: Optional[str], dbms: str, cap: Optional[int] = None) -> None:
+    """Rebuild prompt and critic schema text from the current object pool."""
+    from app.services.sql_context_hydrator import SqlContextHydrator
+    from app.services.stores.skills_folder import markdown_lookup_for_objects
 
-    q = token or ""
-    objs = stores.vector_search.search_objects(q, top_k=5)
+    hydrator = SqlContextHydrator(cap=cap) if cap else SqlContextHydrator()
+    hydrator.set_value_mappings(discovery.value_mappings)
+    lookup = markdown_lookup_for_objects(source_id, discovery.objects)
+    selected, supp, schema, validation = hydrator.build_contexts(
+        discovery.objects,
+        markdown_lookup=lookup,
+        dbms=dbms or "SQL Server",
+    )
+    discovery.selected_object_context = selected
+    discovery.supplementary_objects = supp
+    discovery.schema_context = schema
+    discovery.schema_context_for_validation = validation
+
+
+def _recovery_names(token: str, sql: Optional[str]) -> List[str]:
+    """Table names to recover from a sentinel or the generated SQL.
+
+    A ``COLUMN_VALIDATION_ERROR`` is deliberately skipped: a missing column is answered by
+    the ``exact_columns`` path, which searches the value index for the column's owner
+    rather than resolving a table name, so passing the column name here would look for a
+    table that was never missing.
+    """
+    text = token or ""
+    names: List[str] = []
+    if text and not re.search(r"COLUMN_VALIDATION_ERROR|Invalid column name", text, re.IGNORECASE):
+        names.extend(parse_table_validation_names(text))
+    if sql:
+        for ref in extract_sql_object_refs(sql):
+            names.extend(parse_table_validation_names(ref))
+    unique: List[str] = []
+    seen = set()
+    for name in names:
+        key = name.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(name)
+    return unique
+
+
+def _resolve_catalog_names(names: List[str], stores) -> Tuple[List[ScoredObject], List[str]]:
+    """Return catalog hits and the names that did not resolve.
+
+    Unresolved strings are not turned into allow-list objects.
+    """
+    catalog = getattr(stores, "catalog", None)
+    if catalog is None:
+        return [], list(names)
+    from app.services.object_name_resolver import ObjectNameResolver
+
+    resolver = ObjectNameResolver(catalog)
+    resolved: List[ScoredObject] = []
+    unresolved: List[str] = []
+    seen = set()
+    for raw in names:
+        try:
+            hit = resolver.resolve(raw)
+        except Exception:
+            unresolved.append(raw)
+            continue
+        if hit.status != "exact" or not hit.qualified:
+            unresolved.append(raw)
+            continue
+        key = hit.qualified.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        schema, _, obj = hit.qualified.partition(".")
+        resolved.append(
+            ScoredObject(
+                schema_name=schema or "dbo",
+                object_name=obj or hit.qualified,
+                score=1.0,
+                required=True,
+                priority=True,
+            )
+        )
+    return resolved, unresolved
+
+
+def _expand_missing(token: str, stores, exact_columns=None, sql: str = None) -> List[ScoredObject]:
+    names = _recovery_names(token, sql)
+    resolved, unresolved = _resolve_catalog_names(names, stores)
+    objs: List[ScoredObject] = list(resolved)
+    if names:
+        queries = unresolved
+    else:
+        queries = [token] if token else []
+    for query in queries:
+        if not query:
+            continue
+        objs.extend(stores.vector_search.search_objects(query, top_k=5))
     if exact_columns:
         for col in exact_columns:
             objs.extend(stores.vector_search.search_objects(col, top_k=3))
-    models = stores.semantic.search_models(q, top_k=2)
+    models = stores.semantic.search_models(token or "", top_k=2)
     for m in models:
         objs.insert(0, ScoredObject(schema_name="semantic", object_name=m.label, object_type="SemanticModel", required=True, score=1.0))
     return objs

@@ -15,6 +15,7 @@ from app.services.settings_service import get_settings_for_display
 from app.services.relationship_graph import get_relationship_graph
 from collections import defaultdict
 from app.services.system_query_service import classify_query_intent, build_system_catalog_prompt
+from app.utils.query_vocabulary import STOP_WORDS
 
 def parse_table_override_name(raw_name: str) -> Tuple[str, str]:
     cleaned = raw_name.strip().replace('[', '').replace(']', '')
@@ -769,9 +770,9 @@ def search_data_objects(query: str) -> GenerateSQLResponse:
 
                 if not object_scores:
                     logging.info(f"No semantic matches for '{query}', attempting keyword fallback search")
-                    stop_words = {'the', 'and', 'for', 'are', 'but', 'not', 'you', 'all', 'can', 'had', 'her',
-                                 'was', 'one', 'our', 'out', 'has', 'have', 'been', 'find', 'get', 'show',
-                                 'list', 'what', 'which', 'where', 'how', 'top', 'best', 'most'}
+                    # Ranking words are noise for table-name matching; this module is the one
+                    # place that needs them dropped, so they stay a local extension.
+                    stop_words = STOP_WORDS | {'top', 'best', 'most'}
                     query_words = set(word.lower() for word in re.findall(r'\b\w{3,}\b', query) if word.lower() not in stop_words)
 
                     if query_words:

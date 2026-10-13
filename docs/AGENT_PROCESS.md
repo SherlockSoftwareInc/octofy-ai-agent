@@ -47,6 +47,8 @@ B  Validate pinned objects
 C  Fast paths (KB exact, precomputed exact, KB vector exact)
 D  Query analysis + data groups + discovery (refinement: base-object anchor) + hydrate
 E  Attempt loop (≤ 5 attempts, ≤ 120 s)
+      │  (semantic availability gate: a model sharing no vocabulary with the question
+      │   leaves semantic mode for this turn — physical SQL runs instead; see §7)
 F  SSE result + done
 ```
 
@@ -87,8 +89,8 @@ Runs before intent classification and metadata retrieval.
    | `I need all order details` | `I need all order details for chocolate Products` |
 
    The LLM path returns `{rewritten_query, carried_filters, changed}` and is validated (non-empty, ≤ 400 chars, actually different). A deterministic fallback folds the session's own quoted `=`/`LIKE` filters back into the sentence, so the rewrite survives an unreachable LLM. Directed optimization edits (`format this`, `make it faster`) are **not** rewritten — their subject is the editor SQL.
-5. **Prompt injection** — the resolved filters become `ACTIVE SESSION FILTERS` plus the `SCOPE GUARD` block on refinement turns.
-6. The generated SQL's own filters are recorded back into the session (`record_generation_outcome`) so the next turn inherits what the query actually filtered on.
+5. **Prompt injection** — the resolved filters become `ACTIVE SESSION FILTERS` plus the `SCOPE GUARD` block on refinement turns, and the carried grain becomes the `Current target grain:` line (Section 7.1).
+6. The generated SQL's own filters — and its output grain — are recorded back into the session (`record_generation_outcome`) so the next turn inherits what the query actually filtered on. `extract_grain_from_sql()` reads the grain from the statement's last `GROUP BY` (a statement with no `GROUP BY` keeps the grain already in the session), and `record_generation_outcome` has no `target_grain` parameter to forget to pass.
 
 ### 3.3 Route
 
@@ -161,6 +163,8 @@ Continue to Stage D
 
 All three lookups use the coreference-rewritten query. A refinement/drill-down turn that carries active filters **bypasses** them: a stored answer authored without `ProductName LIKE '%chocolate%'` must not satisfy a turn that still filters on chocolate.
 
+**Limit adaptation.** The KB lookup key is `kb_similarity_key`, which drops the number from `top N` / `bottom N` / `last N` / `limit N` / `first N` (keeping `top` / `bottom` / `last` as words, and leaving `last month` alone). When the only reason `kb_exact` matched is that a limit token was dropped, the stored SQL is **not** returned verbatim: `engine.force_kb_example()` moves the example to the front of the injection list, hard-locks its objects (Section 6.3) and switches the branch to `kb_direct`, so the prompt still sees the example and generation applies the requested limit itself. `precomputed_exact` deliberately stays strict — a limit-insensitive match there would replay a stored answer whose limit the user changed.
+
 The provided-code optimize/rewrite path also skips discovery. It validates the supplied SQL (or script) and, on failure, allows one rewrite inside a 90-second budget (`no_discovery`). For the `optimization` scenario the model is called even when the editor code already validates — a modification request must produce a modification — under the strict *editor-code-only* rules of Section 7.1. If the rewrite does not validate, the original editor code is returned unchanged rather than failing the turn. Every other provided-code turn keeps the historical short-circuit.
 
 ---
@@ -176,6 +180,8 @@ Unless the router skipped pre-analysis, the LLM returns JSON:
 - `keywords`, `complexity` (`simple` / `moderate` / `complex`)
 - `entities`, `date_ranges`, `filter_values`
 - `extracted_columns` (bare column names, max 20)
+
+The analysis prompt states two negative rules explicitly, because both were answered wrongly without them: the number in `top 10` / `first 5` / `bottom 3` / `last 20` is a **cardinality limit, not a filter value** (it must never enter `filter_values`, which feeds the value-index lookups), and `extracted_columns` is **never inferred** — a request that names no columns (e.g. *"top selling products"*) leaves the array empty rather than filling it with plausible names such as `ProductName` / `Quantity`.
 
 Results are cached (100 entries). Complexity falls back to a regex heuristic when the LLM is skipped or fails.
 
@@ -212,6 +218,10 @@ RRF (`k=60`) weights:
 | BM25 | 0.5 (off unless `ENABLE_BM25_RETRIEVAL=true`) |
 
 Merged list is capped at 8 objects. Pins are prepended as required. Discovery results are cached (256 entries).
+
+**Injected examples are hard-locked.** Every branch that injects a KB or precomputed example — `kb_direct`, `kb_gap_fill`, `dual_prong`, `group_anchored`, and the limit-adapted path — passes its result through `_lock_example_objects()`, which merges the example's objects into the pool as `required` + `priority` with `KbRequiredObjectScore` (1000.0). Ranking cannot drop them afterwards: the RRF pool is capped at 8, and the object that lost was usually the one discovery never hydrated, so the prompt authorized an object the schema context did not describe and the critic rejected SQL that referenced it. Because the same helper runs inside `_remember()`, a branch cannot forget it.
+
+An example object the live catalog does not have is dropped instead of locked (`catalog_has_object`, which fails open when there is no catalog, it cannot be read, or it lists nothing): a stale example must not hard-lock an object the database cannot serve, and it must not widen the validator allow-list either (Section 7.6).
 
 Column evidence details:
 
@@ -254,10 +264,12 @@ Required objects always win a slot. Other objects below 5% of the best remaining
 
 Budgets: **5 attempts**, **120 seconds**. Semantic compilation has a 5-second timeout per compile.
 
+**Before the first attempt — the semantic availability gate.** With semantic mode on, the loop first asks whether the active model can answer the question at all. `can_answer()` compares the question's tokens (`question_tokens()` plus the analysis entities) and the analysis's `extracted_columns` against the model's measure and dimension vocabulary (`app/utils/query_vocabulary.py`; structural words such as `count` or `name` cannot create a match on their own). A model sharing **no** significant token with the question cannot compile anything — every attempt would end in `UNKNOWN_METRIC` — so the turn leaves semantic mode for that turn (`semantic_mode = False`), sets `context.grain_is_advisory = True`, and runs the ordinary physical-SQL path. This is a **routing** decision taken inside the attempt loop, not in Stage A, and it fails open: a missing model or an empty vocabulary cannot be judged unfit.
+
 Each attempt:
 
 1. Build dialect-specific system + user prompts (`prompts.py`). Semantic mode asks for a fenced ` ```smq ` JSON payload instead of SQL, and appends a corrective block when the inherited session-filter value reads as an SMQ payload.
-2. Call the LLM. After a hallucination loop is detected, a presence penalty of 0.4 is applied.
+2. Call the LLM. After a hallucination loop is detected, a presence penalty of 0.4 is applied. A repeated *semantic payload* is handled separately: `semantic_payload_fingerprint()` (SHA-256 of the fence- and whitespace-normalized JSON, key order preserved) identifies two identical payloads, which sets `loop_breaker` so the next attempt takes the divergent rediscovery branch — the physical-SQL hallucination counter never moves on this path, so without it the model repeats itself on every attempt. The call after the repeat also carries `temperature=SemanticRepeatTemperature` (0.4), because a presence penalty alone does not move a provider pinned to a low default temperature. The bump therefore lands on the attempt after the repeat is known, never on the first one.
 3. Extract SQL (or Python / R / SAS body). Embedded SQL in scripts is schema-qualified against discovered objects.
 4. Semantic mode, in this order (`semantic_smq.py`, `attempts.py:241-322`):
    - **payload-class guard first.** `looks_like_smq()` is a structural test (a `metrics`/`dimensions` key at JSON depth 1, or a valid object carrying one) — never a substring search for `metrics`, which would refuse `SELECT [metrics] FROM [dbo].[audit]`.
@@ -290,6 +302,18 @@ Every SQL / Python / R / SAS prompt carries a `GENERATION MODE` block plus the s
 - **active filters** — `ACTIVE SESSION FILTERS` lists the inherited filters; when any exist, `SCOPE GUARD` states: *preserve all active filters from preceding turns unless the user explicitly requests their removal.*
 - **`fresh_start` / `debugging`** — no scenario rule block.
 
+### 7.1.1 Object scope, policy blocks, and the output contract
+
+Every SQL / Python / R / SAS prompt carries the same authorization and the same output contract:
+
+- **`AUTHORIZED OBJECT SCOPE`** — objects are legal if they are documented in `AVAILABLE SCHEMAS` / `PRIORITY SELECTED OBJECTS` **or** referenced by an injected `KNOWLEDGE BASE EXAMPLES` / `PRECOMPUTED Q&A` query. The second source is explicit because an example is pre-verified production SQL: its tables stay authorized even when their DDL was never hydrated, and when adapting an example the model is told to trust its table names, column names and join predicates.
+- **`ZERO HALLUCINATION POLICY`** — the prohibition side of the same rule: never invent an object that is in neither source, treat example objects as whitelisted, and only emit `TABLE_VALIDATION_ERROR` for an object that is in neither. There used to be a third block restating both (`CRITICAL SQL RULES (SCHEMA ADHERENCE)`, whose subsections ran `### 1.` then `### 5.`); it is gone because three statements of one rule drift apart.
+- **`KNOWLEDGE_BASE_EXAMPLES_HEADER`** — the examples may be adapted (limits, filters, projections) but every table and column they reference is authorized.
+- **`OUTPUT FORMAT`** — reasoning inside a `/* ... */` block, then the statement in a fenced ` ```sql ` block directly below it. The section ends with a literal layout example, not only a description: the logged response that motivated it dropped the fence entirely.
+- **`Current target grain:`** — the grain carried from the previous accepted statement (Section 3.2). When this turn fell back from semantic mode, the same line becomes an advisory paragraph: the name is mapped to the request's grain and must not be used as a table, column, alias or `GROUP BY` target. The line names a physical expression, so it never hard-codes a customer schema.
+
+The semantic prompt is a different, self-contained contract (Section 7 attempt step 4): `DBMS CONTEXT (SEMANTIC MODE)`, `AVAILABLE SEMANTIC MODELS (JSON)`, the generation-mode/filter blocks, the grain line, `ATTEMPT HISTORY`, and `SEMANTIC OUTPUT FORMAT (STRICT)` — which now shows a worked example built from the active model's own first measure and dimension names, and states that `metrics` / `dimensions` are arrays of **plain strings** (`[{"metric":"row_count"}]` is called out as `WRONG (rejected)`). `SEMANTIC_OUTPUT_CORRECTION` is appended whenever any block already reads as an SMQ payload.
+
 ### 7.2 Safety
 
 `QueryInterceptor` (and language-specific interceptors) block writes unless the user explicitly asked for INSERT / UPDATE / DELETE / DROP in user-code mode. A safety failure is terminal (`error_category=safety`).
@@ -297,6 +321,8 @@ Every SQL / Python / R / SAS prompt carries a `GENERATION MODE` block plus the s
 ### 7.3 Sentinels and missing-object recovery
 
 If the model emits table/column validation sentinels, or the database reports a missing object, discovery expands by up to 5 extra objects from schema search (and semantic models). The same missing object twice trips the circuit breaker (`deterministic_missing_object`).
+
+Recovery resolves names against the live catalog before widening the pool: `_resolve_catalog_names()` keeps only an `exact` hit with a qualified name and turns it into a required, prioritized object; a string that does **not** resolve is not allow-listed, it falls through to vector search. The objects a recovery merge added are then folded into the prompt **and** the critic: `_refresh_schema_context()` rebuilds `selected_object_context`, `supplementary_objects`, `schema_context` and `schema_context_for_validation` from the current pool (with `RefinementPromptContextCap` on a refinement turn). Without it the retry prompt kept the attempt-1 schema text and the recovered object was invisible to both the model and the critic. Only a recovery merge changes the object pool, so only that retry re-hydrates — a critic or syntax retry reuses the attempt-1 context on purpose.
 
 The critic status `MISSING_GROUP_MEMBER` triggers one broadened recovery pass.
 
@@ -311,6 +337,8 @@ The critic returns JSON: `requirements_satisfied`, `schema_valid`, `feedback`, `
 ### 7.6 Database validation
 
 `SqlValidator` parse-checks SQL against the target source. SQL Server uses `SET NOEXEC ON`. Other dialects use `EXPLAIN` / `PREPARE`. Generated SQL that references objects outside the discovered allow-list fails as out of scope.
+
+That allow-list is built by `_allowed_objects(discovery, stores)` — the **turn's** authorization, not something re-derived from prompt text: every discovered object, plus every table or view named by an injected example *that the catalog confirms*. An example object the catalog does not have is not authorized, which is the same "exact hit only" rule recovery applies to a resolved name; the two paths no longer disagree about how far to trust a string.
 
 Scripts (Python / R / SAS) are syntax-checked first; each embedded SQL statement is then validated.
 
@@ -373,6 +401,8 @@ See [GENERATE_SQL.md](GENERATE_SQL.md#sql-execution--analysis).
 | Discovery | `app/core/orchestrator/discovery_engine.py` |
 | Prompts | `app/core/orchestrator/prompts.py` |
 | Attempt loop | `app/core/orchestrator/attempts.py` |
+| Query vocabulary / stop words | `app/utils/query_vocabulary.py` |
+| Live catalog (existence checks) | `app/services/database_catalog.py` |
 | Constants / thresholds | `app/core/constants.py` |
 | Branch labels | `app/core/branch_taxonomy.py` |
 | Pipeline models | `app/models/pipeline.py` |
@@ -393,6 +423,8 @@ Do not retune these unless there is a deliberate product change. Values live in 
 | `KbExactMatchThreshold` | 0.05 (cosine distance) |
 | `KbConfidenceThreshold` | 0.70 |
 | `KbScoreThreshold` | 0.35 |
+| `KbRequiredObjectScore` | 1000.0 (an injected example's objects) |
+| `SemanticRepeatTemperature` | 0.4 (the call after a repeated semantic payload) |
 | `DefaultObjectSearchVectorScoreThreshold` | 0.50 (admin-overridable) |
 | `DefaultPrecomputedQueryDirectMatchThreshold` | 0.93 (cosine similarity) |
 | `DefaultPrecomputedQueryFewShotThreshold` | 0.82 |

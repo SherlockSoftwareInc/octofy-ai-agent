@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
-from typing import List, Optional
+import json
+from typing import Any, List, Optional
 
 from app.core.branch_taxonomy import GenerationMode, is_refinement_scenario
 from app.models.pipeline import AgentContext, DiscoveryResult, FewShotExample, QueryAnalysis
 from app.services.semantic_smq import looks_like_smq
+from app.utils.query_vocabulary import model_item_name, model_items
 
 # Phase 3.1 — strict, schema-free rule for the optimization scenario.
 OPTIMIZATION_INSTRUCTIONS = """### OPTIMIZATION INSTRUCTIONS
@@ -24,11 +26,36 @@ REFINEMENT_INSTRUCTIONS = """### REFINEMENT INSTRUCTIONS
 SCOPE_GUARD = """### SCOPE GUARD
 Preserve all active filters from preceding turns unless the user explicitly requests their removal."""
 
+# Objects in verified examples are in scope even when their column list was not hydrated.
+# Two blocks, not three: the authorization (which objects are in scope) and the prohibition
+# (what may never be invented, and how to report a genuinely missing object) used to restate
+# each other in a third "CRITICAL SQL RULES" fragment whose section numbers ran 1, then 5.
+AUTHORIZED_OBJECT_SCOPE = """### AUTHORIZED OBJECT SCOPE
+You are authorized to reference database objects (tables, views, functions, and columns) that appear in ANY of the following sources:
+1. Objects explicitly defined in `AVAILABLE SCHEMAS` or `PRIORITY SELECTED OBJECTS`.
+2. Objects referenced in verified SQL queries within `KNOWLEDGE BASE EXAMPLES` / `PRECOMPUTED Q&A`.
+
+Objects appearing in Knowledge Base examples represent pre-verified, production-tested database assets. You are fully authorized to query them even if their complete schema definition is omitted from `AVAILABLE SCHEMAS`. When you adapt a Knowledge Base query, trust the table names, column names, and join predicates used in that example."""
+
+ZERO_HALLUCINATION_POLICY = """### ZERO HALLUCINATION POLICY
+- You MUST only use database objects (tables, views, functions, columns) that are:
+  a) Explicitly documented in `AVAILABLE SCHEMAS` or `PRIORITY SELECTED OBJECTS`, OR
+  b) Directly referenced in the provided `KNOWLEDGE BASE EXAMPLES`.
+- Objects referenced in `KNOWLEDGE BASE EXAMPLES` are pre-validated, so treat them as whitelisted: never report them as missing tables, and do NOT emit `TABLE_VALIDATION_ERROR` or `COLUMN_VALIDATION_ERROR` for objects or columns that appear in KB reference SQL.
+- Never invent hypothetical table names or columns that appear in NEITHER the schema blocks NOR the Knowledge Base examples.
+- Only return `TABLE_VALIDATION_ERROR: [MissingTableName]` if a required object cannot be found in `AVAILABLE SCHEMAS` AND is absent from the provided `KNOWLEDGE BASE EXAMPLES`."""
+
+KNOWLEDGE_BASE_EXAMPLES_HEADER = """### KNOWLEDGE BASE EXAMPLES
+The following are verified reference queries from the Knowledge Base.
+- You may adapt these queries, reuse their join structures, and directly query any tables or views they reference.
+- Adapt row limits, filters, date ranges, and projections to match the Target Request, but consider all referenced tables and columns as fully authorized."""
+
 # Semantic mode retry correction: the previous attempt did not produce a usable payload.
 SEMANTIC_OUTPUT_CORRECTION = """### SEMANTIC OUTPUT CORRECTION
 The previous attempt did not produce a usable Semantic Model Query. Return only a fenced smq
-code block containing {"metrics":[],"dimensions":[],"filters":[],"timeframes":[]}, using names
-that exist in the semantic model above. Do not return SQL."""
+code block. "metrics" and "dimensions" must be arrays of PLAIN STRINGS, never an array of
+objects such as [{"metric":"row_count"}]. Use names that exist in the semantic model above.
+Do not return SQL."""
 
 
 def scenario_rules(context: AgentContext) -> str:
@@ -49,6 +76,68 @@ def _filter_block(context: AgentContext) -> str:
     return "\n\n".join(blocks)
 
 
+def grain_prompt_line(context: AgentContext) -> str:
+    """Session grain line. Advisory when this turn fell back from semantic mode to SQL.
+
+    The grain was captured while a semantic model was in force, so it is not guaranteed
+    to still name an object this request can reference. A model that reads it as an
+    identifier can emit ``GROUP BY <grain>`` against a column that does not exist.
+    """
+    grain = (getattr(context, "target_grain", None) or "").strip()
+    if not grain:
+        return ""
+    if getattr(context, "grain_is_advisory", False):
+        return (
+            f"Target grain carried from conversational context: {grain} "
+            "(advisory only: map it to the grain of this request rather than treating it "
+            "as an object name. Do not use this text as a table, column, alias, or GROUP BY "
+            "target. It may be referenced only where it names an object authorized above.)"
+        )
+    return f"Current target grain: {grain}"
+
+
+def _first_model_name(model: Any, collection: str) -> str:
+    """First named item in the model's ``measures``/``dimensions``, or ``""``."""
+    for item in model_items(model, collection):
+        name = model_item_name(item)
+        if name:
+            return name
+    return ""
+
+
+def _semantic_output_format(model: Any) -> str:
+    """Strict SMQ contract, with a worked example that uses this model's real names."""
+    metric = _first_model_name(model, "measures") or "<metric_name>"
+    dimension = _first_model_name(model, "dimensions") or "<dimension_name>"
+    example = json.dumps(
+        {"metrics": [metric], "dimensions": [dimension], "filters": [], "timeframes": []},
+        separators=(",", ":"),
+    )
+    return (
+        "SEMANTIC OUTPUT FORMAT (STRICT)\n"
+        "Return a fenced `smq` code block containing only JSON. A `smq` block is the ONLY "
+        "accepted output in this mode: never answer with SQL, and never add prose, explanations, "
+        "or extra keys.\n"
+        "\n"
+        "The block must contain exactly these four keys, with these exact types:\n"
+        '{"metrics":["<metric_name>"],"dimensions":["<dimension_name>"],"filters":[],"timeframes":[]}\n'
+        "\n"
+        "Worked example using the metric and dimension names this model actually exposes:\n"
+        f"{example}\n"
+        "\n"
+        'CRITICAL TYPE RULE: "metrics" and "dimensions" must be arrays of PLAIN STRINGS.\n'
+        '- WRONG (rejected): {"metrics":[{"metric":"row_count"}],"dimensions":[{"dimension":"model"}]}\n'
+        '- RIGHT (accepted): {"metrics":["row_count"],"dimensions":["model"]}\n'
+        "\n"
+        "Rules:\n"
+        "- Use only metric names and dimension names present in AVAILABLE SEMANTIC MODELS. "
+        "Never invent a metric.\n"
+        '- Do not wrap a name in an object, and do not rename it with a key such as "metric", '
+        '"measure", "name", or "dimension".\n'
+        "- Preserve user intent, date scopes, and filters in SMQ form.\n"
+    )
+
+
 def _scenario_section(context: AgentContext) -> str:
     rules = scenario_rules(context)
     parts = [f"GENERATION MODE\n{context.generation_mode.value}"]
@@ -65,26 +154,27 @@ def build_system_prompt(
     semantic: bool = False,
     semantic_models_json: str = "[]",
     attempt_history: str = "",
+    semantic_model: Any = None,
 ) -> str:
     dbms = context.dbms_type or "SQL Server"
     if semantic:
         semantic_blocks = [f"GENERATION MODE\n{context.generation_mode.value}"]
         if context.filter_state_text and context.filter_state_text != "(none)":
             semantic_blocks.append(_filter_block(context))
-        # The retry prompt is the main corrective signal in semantic mode, so a reply that
-        # drifted back to SQL is called out explicitly. The history embeds the offending
-        # payload, so detection parses structure rather than searching for a key name.
-        if any(looks_like_smq(line) for line in semantic_blocks if line):
+        grain = grain_prompt_line(context)
+        if grain:
+            semantic_blocks.append(grain)
+        # Attempt history is the corrective signal. It is scanned for an SMQ payload so a
+        # reply that drifted back to an unusable shape is called out explicitly.
+        semantic_blocks.append(f"ATTEMPT HISTORY\n{attempt_history or '(first attempt)'}")
+        if any(looks_like_smq(block) for block in semantic_blocks if block):
             semantic_blocks.append(SEMANTIC_OUTPUT_CORRECTION)
         semantic_extra = "\n\n".join(semantic_blocks)
         return (
             f"DBMS CONTEXT (SEMANTIC MODE)\nYou compile Semantic Model Queries for {dbms}.\n"
             f"AVAILABLE SEMANTIC MODELS (JSON)\n{semantic_models_json}\n"
             f"{semantic_extra}\n"
-            "SEMANTIC OUTPUT FORMAT (STRICT)\n"
-            "Reply with a fenced ```smq block containing "
-            '{"metrics":[],"dimensions":[],"filters":[],"timeframes":[]}. '
-            "Use only model names. No reasoning, view, or scripting sections."
+            f"{_semantic_output_format(semantic_model)}"
         )
     analysis = discovery.query_analysis
     examples = _format_examples(discovery.few_shot_examples, analysis)
@@ -92,19 +182,23 @@ def build_system_prompt(
     mapping_text = "\n".join(
         f"- {m.get('value')} → {m.get('table')}.{m.get('column')}" for m in mappings
     ) or "(none)"
+    grain = grain_prompt_line(context)
+    grain_block = f"\n{grain}\n" if grain else ""
     return f"""DBMS CONTEXT (STRICT)
 Target dialect: {dbms}. Use dialect-specific identifier quoting. Do not emit cross-dialect syntax.
 PostgreSQL: LIMIT not TOP; CASE not IF(); explicit casts; schema-qualify objects.
 
 {_scenario_section(context)}
-
+{grain_block}
 QUERY ANALYSIS
 complexity={analysis.complexity}; keywords={', '.join(analysis.keywords)}; entities={', '.join(analysis.entities)}
 
 ACTIVE BUSINESS CONTEXT
 {discovery.active_groups.summary or '(none)'}
 
-KNOWLEDGE BASE EXAMPLES
+{AUTHORIZED_OBJECT_SCOPE}
+
+{KNOWLEDGE_BASE_EXAMPLES_HEADER}
 {examples}
 
 VERIFIED DATA MAPPINGS
@@ -116,11 +210,24 @@ AVAILABLE SCHEMAS
 SUPPLEMENTARY SCHEMAS
 {discovery.supplementary_objects}
 
+{ZERO_HALLUCINATION_POLICY}
+
 ATTEMPT HISTORY
 {attempt_history or '(first attempt)'}
 
 OUTPUT FORMAT
-Optionally include a /* reasoning */ block, then fenced SQL. Return a single valid {dbms} statement.
+Reasoning stays inside a /* ... */ comment block; the executable statement goes in a fenced SQL
+block directly below it, in that order. Return a single valid {dbms} statement. Your reply must
+match this layout exactly (the query body below is illustrative -- emit the real query):
+
+/* Reasoning:
+- [intent and decomposition]
+- [tables, joins and filters]
+*/
+
+```sql
+SELECT ...
+```
 """
 
 
@@ -160,7 +267,11 @@ EDITOR {language.upper()} (the only permitted source of tables, columns and filt
 {existing_code}
 {error_block}
 OUTPUT FORMAT
-Return only the rewritten {language} code. No commentary, no catalog lookups, no new objects.
+Return only the rewritten {language} code, in place of the editor code above: no commentary, no
+catalog lookups, no new objects, no markdown fence. The reply is exactly the code, starting at its
+first line:
+
+<rewritten {language} code>
 """
 
 
@@ -217,7 +328,7 @@ PYTHON CODE GUIDELINES
       finally:
           conn.close()
 - Data retrieval:
-    - Use ONLY tables and columns in AVAILABLE SCHEMAS.
+    - Use tables and columns documented in AVAILABLE SCHEMAS, or referenced in KNOWLEDGE BASE EXAMPLES. Objects in those examples are pre-validated; do not treat them as missing.
     - Embedded SQL MUST schema-qualify every table/view (dbo.Categories or [dbo].[Categories]). Never use a bare name like Categories.
     - Pay attention to VERIFIED DATA MAPPINGS for exact string values.
 - Data manipulation:
@@ -255,7 +366,9 @@ complexity={analysis.complexity}; keywords={', '.join(analysis.keywords)}; entit
 ACTIVE BUSINESS CONTEXT
 {discovery.active_groups.summary or '(none)'}
 
-KNOWLEDGE BASE EXAMPLES
+{AUTHORIZED_OBJECT_SCOPE}
+
+{KNOWLEDGE_BASE_EXAMPLES_HEADER}
 {examples}
 
 VERIFIED DATA MAPPINGS
@@ -321,7 +434,7 @@ R CODE GUIDELINES
     - Use Driver = "SQL Server" as the default placeholder.
     - Do NOT hardcode credentials.
 - Data retrieval:
-    - Use ONLY tables and columns in AVAILABLE SCHEMAS.
+    - Use tables and columns documented in AVAILABLE SCHEMAS, or referenced in KNOWLEDGE BASE EXAMPLES. Objects in those examples are pre-validated; do not treat them as missing.
     - Embedded SQL MUST schema-qualify every table/view (dbo.Categories or [dbo].[Categories]). Never use a bare name like Categories.
     - Prefer dbGetQuery(con, "SELECT ...") for filtered retrieval, or dbReadTable(con, Id(schema="schema", table="table")) for full tables.
     - Pay attention to VERIFIED DATA MAPPINGS for exact string values.
@@ -366,7 +479,9 @@ complexity={analysis.complexity}; keywords={', '.join(analysis.keywords)}; entit
 ACTIVE BUSINESS CONTEXT
 {discovery.active_groups.summary or '(none)'}
 
-KNOWLEDGE BASE EXAMPLES
+{AUTHORIZED_OBJECT_SCOPE}
+
+{KNOWLEDGE_BASE_EXAMPLES_HEADER}
 {examples}
 
 VERIFIED DATA MAPPINGS
@@ -431,7 +546,7 @@ SAS CODE GUIDELINES
     - Alternatively LIBNAME dbdata ODBC with the same server/database placeholders.
     - Always DISCONNECT FROM the alias (or clear the libref) when finished.
 - Data retrieval:
-    - Use ONLY tables and columns in AVAILABLE SCHEMAS.
+    - Use tables and columns documented in AVAILABLE SCHEMAS, or referenced in KNOWLEDGE BASE EXAMPLES. Objects in those examples are pre-validated; do not treat them as missing.
     - Embedded SQL MUST schema-qualify every table/view (dbo.Categories or [dbo].[Categories]). Never use a bare name like Categories.
     - Pay attention to VERIFIED DATA MAPPINGS for exact string values.
 - Data manipulation (the SAS way):
@@ -473,7 +588,9 @@ complexity={analysis.complexity}; keywords={', '.join(analysis.keywords)}; entit
 ACTIVE BUSINESS CONTEXT
 {discovery.active_groups.summary or '(none)'}
 
-KNOWLEDGE BASE EXAMPLES
+{AUTHORIZED_OBJECT_SCOPE}
+
+{KNOWLEDGE_BASE_EXAMPLES_HEADER}
 {examples}
 
 VERIFIED DATA MAPPINGS

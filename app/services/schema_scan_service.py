@@ -23,16 +23,11 @@ from app.services.object_discovery_service import (
     discover_functions,
     build_function_markdown_description,
 )
+from app.utils.query_vocabulary import STOP_WORDS
 
 logger = logging.getLogger(__name__)
 
 SKILLS_BASE_PATH = Path("skills/data-sources")
-
-# Common stop words excluded from keyword extraction
-KEYWORD_STOP_WORDS = frozenset([
-    'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at',
-    'to', 'for', 'of', 'with', 'by',
-])
 
 # System schemas to skip during scan
 SYSTEM_SCHEMAS = frozenset([
@@ -58,7 +53,7 @@ def _extract_keywords(object_name: str, description: str = "") -> list:
     keywords: list = []
     if description:
         words = re.findall(r'\b\w+\b', description.lower())
-        keywords = [w for w in words if len(w) > 3 and w not in KEYWORD_STOP_WORDS][:5]
+        keywords = [w for w in words if len(w) > 3 and w not in STOP_WORDS][:5]
     name_parts = re.findall(r'[A-Z][a-z]+|[a-z]+', object_name)
     keywords.extend([p.lower() for p in name_parts if len(p) > 2])
     return list(dict.fromkeys(keywords))[:8]

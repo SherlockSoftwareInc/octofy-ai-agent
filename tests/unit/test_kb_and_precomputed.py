@@ -64,6 +64,45 @@ def test_try_get_exact_ignores_legacy_meta_table_and_drops_it(tmp_path):
     assert not provider.has_collection("few_shots_meta")
 
 
+def test_search_embeds_the_limit_normalized_question(tmp_path, monkeypatch):
+    provider = SqliteVecProvider(tmp_path / "kb.sqlite")
+    svc = FewShotVectorService(provider, "src-1")
+    seen = []
+    monkeypatch.setattr(
+        "app.services.fewshot_vector_service.embed_text",
+        lambda text, *args, **kwargs: seen.append(text) or [0.1],
+    )
+    monkeypatch.setattr(provider, "search_vector", lambda *args, **kwargs: [])
+    svc.search("find top 10 selling products")
+    assert seen == ["find top selling products"]
+
+
+def test_try_get_exact_matches_when_only_a_limit_token_differs(tmp_path):
+    provider = SqliteVecProvider(tmp_path / "kb.sqlite")
+    _seed_few_shot(
+        provider,
+        "src-1",
+        "k1",
+        "find top selling products",
+        "SELECT * FROM [dbo].[Sales by Category]",
+    )
+    svc = FewShotVectorService(provider, "src-1")
+    hit = svc.try_get_exact("find top 10 selling products")
+    assert hit is not None
+    assert hit.sql == "SELECT * FROM [dbo].[Sales by Category]"
+
+
+def test_precomputed_exact_ignores_limit_token_normalization(tmp_path):
+    provider = SqliteVecProvider(tmp_path / "pc.sqlite")
+    store = PrecomputedQueryStore(provider, "src-1")
+    from app.services.vector_search_service import VectorSearchService
+
+    store.upsert("find top selling products", "SELECT 1", "g", status="Approved")
+    vs = VectorSearchService(provider, "src-1")
+    assert vs.try_get_precomputed_exact("find top selling products").sql == "SELECT 1"
+    assert vs.try_get_precomputed_exact("find top 10 selling products") is None
+
+
 def test_try_get_exact_with_missing_few_shots_table_returns_null(tmp_path):
     provider = SqliteVecProvider(tmp_path / "empty.sqlite")
     provider.execute("DROP TABLE few_shots")
